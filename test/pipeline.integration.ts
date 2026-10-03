@@ -9,7 +9,7 @@ import { sse } from './opencode.integration.js';
 import { config } from '../src/config.js';
 import { GitHub } from '../src/github.js';
 import { git } from '../src/source.js';
-import { prepare, publish } from '../src/pipeline.js';
+import { prepare, progress, publish } from '../src/pipeline.js';
 import { review } from '../src/opencode.js';
 
 test('offline end-to-end: admission, immutable snapshot, OpenCode/model, validation, trusted publication and recovery', { timeout: 60_000 }, async () => {
@@ -30,6 +30,10 @@ test('offline end-to-end: admission, immutable snapshot, OpenCode/model, validat
     assert.equal(await prepare(event('intruder'), 'issue_comment', config(), api, work, f.request.runUrl), null); assert.equal(calls, 0);
     const p = await prepare(e, 'issue_comment', config(), api, work, f.request.runUrl, `file://${f.dir}/.git`);
     assert.ok(p?.ready); assert.equal(p.manifest?.incomplete, true); // unsupported changed files disclosed
+    const session = { url: 'https://opncd.ai/share/test1234' };
+    assert.equal((await progress(p, session, config({ shareSessions: true }), api)).skipped, false);
+    assert.ok(comment.body.indexOf('[Live OpenCode session]') < comment.body.indexOf('[Workflow run]'));
+    await assert.rejects(progress(p, { url: 'https://attacker.example/session' }, config({ shareSessions: true }), api));
     let modelCalls = 0;
     const out = await review(path.join(work, 'source'), config({ limits: { durationMs: 30_000 } }), { key: 'inference-secret', transport: (async () => {
       modelCalls++;
@@ -45,6 +49,7 @@ test('offline end-to-end: admission, immutable snapshot, OpenCode/model, validat
     assert.ok(comment.body.includes(`/blob/${f.request.head}/new.go#L1-L1`));
     assert.equal(await prepare(e, 'issue_comment', config(), api, work, f.request.runUrl, `file://${f.dir}/.git`), null); assert.equal(posts, 1);
     assert.equal((await publish(p, out, config(), api)).skipped, true);
+    assert.equal((await progress(p, session, config({ shareSessions: true }), api)).skipped, true);
     // Restore the trusted running marker to test malformed/missing untrusted results.
     const { statusBody } = await import('../src/requests.js');
     comment.body = statusBody(p.request, 'Running');

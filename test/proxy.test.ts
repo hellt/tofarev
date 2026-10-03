@@ -53,6 +53,17 @@ test('request bytes are independent of the token window', async () => {
     assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal(p.failure, null);
   } finally { await p.close(); }
 });
+test('provider DONE ends the response without waiting for an open HTTP stream', async () => {
+  let cancelled = false;
+  const p = await inferenceProxy(config(), 'key', (async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new TextEncoder().encode('data: {"choices":[]}\n\ndata: [DO')); controller.enqueue(new TextEncoder().encode('NE]\n\n')); },
+    cancel() { cancelled = true; },
+  }), { headers: { 'content-type': 'text/event-stream' } })) as typeof fetch);
+  try {
+    const response = await fetch(`${p.endpoint}/chat/completions`, { method: 'POST', body: JSON.stringify({ ...input, stream: true }), signal: AbortSignal.timeout(2000) });
+    assert.match(await response.text(), /\[DONE\]/); assert.equal(cancelled, true);
+  } finally { await p.close(); }
+});
 test('default configuration has no proxy call cap or agent step cap', async () => {
   const { reviewerConfig } = await import('../src/opencode.js');
   assert.equal(reviewerConfig(config(), '/source', '', 'http://127.0.0.1/v1').agent.tofarev.steps, undefined);
@@ -76,6 +87,21 @@ test('the final allowance requests JSON without tools instead of discarding inve
     const body = { ...input, tools: [{ type: 'function' }], tool_choice: 'auto' };
     assert.equal((await send(p.endpoint, body)).status, 200); assert.equal(p.finalized, false);
     assert.equal((await send(p.endpoint, body)).status, 200); assert.equal(p.finalized, true);
+  } finally { await p.close(); }
+});
+test('deadline reserve requests schema-valid findings before the hard timeout', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const p = await inferenceProxy(config({ limits: { durationMs: 30_000 } }), 'key', (async (_url, init) => {
+    const body = JSON.parse(String(init!.body));
+    assert.equal(body.tools, undefined);
+    assert.match(body.messages.at(-1).content, /deadline is nearly exhausted/);
+    assert.match(body.messages.at(-1).content, /"findings"/);
+    return new Response('ok');
+  }) as typeof fetch);
+  try {
+    now += 20_001;
+    assert.equal((await send(p.endpoint, { ...input, tools: [{ type: 'function' }] })).status, 200);
+    assert.equal(p.finalized, true);
   } finally { await p.close(); }
 });
 test('hanging provider obeys deadline and CLI process group is killed', async () => {

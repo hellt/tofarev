@@ -46,7 +46,8 @@ test('a native session link replaces details while preserving findings and file 
   const result = ResultSchema.parse({ version: 1, findings: [finding], coverage: { complete: true, notes: [] } });
   const shared = renderReport(r, result, manifest, { sessionUrl: 'https://opncd.ai/share/test1234', sharingEnabled: true });
   assert.match(shared.body, /\| \*\*P2 - Repeated/); assert.match(shared.body, /blob\/a{40}/);
-  assert.match(shared.body, /\[View full review session\]\(https:\/\/opncd.ai\/share\/test1234\)/);
+  assert.match(shared.body, /\[Live OpenCode session\]\(https:\/\/opncd.ai\/share\/test1234\)/);
+  assert.ok(shared.body.indexOf('[Live OpenCode session]') < shared.body.indexOf('[Workflow run]'));
   assert.ok(!shared.body.includes('<details>')); assert.ok(shared.body.endsWith(FOOTER));
   assert.equal(shared.request.state, 'completed');
   const fallback = renderReport(r, result, manifest, { sharingEnabled: true });

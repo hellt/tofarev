@@ -3,7 +3,7 @@ import path from 'node:path';
 import { config } from './config.js';
 import { GitHub } from './github.js';
 import { admit } from './requests.js';
-import { prepare, publish, readJson } from './pipeline.js';
+import { prepare, progress, publish, readJson } from './pipeline.js';
 import { review } from './opencode.js';
 import { exampleReport } from './preview.js';
 import { consumerWorkflow } from './consumer.js';
@@ -46,6 +46,11 @@ async function main() {
       const published = await publish(await readJson(path.join(arg, 'prepared.json')), result, c, api(), process.env.TOFAREV_REVIEW_STATUS);
       console.log(JSON.stringify(published));
       if ('state' in published && published.state === 'failed') process.exitCode = 1;
+      break;
+    }
+    case 'progress': {
+      if (!arg || !extra) throw new Error('Preparation and session files required');
+      console.log(JSON.stringify(await progress(await readJson(path.join(arg, 'prepared.json')), await readJson(extra, 1024), c, api())));
       break;
     }
     case 'preview': console.log(exampleReport(arg)); break;

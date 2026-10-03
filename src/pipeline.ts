@@ -6,7 +6,7 @@ import { GitHub } from './github.js';
 import { admit, beginRequest, parseMarker, statusBody } from './requests.js';
 import { policyHash } from './opencode.js';
 import { fetchSource, snapshot } from './source.js';
-import { ManifestSchema, RequestSchema, ReviewOutputSchema } from './types.js';
+import { ManifestSchema, RequestSchema, ReviewOutputSchema, SessionUrl } from './types.js';
 import { renderReport } from './report.js';
 
 export const PreparedSchema = z.strictObject({ request: RequestSchema, commentId: z.number().int().positive(),
@@ -32,13 +32,25 @@ export async function prepare(event: unknown, eventName: string, c: Config, api:
   await writeFile(path.join(work, 'prepared.json'), JSON.stringify(p));
   return p;
 }
-export async function publish(prepared: unknown, output: unknown, c: Config, api: GitHub, reviewJobStatus?: string) {
+async function publicationContext(prepared: unknown, c: Config, api: GitHub) {
   const p = PreparedSchema.parse(prepared); const r = p.request;
   if (r.repository !== c.repository || r.repositoryId !== c.repositoryId || !p.ready) throw new Error('Publication context mismatch');
   if (!p.manifest || p.manifest.head !== r.head || p.manifest.base !== r.base || p.manifest.mergeBase !== r.mergeBase) throw new Error('Source manifest mismatch');
   const a = { repository: r.repository, repositoryId: r.repositoryId, key: r.key, pr: r.pr, triggerId: r.triggerId, author: '' };
   const current = parseMarker(await api.comment(r.repository, p.commentId), c, a);
   if (!current || current.head !== r.head || current.base !== r.base || current.mergeBase !== r.mergeBase || current.runUrl !== r.runUrl || current.policy !== r.policy) throw new Error('Publication marker mismatch');
+  return { p, r, current };
+}
+export async function progress(prepared: unknown, session: unknown, c: Config, api: GitHub) {
+  const url = z.strictObject({ url: SessionUrl }).parse(session).url;
+  if (!c.shareSessions) return { skipped: true };
+  const { p, r, current } = await publicationContext(prepared, c, api);
+  if (current.state !== 'running') return { skipped: true };
+  await api.update(r.repository, p.commentId, statusBody(r, 'Reviewing the recorded pull request revision.', url));
+  return { skipped: false };
+}
+export async function publish(prepared: unknown, output: unknown, c: Config, api: GitHub, reviewJobStatus?: string) {
+  const { p, r, current } = await publicationContext(prepared, c, api);
   if (current.state !== 'running') return { skipped: true };
   const parsed = ReviewOutputSchema.safeParse(output);
   const value = parsed.success ? parsed.data : { result: null, failed: true, notes: ['Reviewer result was unavailable or invalid.'] };

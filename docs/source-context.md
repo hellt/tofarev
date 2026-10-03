@@ -1,6 +1,6 @@
 # Source context
 
-The initial review message includes all changed paths/statuses and snapshot limitations. The full repository manifest remains available as optional lookup data, so large inventories do not consume context before code inspection.
+The initial review message includes source revisions, the changed-file count, and whether the source snapshot is incomplete. OpenCode identifies changed paths from `diff.txt`. The full inventory and omission details remain in `manifest.json` for optional lookup. Unrelated image and font warnings stay outside the initial prompt. The runner sends plain text through stdin to avoid OpenCode's positional-argument escaping.
 
 Preparation fetches public Git objects by recorded base/head SHA. `refs/pull/N/head` works for same-repository and fork pull requests. If that ref advances, the recorded commit is fetched separately. Shallow history is deepened to find the merge base. Failure to obtain that revision fails the review; it never switches to newer code.
 

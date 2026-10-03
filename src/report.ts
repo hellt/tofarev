@@ -55,8 +55,9 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     const omitted = total - findings.length;
     r.state = !checked ? 'failed' : (!checked.coverage.complete || manifest?.incomplete || options.notes?.length || omitted) ? 'partial' : 'completed';
     let body = `${marker(r)}\n## ToFaRev review — ${r.state}\n\n`;
-    if (r.head) body += `Reviewed [${r.head.slice(0, 12)}](https://github.com/${r.repository}/commit/${r.head}) · [Workflow run](${r.runUrl})\n\n`;
-    else body += `[Workflow run](${r.runUrl})\n\n`;
+    if (r.head) body += `Reviewed [${r.head.slice(0, 12)}](https://github.com/${r.repository}/commit/${r.head}) · `;
+    if (options.sessionUrl) body += `[Live OpenCode session](${options.sessionUrl}) · `;
+    body += `[Workflow run](${r.runUrl})\n\n`;
     if (options.currentHead && options.currentHead !== r.head) body += '**Newer commits are present; they were not reviewed.**\n\n';
     if (r.state === 'partial') body += '**Partial review. The findings below do not cover all changes.**\n\n';
     if (r.state === 'failed') body += '**Review could not be completed. This is not a clean review.**\n\n';
@@ -80,8 +81,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
         body += '</details>\n\n';
       }
     } else if (checked && !omitted) body += r.state === 'completed' ? 'No actionable findings were found within the reviewed scope.\n\n' : 'No validated findings are available within the incomplete reviewed scope.\n\n';
-    if (options.sessionUrl) body += `[View full review session](${options.sessionUrl})\n\n`;
-    else if (options.sharingEnabled) body += 'OpenCode session link unavailable; finding details are included above when available.\n\n';
+    if (!options.sessionUrl && options.sharingEnabled) body += 'OpenCode session link unavailable; finding details are included above when available.\n\n';
     body += `---\n${FOOTER}`;
     if (Buffer.byteLength(body) <= maxBytes) return { body, request: r };
     if (findings.length) findings = findings.slice(0, -1);

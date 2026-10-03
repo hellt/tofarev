@@ -12,9 +12,13 @@ The reviewer uses a fresh non-Git working directory and isolated XDG directories
 
 There is no default inference-call cap or agent step cap. OpenCode continues until completion or the reviewer deadline. Repair resumes the existing session and preserves its source inspection. If trusted configuration sets `limits.turns`, that allowance includes compaction and result repair. Near an explicit cap, the proxy removes tools and requests the investigated findings as JSON. The runner marks that result partial even if the model claims complete coverage.
 
+The runner reserves up to 4.5 minutes for final output before the 15-minute deadline. Near that deadline, the proxy requests investigated findings and marks unfinished scope as partial. The proxy ends streaming at `[DONE]`, without waiting for the provider to close its HTTP connection. Logs distinguish response-header latency, first-data latency, and total call duration.
+
 The proxy sends `reasoning_effort: high` by default on every model call, including compaction and repair. Trusted configuration accepts `low`, `high`, or `max`. Actions logs show call counts, request sizes, effort, and elapsed time. Logs exclude request contents and credentials.
 
 With trusted `shareSessions: true`, the runner starts a temporary OpenCode server on loopback before review. It creates a session and calls the native `POST /session/{id}/share` API. The runner prints the validated session URL in Actions logs before the first model call. OpenCode syncs messages and tool outputs while the review runs. The CLI attaches to that server and session. The runner verifies every recorded part exists on the hosted backend before publishing the final comment. Sharing gets a separate 30-second deadline and 16 MiB response limit. Only validated `https://opncd.ai/s/...` or `/share/...` URLs reach the publisher. A sharing failure preserves findings and their collapsed details. The server and local session store are removed afterward. Hosted public transcripts persist independently of Actions artifacts. Automatic unsharing is not provided.
+
+The Review job uploads a small session-link artifact while the review container continues running. A separate status publisher updates the running comment with App credentials. The final Publish job waits for that status publisher to finish, preventing a late status update from overwriting findings. The review container receives no GitHub credentials.
 
 The parent inference adapter can reach Token Factory. Container networking is not an independent outbound firewall; restrictions on agent network actions are tool/config controls. PR code never runs. Native CLI tests verify the protocol, while the container is the production isolation boundary.
 

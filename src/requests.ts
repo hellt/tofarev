@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { GitHub, GitHubError, type Comment } from './github.js';
-import { RequestSchema, type Request, Sha } from './types.js';
+import { RequestSchema, type Request, Sha, SessionUrl } from './types.js';
 
 const Event = z.object({ action: z.literal('created'), repository: z.object({ id: z.number().int(), full_name: z.string() }),
   issue: z.object({ number: z.number().int().positive(), pull_request: z.object({}).passthrough() }),
@@ -34,8 +34,9 @@ export async function findRequest(api: GitHub, c: Config, a: Admission) {
   return null;
 }
 export const FOOTER = 'Powered by [Nebius Token Factory](https://nebius.com/services/token-factory)';
-export function statusBody(r: Request, message: string) {
-  return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;
+export function statusBody(r: Request, message: string, sessionUrl?: string) {
+  if (sessionUrl) SessionUrl.parse(sessionUrl);
+  return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Live OpenCode session](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;
 }
 export async function beginRequest(api: GitHub, c: Config, a: Admission, policy: string, runUrl: string) {
   const trigger = await api.comment(a.repository, a.triggerId);

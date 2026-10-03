@@ -83,6 +83,12 @@ test('pinned OpenCode delivers system policy, exposes only read tools, and ignor
     process.env.TOFAREV_GITHUB_TOKEN = 'PUBLISHER_ENV_SENTINEL';
     const transport = (async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)); calls.push(body);
+      if (calls.length === 1) {
+        const user = body.messages.find((m: any) => m.role === 'user');
+        assert.ok(String(user.content).startsWith('Review the read-only PR snapshot at '));
+        assert.ok(!String(user.content).includes('All changed paths/statuses:'));
+        assert.ok(!String(user.content).includes('Snapshot limitations:'));
+      }
       if (calls.length === 1) return sse({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function',
         function: { name: 'read', arguments: JSON.stringify({ filePath: `${dir}/head/hello.go` }) } }] }, 'tool_calls');
       if (calls.length === 2) return sse({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_2', type: 'function', function: { name: 'read', arguments: JSON.stringify({ filePath: secret }) } }] }, 'tool_calls');
