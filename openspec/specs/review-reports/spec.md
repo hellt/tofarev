@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Present ToFaRev's review results as recognizable, concise GitHub comments with expandable evidence and stable references to reviewed source.
+Present ToFaRev's review results as recognizable, concise GitHub comments with shared review sessions and stable references to reviewed source.
 
 ## Requirements
 
@@ -24,8 +24,18 @@ A report containing findings SHALL begin its findings section with a Markdown su
 - **WHEN** a successful review has no findings
 - **THEN** the report states that no actionable findings were found and omits empty tables and finding blocks
 
-### Requirement: Collapsed finding details
-Each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction.
+### Requirement: Shared review session and fallback details
+When trusted configuration enables session sharing, the runner SHALL use OpenCode's native sharing API and SHALL verify the recorded session parts have synced before publishing a validated hosted URL. The report SHALL contain a full-session link below the findings table and omit collapsed finding blocks when that link is available. Model output SHALL NOT supply this URL. Shared transcripts are public and include the investigation and structured result; credentials SHALL remain outside the session.
+
+If sharing is disabled or unavailable, each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction. Sharing failure SHALL NOT discard valid findings or turn complete analysis into partial coverage.
+
+#### Scenario: Native sharing succeeds
+- **WHEN** the runner verifies all recorded parts are available in the shared session
+- **THEN** the report contains its summary table, clickable file references, full-session link and branded footer without collapsed finding blocks
+
+#### Scenario: Sharing service fails
+- **WHEN** a valid review cannot obtain a fully synced session link within the sharing deadline
+- **THEN** its findings are published with collapsed details and a notice that the session link is unavailable
 
 #### Scenario: Reader expands a finding
 - **WHEN** a reader opens a finding's collapsed block

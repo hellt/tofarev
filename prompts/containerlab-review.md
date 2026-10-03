@@ -56,7 +56,8 @@ Execution and output
   running PR code, accessing secrets, publishing, or contacting external services.
 - Return the trusted result schema with findings and coverage notes. Provide concise
   evidence and rationale, not a narration of your internal reasoning. The publisher
-  constructs the Markdown table, collapsed details, source links, and branded footer.
+  constructs the Markdown table, source links, session link, and branded footer.
+  When session sharing is unavailable, it includes collapsed finding details.
 - Include an optional diagram only when it explains a finding better than prose.
 - Disclose missing rules, skipped content, and incomplete analysis. Never claim tests
   or benchmarks ran when they did not. No findings does not prove absence of defects.

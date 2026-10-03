@@ -8,4 +8,4 @@ docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /home/node:rw,nosuid,nodev,size=256m,uid=1000,gid=1000 \
   --mount type=bind,src="$PWD/dist/test",dst=/app/dist/test,readonly \
   --mount type=bind,src="$PWD/prompts",dst=/source,readonly \
-  --entrypoint node tofarev-reviewer --test dist/test/container.integration.js dist/test/opencode.integration.js
+  --entrypoint node tofarev-reviewer --test dist/test/container.integration.js dist/test/opencode.integration.js dist/test/sharing.integration.js

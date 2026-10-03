@@ -53,6 +53,19 @@ test('provider token usage triggers context compaction and the review continues'
     assert.equal(compacted, true); assert.equal(calls, 3); assert.equal(result.failed, false);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+test('finalization at the call allowance keeps valid results and marks coverage partial', { timeout: 60_000 }, async () => {
+  const { evaluationSource, cases } = await import('../src/evaluation.js');
+  const dir = await evaluationSource(cases[cases.length - 1]!);
+  try {
+    const result = await review(dir, config({ limits: { turns: 3, durationMs: 20_000 } }), { key: 'fake', transport: (async (_url, init) => {
+      const body = JSON.parse(String(init!.body));
+      assert.equal(body.tools, undefined); assert.match(body.messages.at(-1).content, /coverage.complete=false/);
+      return sse({ role: 'assistant', content: JSON.stringify({ version: 1, findings: [], coverage: { complete: true, notes: [] } }) });
+    }) as typeof fetch });
+    assert.equal(result.failed, false); assert.equal(result.result?.coverage.complete, false);
+    assert.match(result.result!.coverage.notes.join(' '), /call allowance/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 test('pinned OpenCode delivers system policy, exposes only read tools, and ignores hostile project config', { timeout: 60_000 }, async () => {
   const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tofarev-fixture-')));
   try {
@@ -103,8 +116,10 @@ test('malformed results get exactly one repair and invalid locations produce par
   const dir = await evaluationSource(cases[cases.length - 1]!);
   try {
     let calls = 0;
-    const broken = await review(dir, config({ limits: { durationMs: 20_000 } }), { key: 'fake', transport: (async () => {
-      calls++; return sse({ role: 'assistant', content: 'not JSON' });
+    const broken = await review(dir, config({ limits: { durationMs: 20_000 } }), { key: 'fake', transport: (async (_url, init) => {
+      calls++;
+      if (calls === 2) assert.ok(JSON.parse(String(init!.body)).messages.some((m: any) => m.role === 'assistant' && JSON.stringify(m.content).includes('not JSON')));
+      return sse({ role: 'assistant', content: 'not JSON' });
     }) as typeof fetch });
     assert.equal(calls, 2); assert.equal(broken.failed, true); assert.equal(broken.result, null);
     calls = 0;

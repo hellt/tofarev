@@ -33,7 +33,7 @@ test('workflow pins dependencies and confines credentials to their jobs and step
   assert.throws(() => consumerWorkflow('owner/tofarev', 'main'));
 });
 test('golden report previews match deterministic renderer', async () => {
-  for (const mode of ['findings', 'empty', 'partial', 'stale', 'failed']) {
+  for (const mode of ['findings', 'empty', 'partial', 'stale', 'failed', 'shared']) {
     assert.equal(await readFile(`docs/examples/${mode}.md`, 'utf8'), exampleReport(mode) + '\n');
   }
 });

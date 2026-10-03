@@ -42,6 +42,7 @@ jobs:
       bot_repository: __BOT_REPOSITORY__
       bot_ref: __BOT_REF__
       app_client_id: ${{ vars.TOFAREV_APP_CLIENT_ID }}
+      trusted_config: '{"shareSessions":true}'
     secrets:
       TOFAREV_API_KEY: ${{ secrets.TOFAREV_API_KEY }}
       TOFAREV_APP_PRIVATE_KEY: ${{ secrets.TOFAREV_APP_PRIVATE_KEY }}

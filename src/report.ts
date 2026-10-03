@@ -1,5 +1,5 @@
 import { FOOTER, marker } from './requests.js';
-import { type Finding, type Manifest, type Request, type Result, RequestSchema, ResultSchema, validateLocations } from './types.js';
+import { type Finding, type Manifest, type Request, type Result, RequestSchema, ResultSchema, SessionUrl, validateLocations } from './types.js';
 
 // Literal text fields: encode Markdown/HTML punctuation before assembling trusted markup.
 export function escape(text: string): string {
@@ -42,8 +42,9 @@ export function diagram(input?: string): string | null {
 }
 
 export function renderReport(request: Request, result: Result | null, manifest: Manifest | null,
-  options: { notes?: string[]; currentHead?: string; maxBytes?: number } = {}): { body: string; request: Request } {
+  options: { notes?: string[]; currentHead?: string; maxBytes?: number; sessionUrl?: string; sharingEnabled?: boolean } = {}): { body: string; request: Request } {
   const r = RequestSchema.parse(request);
+  if (options.sessionUrl) SessionUrl.parse(options.sessionUrl);
   const checked = result && manifest ? validateLocations(ResultSchema.parse(result), manifest) : null;
   const notes = [...new Set([...(options.notes ?? []), ...(checked?.coverage.notes ?? []), ...(manifest?.notes ?? [])])];
   let findings = [...(checked?.findings ?? [])].sort((a, b) => a.priority.localeCompare(b.priority) || a.location.path.localeCompare(b.location.path) || a.location.start - b.location.start);
@@ -70,7 +71,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
       body += '| Finding | Location |\n| --- | --- |\n';
       for (const f of findings) body += `| **${f.priority} - ${escape(f.title)}** | ${sourceLink(r, f)} |\n`;
       body += '\n';
-      for (const f of findings) {
+      for (const f of options.sessionUrl ? [] : findings) {
         body += `<details>\n<summary>${f.priority} - ${escape(f.title)}</summary>\n\n**Location:** ${sourceLink(r, f)}\n\n`;
         for (const [label, content] of [['Problem', f.problem], ['Trigger', f.trigger], ['Impact', f.impact], ['Suggested correction', f.suggestion]]) {
           body += `**${label}:** ${escape(content!)}\n\n`;
@@ -79,6 +80,8 @@ export function renderReport(request: Request, result: Result | null, manifest: 
         body += '</details>\n\n';
       }
     } else if (checked && !omitted) body += r.state === 'completed' ? 'No actionable findings were found within the reviewed scope.\n\n' : 'No validated findings are available within the incomplete reviewed scope.\n\n';
+    if (options.sessionUrl) body += `[View full review session](${options.sessionUrl})\n\n`;
+    else if (options.sharingEnabled) body += 'OpenCode session link unavailable; finding details are included above when available.\n\n';
     body += `---\n${FOOTER}`;
     if (Buffer.byteLength(body) <= maxBytes) return { body, request: r };
     if (findings.length) findings = findings.slice(0, -1);

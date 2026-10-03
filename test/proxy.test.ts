@@ -43,6 +43,31 @@ test('request bytes are independent of the token window', async () => {
     assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal(p.failure, null);
   } finally { await p.close(); }
 });
+test('default configuration has no proxy call cap or agent step cap', async () => {
+  const { reviewerConfig } = await import('../src/opencode.js');
+  assert.equal(reviewerConfig(config(), '/source', '', 'http://127.0.0.1/v1').agent.tofarev.steps, undefined);
+  const p = await inferenceProxy(config(), 'key', (async (_url, init) => {
+    assert.ok(JSON.parse(String(init!.body)).tools);
+    return new Response('ok');
+  }) as typeof fetch);
+  try {
+    for (let i = 0; i < 85; i++) assert.equal((await send(p.endpoint, { ...input, tools: [{ type: 'function' }] })).status, 200);
+    assert.equal(p.turns, 85); assert.equal(p.finalized, false); assert.equal(p.failure, null);
+  } finally { await p.close(); }
+});
+test('the final allowance requests JSON without tools instead of discarding investigated findings', async () => {
+  const p = await inferenceProxy(config({ limits: { turns: 4 } }), 'key', (async (_url, init) => {
+    const body = JSON.parse(String(init!.body));
+    if (p.turns === 1) assert.ok(body.tools);
+    else { assert.equal(body.tools, undefined); assert.equal(body.tool_choice, undefined); assert.match(body.messages.at(-1).content, /coverage.complete=false/); }
+    return new Response('ok');
+  }) as typeof fetch);
+  try {
+    const body = { ...input, tools: [{ type: 'function' }], tool_choice: 'auto' };
+    assert.equal((await send(p.endpoint, body)).status, 200); assert.equal(p.finalized, false);
+    assert.equal((await send(p.endpoint, body)).status, 200); assert.equal(p.finalized, true);
+  } finally { await p.close(); }
+});
 test('hanging provider obeys deadline and CLI process group is killed', async () => {
   const p = await inferenceProxy(config({ limits: { durationMs: 1000 } }), 'key', ((_u, init) => new Promise((_resolve, reject) => {
     init!.signal!.addEventListener('abort', () => reject(new Error('secret abort')));

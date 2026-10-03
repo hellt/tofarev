@@ -6,6 +6,7 @@ test('production configuration is explicit and invalid settings fail closed', ()
   const c = config();
   assert.equal(c.repositoryId, 290960521);
   assert.deepEqual(c.allowedUsers, ['hellt', 'flosch62', 'kaelemc']);
+  assert.equal(c.limits.turns, undefined);
   assert.equal(MODEL, 'zai-org/GLM-5.3-Flash');
   assert.equal(ENDPOINT, 'https://api.tokenfactory.nebius.com/v1');
   for (const bad of [{ repository: '../x' }, { allowedUsers: [] }, { model: 'other' }, { limits: { turns: 0 } }]) {

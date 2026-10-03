@@ -42,6 +42,18 @@ test('table and details match, sort P0 to P4, and always include footer', () => 
   for (const variant of [renderReport(r, null, manifest), renderReport(r, result, { ...manifest, incomplete: true }),
     renderReport(r, result, manifest, { currentHead: 'e'.repeat(40) })]) assert.ok(variant.body.endsWith(FOOTER));
 });
+test('a native session link replaces details while preserving findings and file links', () => {
+  const result = ResultSchema.parse({ version: 1, findings: [finding], coverage: { complete: true, notes: [] } });
+  const shared = renderReport(r, result, manifest, { sessionUrl: 'https://opncd.ai/share/test1234', sharingEnabled: true });
+  assert.match(shared.body, /\| \*\*P2 - Repeated/); assert.match(shared.body, /blob\/a{40}/);
+  assert.match(shared.body, /\[View full review session\]\(https:\/\/opncd.ai\/share\/test1234\)/);
+  assert.ok(!shared.body.includes('<details>')); assert.ok(shared.body.endsWith(FOOTER));
+  assert.equal(shared.request.state, 'completed');
+  const fallback = renderReport(r, result, manifest, { sharingEnabled: true });
+  assert.match(fallback.body, /<details>/); assert.match(fallback.body, /session link unavailable/);
+  assert.equal(fallback.request.state, 'completed');
+  assert.throws(() => renderReport(r, result, manifest, { sessionUrl: 'https://evil.example/steal' }));
+});
 test('renderer escapes arbitrary markup and truncates complete findings by byte budget', () => {
   const result = ResultSchema.parse({ version: 1, findings: Array.from({ length: 20 }, () => ({ ...finding,
     title: '</summary> | @hellt [link](https://evil.example)', problem: 'é'.repeat(5000) })), coverage: { complete: true, notes: [] } });

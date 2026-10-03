@@ -9,9 +9,10 @@ export const ConfigSchema = z.strictObject({
   repositoryId: z.number().int().positive().default(290960521),
   allowedUsers: z.array(z.string().regex(/^[\w-]+$/)).min(1).default(['hellt', 'flosch62', 'kaelemc']),
   appSlug: z.string().regex(/^[a-z0-9-]+$/).default('tofarev'),
+  shareSessions: z.boolean().default(false),
   limits: z.strictObject({
     durationMs: z.number().int().min(1000).max(900_000).default(900_000),
-    turns: z.number().int().min(1).max(30).default(30),
+    turns: z.number().int().min(1).max(1000).optional(),
     contextTokens: z.number().int().min(1024).max(100_000).default(100_000),
     requestBytes: z.number().int().min(1024).max(2_097_152).default(2_097_152),
     outputTokens: z.number().int().min(512).max(16_384).default(8192),
