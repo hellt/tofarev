@@ -1,8 +1,8 @@
 # ToFaRev
 
-On-demand Containerlab PR reviews using Nebius Token Factory and GLM-5.3-Flash, orchestrated by OpenCode in GitHub Actions.
+On-demand PR reviews using Nebius Token Factory, orchestrated by OpenCode in GitHub Actions runners.
 
-`hellt`, `flosch62` or `kaelemc` posts `/tofarev review` in a PR conversation. ToFaRev reviews that recorded revision and updates one bot-owned comment with P0–P4 findings, a summary table, expandable details, immutable source links and the Token Factory footer. Optional diagrams use GitHub Mermaid syntax.
+`hellt`, `flosch62` or `kaelemc` posts `/tofarev review` in a PR conversation. ToFaRev reviews that recorded revision and updates one bot-owned comment with P0–P4 findings, a summary table, expandable details, immutable source links. Optional diagrams use GitHub Mermaid syntax.
 
 The canonical [review policy](prompts/containerlab-review.md) checks correctness, clarity, performance, repository Karpathy/Ponytail rules, documentation and topology/schema consistency. Source is treated as data; PR code is never executed.
 
@@ -27,5 +27,3 @@ Requires Node.js 24.20.0. Docker is used for the production reviewer. No server 
 - [Live model probe and prompt evaluation](docs/evaluation.md)
 
 Local implementation does not install a GitHub App or activate reviews in Containerlab. The existing `TOFAREV_API_KEY` repository secret is the inference secret used by the consumer workflow.
-
-OpenSpec's shared skills/commands and `openspec/` planning files can be versioned. Do not blanket-ignore agent dot directories containing shared instructions. Ignore credentials, local caches and generated state instead; see `.gitignore`.
