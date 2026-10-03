@@ -6,6 +6,13 @@ Produce evidence-backed reviews of Containerlab pull requests using Nebius Token
 
 ## Requirements
 
+### Requirement: Explicit model effort
+The inference proxy SHALL send `reasoning_effort: high` by default for GLM-5.3-Flash. Trusted configuration MAY select `low`, `high`, or `max`. This setting SHALL apply to review, compaction, and repair calls. Progress logs SHALL show call counts and durations without source contents or credentials.
+
+#### Scenario: Agent omits or supplies effort
+- **WHEN** OpenCode sends an inference request
+- **THEN** the proxy uses the validated trusted effort setting instead of an implicit provider default or agent-supplied setting
+
 ### Requirement: Token Factory model
 The system SHALL perform inference through Nebius Token Factory using the exact model `zai-org/GLM-5.3-Flash`. Credentials SHALL come from runtime secrets. The system SHALL NOT silently substitute a different provider or model when access fails.
 

@@ -7,19 +7,25 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { config } from '../src/config.js';
 import { reviewerConfig, cliEnvironment, inferenceProxy, runCli } from '../src/opencode.js';
-import { shareSession } from '../src/sharing.js';
+import { shareSession, startSharedSession } from '../src/sharing.js';
 
 test('native session sharing waits for full sync and never publishes runner credentials', { timeout: 60_000 }, async () => {
   const working = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tofarev-share-test-')));
   const source = path.join(working, 'source'); await mkdir(source);
   await writeFile(path.join(source, 'evidence.go'), 'package main\n// share-source-evidence\n');
-  let data: any[] = [], denied = false, syncs = 0;
+  let data: any[] = [], denied = false, syncs = 0, shares = 0;
   const backend = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk.toString();
     res.setHeader('content-type', 'application/json');
     if (denied) { res.writeHead(503); res.end('{}'); return; }
-    if (req.url === '/api/share') res.end(JSON.stringify({ id: 'test1234', secret: 'delete-only-secret', url: 'https://opncd.ai/share/test1234' }));
-    else if (req.url === '/api/share/test1234/sync') { data = JSON.parse(body).data; syncs++; res.end('{}'); }
+    if (req.url === '/api/share') { shares++; res.end(JSON.stringify({ id: 'test1234', secret: 'delete-only-secret', url: 'https://opncd.ai/share/test1234' })); }
+    else if (req.url === '/api/share/test1234/sync') {
+      for (const item of JSON.parse(body).data) {
+        const index = data.findIndex(d => d.type === item.type && d.data.id === item.data.id);
+        if (index < 0) data.push(item); else data[index] = item;
+      }
+      syncs++; res.end('{}');
+    }
     else { res.writeHead(404); res.end('{}'); }
   });
   await new Promise<void>(resolve => backend.listen(0, '127.0.0.1', resolve));
@@ -39,8 +45,6 @@ test('native session sharing waits for full sync and never publishes runner cred
     await writeFile(cfg, JSON.stringify({ ...reviewerConfig(c, source, 'Inspect the read-only source and return JSON.', proxy.endpoint), enterprise: { url: backendUrl } }));
     const executable = fileURLToPath(new URL(`../../node_modules/opencode-${process.platform}-${process.arch}/bin/opencode`, import.meta.url));
     const env = cliEnvironment(working, cfg);
-    const run = await runCli(executable, working, cfg, 'Review the source.', 20_000);
-    assert.equal(run.failed, false); assert.ok(run.sessionId); assert.equal(JSON.parse(run.text).version, 1);
     let polls = 0, observedIncomplete = false;
     const transport = (async (url, init) => {
       if (!String(url).startsWith('https://opncd.ai/')) return fetch(url, init);
@@ -48,7 +52,16 @@ test('native session sharing waits for full sync and never publishes runner cred
       if (data.length && !observedIncomplete) { observedIncomplete = true; return Response.json(data.filter(d => d.type !== 'part')); }
       return Response.json(data);
     }) as typeof fetch;
-    assert.equal(await shareSession(executable, working, env, run.sessionId!, transport, 10_000), 'https://opncd.ai/share/test1234');
+    const shared = await startSharedSession(executable, working, env, transport, 10_000);
+    assert.ok(shared); assert.equal(shared.url, 'https://opncd.ai/share/test1234');
+    assert.equal(calls, 0); assert.ok(data.some(d => d.type === 'session'));
+    let run;
+    try {
+      run = await runCli(executable, working, cfg, 'Review the source.', 20_000, shared.sessionId, shared.endpoint);
+      assert.equal(run.failed, false); assert.equal(run.sessionId, shared.sessionId); assert.equal(JSON.parse(await shared.resultText()).version, 1);
+      assert.equal(await shared.waitForSync(), shared.url);
+      assert.equal(shares, 1);
+    } finally { await shared.close(); }
     assert.ok(polls >= 2); assert.equal(observedIncomplete, true); assert.ok(syncs);
     const transcript = JSON.stringify(data);
     assert.ok(transcript.includes('share-source-evidence')); assert.ok(transcript.includes('coverage'));

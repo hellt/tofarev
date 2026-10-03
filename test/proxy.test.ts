@@ -16,13 +16,23 @@ test('proxy requires key and fixed model, caps output, retries transient failure
     assert.equal(url, 'https://api.tokenfactory.nebius.com/v1/chat/completions');
     assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer secret');
     assert.equal(JSON.parse(String(init?.body)).max_tokens, 8192);
+    assert.equal(JSON.parse(String(init?.body)).reasoning_effort, 'high');
     if (++calls === 1) return new Response('retry', { status: 503 });
     return new Response('ok');
   }) as typeof fetch);
   try {
-    assert.equal(await (await send(p.endpoint)).text(), 'ok'); assert.equal(calls, 2);
+    assert.equal(await (await send(p.endpoint, { ...input, reasoning_effort: 'max' })).text(), 'ok'); assert.equal(calls, 2);
     assert.equal((await send(p.endpoint)).status, 400); assert.match(p.failure!, /turn budget/);
   } finally { await p.close(); }
+});
+test('trusted effort overrides are forwarded on every request', async () => {
+  for (const reasoningEffort of ['low', 'max'] as const) {
+    const p = await inferenceProxy(config({ reasoningEffort }), 'key', (async (_url, init) => {
+      assert.equal(JSON.parse(String(init!.body)).reasoning_effort, reasoningEffort);
+      return new Response('ok');
+    }) as typeof fetch);
+    try { assert.equal((await send(p.endpoint)).status, 200); } finally { await p.close(); }
+  }
 });
 test('authentication, request size and fallback errors are sanitized', async () => {
   for (const [body, transport, message] of [

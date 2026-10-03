@@ -10,6 +10,7 @@ export const ConfigSchema = z.strictObject({
   allowedUsers: z.array(z.string().regex(/^[\w-]+$/)).min(1).default(['hellt', 'flosch62', 'kaelemc']),
   appSlug: z.string().regex(/^[a-z0-9-]+$/).default('tofarev'),
   shareSessions: z.boolean().default(false),
+  reasoningEffort: z.enum(['low', 'high', 'max']).default('high'),
   limits: z.strictObject({
     durationMs: z.number().int().min(1000).max(900_000).default(900_000),
     turns: z.number().int().min(1).max(1000).optional(),

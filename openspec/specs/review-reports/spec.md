@@ -27,6 +27,10 @@ A report containing findings SHALL begin its findings section with a Markdown su
 ### Requirement: Shared review session and fallback details
 When trusted configuration enables session sharing, the runner SHALL use OpenCode's native sharing API and SHALL verify the recorded session parts have synced before publishing a validated hosted URL. The report SHALL contain a full-session link below the findings table and omit collapsed finding blocks when that link is available. Model output SHALL NOT supply this URL. Shared transcripts are public and include the investigation and structured result; credentials SHALL remain outside the session.
 
+#### Scenario: Review is still running
+- **WHEN** session sharing is enabled and the native sharing service is available
+- **THEN** the runner creates and shares the session before inference, prints its validated URL in Actions logs, and keeps native synchronization active throughout review
+
 If sharing is disabled or unavailable, each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction. Sharing failure SHALL NOT discard valid findings or turn complete analysis into partial coverage.
 
 #### Scenario: Native sharing succeeds
