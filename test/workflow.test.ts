@@ -33,6 +33,7 @@ test('workflow pins dependencies and confines credentials to their jobs and step
   const consumerText = consumerWorkflow('owner/tofarev', 'a'.repeat(40));
   assert.equal(await readFile('docs/examples/containerlab-workflow.yml', 'utf8'), consumerText);
   const consumer = parse(consumerText);
+  assert.equal(consumer.permissions.actions, 'read');
   assert.deepEqual(consumer.on.issue_comment.types, ['created']);
   assert.equal(consumer.jobs.review.secrets.TOFAREV_API_KEY, '${{ secrets.TOFAREV_API_KEY }}');
   for (const key of Object.keys(consumer.jobs.review.with)) assert.ok(workflow.on.workflow_call.inputs[key]);

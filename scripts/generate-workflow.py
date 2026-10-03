@@ -30,6 +30,7 @@ on:
     types: [created]
 permissions:
   contents: read
+  actions: read
 jobs:
   review:
     if: >-
