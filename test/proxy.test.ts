@@ -24,16 +24,24 @@ test('proxy requires key and fixed model, caps output, retries transient failure
     assert.equal((await send(p.endpoint)).status, 400); assert.match(p.failure!, /turn budget/);
   } finally { await p.close(); }
 });
-test('authentication, context and fallback errors are sanitized', async () => {
+test('authentication, request size and fallback errors are sanitized', async () => {
   for (const [body, transport, message] of [
     [input, async () => new Response('secret provider details', { status: 401 }), 'authentication'],
     [{ ...input, model: 'fallback' }, async () => { throw new Error('should not call'); }, 'Unexpected'],
-    [{ ...input, messages: ['x'.repeat(100_000)] }, async () => { throw new Error('should not call'); }, 'Context'],
+    [{ ...input, messages: ['x'.repeat(config().limits.requestBytes)] }, async () => { throw new Error('should not call'); }, 'byte limit'],
   ] as const) {
     const p = await inferenceProxy(config(), 'key', transport as typeof fetch);
     try { const response = await send(p.endpoint, body); assert.equal(response.status, 400); const text = await response.text(); assert.match(text, new RegExp(message)); assert.ok(!text.includes('secret')); }
     finally { await p.close(); }
   }
+});
+test('request bytes are independent of the token window', async () => {
+  let calls = 0;
+  const p = await inferenceProxy(config(), 'key', (async () => { calls++; return new Response('ok'); }) as typeof fetch);
+  try {
+    const response = await send(p.endpoint, { ...input, messages: [{ role: 'user', content: 'code '.repeat(40_000) }] });
+    assert.equal(response.status, 200); assert.equal(calls, 1); assert.equal(p.failure, null);
+  } finally { await p.close(); }
 });
 test('hanging provider obeys deadline and CLI process group is killed', async () => {
   const p = await inferenceProxy(config({ limits: { durationMs: 1000 } }), 'key', ((_u, init) => new Promise((_resolve, reject) => {

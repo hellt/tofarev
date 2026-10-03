@@ -26,20 +26,27 @@ async function main() {
       if (!arg) throw new Error('Preparation directory required');
       const p = await prepare(await event(), process.env.GITHUB_EVENT_NAME ?? '', c, api(), arg,
         `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`);
-      await output('ready', String(!!p?.ready)); console.log(JSON.stringify({ ready: !!p?.ready })); break;
+      await output('ready', String(!!p?.ready)); console.log(JSON.stringify({ ready: !!p?.ready }));
+      if (p && !p.ready) process.exitCode = 1;
+      break;
     }
     case 'review': {
       if (!arg) throw new Error('Source directory required');
       let result;
       try { result = await review(arg, c); }
       catch { result = { result: null, failed: true, notes: ['Reviewer initialization failed; check model access and TOFAREV_API_KEY.'] }; }
-      console.log(JSON.stringify(result)); break;
+      console.log(JSON.stringify(result));
+      if (result.failed) process.exitCode = 1;
+      break;
     }
     case 'publish': {
       if (!arg) throw new Error('Preparation directory required');
       let result: unknown = null;
       try { if (extra) result = await readJson(extra, 2_000_000); } catch {}
-      console.log(JSON.stringify(await publish(await readJson(path.join(arg, 'prepared.json')), result, c, api(), process.env.TOFAREV_REVIEW_STATUS))); break;
+      const published = await publish(await readJson(path.join(arg, 'prepared.json')), result, c, api(), process.env.TOFAREV_REVIEW_STATUS);
+      console.log(JSON.stringify(published));
+      if ('state' in published && published.state === 'failed') process.exitCode = 1;
+      break;
     }
     case 'preview': console.log(exampleReport(arg)); break;
     case 'consumer': process.stdout.write(consumerWorkflow(arg ?? '', extra ?? '')); break;

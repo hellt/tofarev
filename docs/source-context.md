@@ -1,5 +1,7 @@
 # Source context
 
+The initial review message includes all changed paths/statuses and snapshot limitations. The full repository manifest remains available as optional lookup data, so large inventories do not consume context before code inspection.
+
 Preparation fetches public Git objects by recorded base/head SHA. `refs/pull/N/head` works for same-repository and fork pull requests. If that ref advances, the recorded commit is fetched separately. Shallow history is deepened to find the merge base. Failure to obtain that revision fails the review; it never switches to newer code.
 
 The reviewer sees regular UTF-8 files in `head/` and `base/` (the merge base), a rename-aware diff, `manifest.json` with revision-specific line counts and omissions, and `standards.json` pointing to separate readable rule files. JSON indexes are pretty-printed so the read tool can page through them. Changed files with lines longer than the read tool’s 2,000-character display limit are retained but flagged as partial coverage. No checkout, hooks, filters, submodules, tests, or PR scripts run. Symlinks, gitlinks, binary files, LFS pointers and files exceeding configured limits are omitted. Changed files come first, then `docs/` and `schemas/clab.schema.json`. Limits are in [configuration.md](configuration.md). Omitted changed content, truncated diffs and unavailable standards make coverage partial.

@@ -13,6 +13,7 @@ export const ConfigSchema = z.strictObject({
     durationMs: z.number().int().min(1000).max(900_000).default(900_000),
     turns: z.number().int().min(1).max(30).default(30),
     contextTokens: z.number().int().min(1024).max(100_000).default(100_000),
+    requestBytes: z.number().int().min(1024).max(2_097_152).default(2_097_152),
     outputTokens: z.number().int().min(512).max(16_384).default(8192),
     blobBytes: z.number().int().min(1).max(1_048_576).default(1_048_576),
     snapshotBytes: z.number().int().min(1).max(104_857_600).default(104_857_600),

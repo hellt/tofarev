@@ -8,7 +8,8 @@ All settings are validated; unknown keys are errors. Model and endpoint are fixe
 | --- | --- |
 | `limits.durationMs` | 900000 (15 minutes) |
 | `limits.turns` | 30 |
-| `limits.contextTokens` | 100000 (conservative local budget, not provider capacity) |
+| `limits.contextTokens` | 100000 (OpenCode compaction window, not provider capacity) |
+| `limits.requestBytes` | 2097152 (HTTP request body bytes, independent of token count) |
 | `limits.outputTokens` | 8192 / 16384 |
 | `limits.blobBytes` | 1048576 |
 | `limits.snapshotBytes` | 104857600 |

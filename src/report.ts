@@ -45,7 +45,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
   options: { notes?: string[]; currentHead?: string; maxBytes?: number } = {}): { body: string; request: Request } {
   const r = RequestSchema.parse(request);
   const checked = result && manifest ? validateLocations(ResultSchema.parse(result), manifest) : null;
-  const notes = [...new Set([...(manifest?.notes ?? []), ...(checked?.coverage.notes ?? []), ...(options.notes ?? [])])];
+  const notes = [...new Set([...(options.notes ?? []), ...(checked?.coverage.notes ?? []), ...(manifest?.notes ?? [])])];
   let findings = [...(checked?.findings ?? [])].sort((a, b) => a.priority.localeCompare(b.priority) || a.location.path.localeCompare(b.location.path) || a.location.start - b.location.start);
   const total = findings.length;
   let shownNotes = Math.min(8, notes.length);

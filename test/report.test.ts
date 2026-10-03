@@ -10,6 +10,13 @@ export const finding: Finding = { priority: 'P2', title: 'Repeated runtime query
   problem: 'The loop repeats the same runtime query.', trigger: 'Deploy a topology with many nodes.', impact: 'Startup incurs an extra runtime round trip per node.', suggestion: 'Fetch once before iterating.' };
 export const manifest: Manifest = { version: 1, head: r.head, base: r.base, mergeBase: r.mergeBase, changed: [], incomplete: false, notes: [],
   files: [{ revision: 'head', path: finding.location.path, lines: 5, bytes: 100 }, { revision: 'base', path: 'removed.go', lines: 3, bytes: 30 }] };
+test('review failure reasons remain visible ahead of a large snapshot warning list', () => {
+  const warnings = Array.from({ length: 100 }, (_, i) => `Skipped unrelated image ${i}`);
+  const { body, request } = renderReport(r, null, { ...manifest, notes: warnings }, { notes: ['Inference request byte limit exceeded.'] });
+  assert.equal(request.state, 'failed');
+  assert.ok(body.indexOf('Inference request byte limit exceeded.') < body.indexOf(warnings[0]!));
+  assert.match(body, /93 additional coverage limitations/);
+});
 test('finding schema and immutable links reject invalid locations and metadata injection', () => {
   const result = ResultSchema.parse({ version: 1, findings: [finding], coverage: { complete: true, notes: [] } });
   assert.match(sourceLink(r, finding), /blob\/a{40}\/nodes\/%C3%A9%20space.go#L2-L3/);
