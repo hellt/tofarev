@@ -1,0 +1,15 @@
+# Review execution
+
+ToFaRev reads Git blobs at a fixed PR head and comparison merge base. It computes the diff locally, including renames and deleted lines. It never checks out the PR or executes its scripts, hooks, filters, submodules, builds, or tests. Only regular UTF-8 files within the configured budgets are materialized; symlinks, binary files, LFS pointers, and submodules are reported as unsupported content. Changed files are prioritized before the schema/docs and other source.
+
+The Karpathy and Ponytail rules come from `.cursor/rules/karpathy-guidelines.mdc` and `.cursor/rules/ponytail.mdc` at the recorded **target-base** commit. That differs from the comparison merge base. Rule changes in the PR cannot replace the active rubric. Missing rule files are reported as coverage limitations. Findings about absent documentation/schema fields point to the introducing code and name the missing counterpart.
+
+The canonical system policy is `prompts/containerlab-review.md`. OpenCode uses a dedicated primary agent with that policy and the JSON result/severity contract. Its SHA-256 hash is recorded in the request marker. PR data stays in separately labeled input. The publisher, not the model, owns GitHub metadata, Markdown structure, source links, and footer.
+
+Only read, grep, and glob tools are enabled. A fresh container mounts source read-only, has no Docker socket or publisher credentials, and uses a trusted working directory. The real inference credential stays in the runner's bounded proxy; OpenCode receives a placeholder loopback credential. Context is conservatively bounded using request UTF-8 bytes as a token upper bound; output tokens, model turns, runtime, and report size have separate limits. Transient API failures get at most three retries; one result-repair attempt shares the same budget.
+
+The runtime is Node 24.20.0 on the digest-pinned Debian image in `Dockerfile`, with OpenCode **1.18.33** (upstream commit `51ef4be1d3c122f18fefb510dca8d778571f4f18`) and npm integrity hashes in `package-lock.json`. The platform binary is invoked directly after `npm ci --ignore-scripts`; the npm launcher needs a postinstall step and is deliberately not used. No source-supplied package installation occurs.
+
+`npm run test:opencode` exercises the real pinned CLI against a fake streaming inference service. It verifies system-message placement, actual source-tool use, permitted tools, and hostile-config non-execution. The container variant described in the installation guide additionally validates the deployment filesystem boundary. These tests establish the integration contract, not the quality of GLM's real findings.
+
+Reports use P0–P4 ordering, one table row and one closed details block per finding, and immutable file/line URLs. Invalid locations cause partial coverage rather than fabricated links. Optional Mermaid uses the versioned restricted grammar in `src/report.ts`: declare flowchart nodes before `A --> B`, or sequence participants before `A->>B: Message`; plain text labels only. Unsupported diagrams are omitted. Report truncation removes whole low-priority findings and discloses the count.

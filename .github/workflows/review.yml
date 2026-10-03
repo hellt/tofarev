@@ -1,0 +1,176 @@
+name: ToFaRev reusable review
+on:
+  workflow_call:
+    inputs:
+      bot_repository:
+        required: true
+        type: string
+      bot_ref:
+        required: true
+        type: string
+      app_client_id:
+        required: true
+        type: string
+      trusted_config:
+        description: Validated JSON configuration; use defaults for Containerlab.
+        type: string
+        default: '{}'
+    secrets:
+      TOFAREV_API_KEY:
+        required: true
+      TOFAREV_APP_PRIVATE_KEY:
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: tofarev-${{ github.repository_id }}-${{ github.event.comment.id }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.prepare.outputs.ready }}
+    env:
+      TOFAREV_CONFIG: /tmp/tofarev-trusted-config.json
+    steps:
+      - name: Validate trusted workflow inputs
+        env:
+          BOT_REF: ${{ inputs.bot_ref }}
+          BOT_REPOSITORY: ${{ inputs.bot_repository }}
+          TRUSTED_CONFIG: ${{ inputs.trusted_config }}
+        run: |
+          node -e 'if (!/^[a-f0-9]{40}$/.test(process.env.BOT_REF) || !/^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/.test(process.env.BOT_REPOSITORY)) process.exit(1); require("fs").writeFileSync(process.env.TOFAREV_CONFIG, process.env.TRUSTED_CONFIG)'
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.bot_repository }}
+          ref: ${{ inputs.bot_ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.20.0
+      - run: npm ci --ignore-scripts && npm run build
+      - name: Authorize comment
+        id: admission
+        run: node dist/src/cli.js admit
+      - name: Create preparation App token
+        if: steps.admission.outputs.accepted == 'true'
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.TOFAREV_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Prepare recorded source and status comment
+        if: steps.admission.outputs.accepted == 'true'
+        id: prepare
+        env:
+          TOFAREV_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+        run: node dist/src/cli.js prepare .work
+      - name: Preserve trusted preparation context
+        if: steps.prepare.outputs.ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tofarev-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/prepared.json
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+      - name: Preserve read-only source snapshot
+        if: steps.prepare.outputs.ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tofarev-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/source
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+  review:
+    needs: prepare
+    if: needs.prepare.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.bot_repository }}
+          ref: ${{ inputs.bot_ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: tofarev-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/source
+      - name: Build pinned reviewer
+        run: docker build --tag tofarev-reviewer .
+      - name: Run isolated reviewer
+        env:
+          TOFAREV_API_KEY: ${{ secrets.TOFAREV_API_KEY }}
+          TRUSTED_CONFIG: ${{ inputs.trusted_config }}
+        run: |
+          printf '%s' "$TRUSTED_CONFIG" > .work/config.json
+          chmod -R a+rX .work/source
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 3g --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --tmpfs /home/node:rw,nosuid,nodev,size=256m,uid=1000,gid=1000 \
+            --mount type=bind,src="$PWD/.work/source",dst=/source,readonly \
+            --mount type=bind,src="$PWD/.work/config.json",dst=/config.json,readonly \
+            --env TOFAREV_API_KEY --env TOFAREV_CONFIG=/config.json \
+            tofarev-reviewer review /source > .work/result.json
+      - name: Preserve bounded result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tofarev-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/result.json
+          retention-days: 1
+          if-no-files-found: warn
+  publish:
+    needs: [prepare, review]
+    if: always() && needs.prepare.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TOFAREV_CONFIG: /tmp/tofarev-trusted-config.json
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.bot_repository }}
+          ref: ${{ inputs.bot_ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.20.0
+      - name: Load trusted configuration
+        env:
+          TRUSTED_CONFIG: ${{ inputs.trusted_config }}
+        run: printf '%s' "$TRUSTED_CONFIG" > "$TOFAREV_CONFIG"
+      - run: npm ci --ignore-scripts && npm run build
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: tofarev-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/prepared
+      - name: Download reviewer output when available
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: tofarev-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/result
+      - name: Create finalization App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ inputs.app_client_id }}
+          private-key: ${{ secrets.TOFAREV_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Validate and update the existing bot comment
+        env:
+          TOFAREV_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          TOFAREV_REVIEW_STATUS: ${{ needs.review.result }}
+        run: node dist/src/cli.js publish .work/prepared .work/result/result.json
