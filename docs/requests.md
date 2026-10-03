@@ -9,3 +9,5 @@ Duplicate deliveries and reruns serialize by request ID. Completed and partial r
 The bot paginates its comment lookup. If creating a comment receives an ambiguous network/server error, it searches for the marker before retrying. GitHub GET/PATCH and transient failures have bounded retries; authentication failures fail immediately. If GitHub is unavailable, the workflow fails with a sanitized diagnostic.
 
 Deleting a bot status comment removes the durable request record. There is no separate database. A canceled runner can leave a `running` comment; rerun the workflow to recover it. Closed or inaccessible PRs receive a failure status without paid inference.
+
+GitHub creates an Actions history entry for every new issue comment. The caller skips unrelated comments before starting jobs. Comment-text conditions cannot suppress these history entries. Changing the command to an App mention has the same limit. A separate webhook service must filter commands before dispatching a workflow to avoid unrelated entries.

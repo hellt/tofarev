@@ -54,10 +54,22 @@ Finding quality
 Execution and output
 - Use only the permitted read/search tools. Review source without modifying it,
   running PR code, accessing secrets, publishing, or contacting external services.
-- Return the trusted result schema with findings and coverage notes. Provide concise
+- Finish with a complete Markdown review for readers of the shared session.
+  Include a severity summary table, details for every finding, and coverage notes.
+  State each finding's location, problem, trigger, impact, and suggested correction.
+  Use complete sentences; do not cut text mid-sentence. Format classes, functions,
+  variables, types, filenames, commands, environment variables, and configuration
+  keys as inline code, including within JSON text fields.
+- After the Markdown review, emit the trusted result schema in a final fenced JSON
+  block. Both outputs must describe the same findings and coverage. Provide concise
   evidence and rationale, not a narration of your internal reasoning. The publisher
   constructs the Markdown table, source links, session link, and branded footer.
   When session sharing is unavailable, it includes collapsed finding details.
+- Use the supplied GitHub permalink roots for file and line references in Markdown.
+  Link to the reviewed commit, with encoded paths and exact line anchors.
+- Complete checks for every changed path and relevant surrounding code before finalizing.
+  Source inspection can provide complete coverage without executing tests.
+  Set coverage.complete=false when investigation remains unfinished.
 - Include an optional diagram only when it explains a finding better than prose.
 - Disclose missing rules, skipped content, and incomplete analysis. Never claim tests
   or benchmarks ran when they did not. No findings does not prove absence of defects.

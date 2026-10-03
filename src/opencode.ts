@@ -8,12 +8,19 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { type Config, ENDPOINT, MODEL, apiKey } from './config.js';
 import { ResultSchema, type ReviewOutput, ManifestSchema, validateLocations } from './types.js';
+import { renderSessionReview } from './report.js';
 import { shareSession, startSharedSession } from './sharing.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 export async function policyText() { return readFile(path.join(root, 'prompts/containerlab-review.md'), 'utf8'); }
 export async function policyHash() { return createHash('sha256').update(await policyText()).digest('hex'); }
-export const contract = `Return one JSON object, no fences, matching this schema:\n${JSON.stringify(z.toJSONSchema(ResultSchema))}\nPriorities: P0 catastrophic/severe security blocker; P1 high-impact merge blocker; P2 correctness/reliability defect; P3 minor defect; P4 optional actionable improvement.\nUse revision 'base' for removed lines (the comparison merge base), 'head' otherwise. Diagrams use plain flowchart edges or sequenceDiagram participants/messages only. Do not include publishing metadata or URLs.`;
+export const contract = `First provide a complete, readable Markdown review: a summary table ordered P0-P4, details for each finding (location, problem, trigger, impact, correction), and honest coverage notes. Use headings, complete sentences, and inline code for symbols, filenames, commands, environment variables, and configuration keys. Include a diagram only when useful. Describe the same findings as the JSON.\nThen emit the machine result in one FINAL fenced json block matching this schema, with no text after it:\n${JSON.stringify(z.toJSONSchema(ResultSchema))}\nPriorities: P0 catastrophic/severe security blocker; P1 high-impact merge blocker; P2 correctness/reliability defect; P3 minor defect; P4 optional actionable improvement.\nUse revision 'base' for removed lines (the comparison merge base), 'head' otherwise. Diagrams use plain flowchart edges or sequenceDiagram participants/messages only. Use inline code in JSON text fields when referring to symbols. Use the supplied immutable GitHub link roots in Markdown file references, with URL-encoded paths and #Lstart-Lend anchors. Do not put publishing metadata or URLs in the JSON.`;
+export function parseReviewResult(text: string) {
+  const blocks = [...text.matchAll(/^```json[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?=\r?\n|$)/gm)];
+  const last = blocks.at(-1);
+  if (last && text.slice(last.index! + last[0].length).trim()) throw new Error('Result must end with its JSON block');
+  return ResultSchema.parse(JSON.parse(last ? last[1]! : text));
+}
 
 export function reviewerConfig(c: Config, source: string, system: string, endpoint: string) {
   // With a fresh non-Git working directory OpenCode uses / as its worktree.
@@ -55,11 +62,11 @@ export async function inferenceProxy(c: Config, key: string, transport: typeof f
       if (body.model !== MODEL || !Array.isArray(body.messages)) return reject(400, 'Unexpected inference model or input.');
       turns++;
       if (c.limits.turns !== undefined && turns > c.limits.turns) return reject(400, 'Model turn budget exceeded.');
-      const deadlineNear = Date.now() - started >= c.limits.durationMs - Math.min(270_000, c.limits.durationMs / 3);
+      const deadlineNear = Date.now() - started >= c.limits.durationMs - Math.min(180_000, c.limits.durationMs / 3);
       if (deadlineNear || (c.limits.turns !== undefined && turns >= Math.max(1, c.limits.turns - 2))) {
         finalized = true;
         delete body.tools; delete body.tool_choice;
-        body.messages.push({ role: 'system', content: `The review ${deadlineNear ? 'deadline' : 'call allowance'} is nearly exhausted. Return ONLY the review JSON now, using supported findings already investigated. Do not call tools. Set coverage.complete=false and describe unfinished scope in coverage.notes.\n${contract}` });
+        body.messages.push({ role: 'system', content: `The review ${deadlineNear ? 'deadline' : 'call allowance'} is nearly exhausted. Finalize now with the Markdown review followed by JSON, using supported findings already investigated. Do not call tools. Set coverage.complete=false and describe unfinished scope in coverage.notes.\n${contract}` });
       }
       body.max_tokens = Math.min(Number(body.max_tokens) || c.limits.outputTokens, c.limits.outputTokens);
       body.reasoning_effort = c.reasoningEffort;
@@ -154,7 +161,7 @@ export async function review(source: string, c: Config, options: { transport?: t
     const cfg = path.join(working, 'opencode.json');
     await mkdir(path.join(working, 'config'), { recursive: true });
     await writeFile(cfg, JSON.stringify(reviewerConfig(c, source, `${await policyText()}\n\n${contract}`, proxy.endpoint)));
-    const intro = `Review the read-only PR snapshot at ${source}.\nRead standards.json and its referenced rules, then diff.txt and relevant head/ and base/ files. Track all ${manifest.changed.length} changed paths from the diff. Use read offsets for truncated output and group independent tool calls. Use glob/grep for surrounding code. Return the trusted result schema.\nHead: ${manifest.head}. Comparison base: ${manifest.mergeBase}. Target base: ${manifest.base}.\nSnapshot incomplete: ${manifest.incomplete}. The full inventory and omission details are in manifest.json; consult it when needed. ${manifest.incomplete ? 'Report incomplete coverage.' : ''}`;
+    const intro = `Review the read-only PR snapshot at ${source}.\nRead standards.json and its referenced rules, then diff.txt and relevant head/ and base/ files. Track all ${manifest.changed.length} changed paths from the diff. Complete checks for each changed path and relevant callers, tests, docs, and schema before finalizing. Source-only review can be complete without executing tests; disclose that limitation. Use read offsets for truncated output and group independent tool calls. Use glob/grep for surrounding code. Return the trusted result schema.\nHead: ${manifest.head}. Comparison base: ${manifest.mergeBase}. Target base: ${manifest.base}.\nGitHub permalink roots: head=https://github.com/${c.repository}/blob/${manifest.head}/; base=https://github.com/${c.repository}/blob/${manifest.mergeBase}/.\nSnapshot incomplete: ${manifest.incomplete}. The full inventory and omission details are in manifest.json; consult it when needed. ${manifest.incomplete ? 'Report incomplete coverage.' : ''}`;
     const executable = options.executable ?? path.join(root, `node_modules/opencode-${process.platform}-${process.arch}/bin/opencode`);
     let best: ReviewOutput = { result: null, notes: [], failed: true };
     if (c.shareSessions) {
@@ -167,11 +174,11 @@ export async function review(source: string, c: Config, options: { transport?: t
       const remaining = c.limits.durationMs - (Date.now() - started);
       if (remaining <= 0 || proxy.failure) break;
       const run = await runCli(executable, working, cfg, attempt && sessionId
-        ? 'Your previous output was invalid. Use your existing investigation, recheck any invalid locations, and return only the review JSON object matching the system schema. Do not restart the review.'
+        ? 'Your previous output was invalid. Use your existing investigation, recheck any invalid locations, and return the complete Markdown review followed by a final fenced JSON result matching the system schema. Do not restart the review.'
         : intro, remaining, sessionId, shared?.endpoint);
       sessionId = run.sessionId;
       try {
-        const parsed = ResultSchema.parse(JSON.parse(shared ? await shared.resultText() : run.text));
+        const parsed = parseReviewResult(shared ? await shared.resultText() : run.text);
         const validated = validateLocations(parsed, manifest);
         best = { result: validated, notes: [], failed: false };
         if (run.failed) best.notes.push('Reviewer execution ended before normal completion.');
@@ -183,6 +190,10 @@ export async function review(source: string, c: Config, options: { transport?: t
       notes: [...best.result.coverage.notes, 'Review finalized before the configured call allowance or deadline; some analysis may be unfinished.'] };
     if (Date.now() - started >= c.limits.durationMs) best.notes.push('Reviewer deadline reached.');
     if (c.shareSessions && sessionId) {
+      if (shared && best.result) {
+        try { await shared.renderResult(renderSessionReview({ repository: c.repository, head: manifest.head, mergeBase: manifest.mergeBase }, best.result, manifest)); }
+        catch { best.notes.push('The shared session final report could not be formatted.'); }
+      }
       const url = shared ? await shared.waitForSync() : await shareSession(executable, working, cliEnvironment(working, cfg), sessionId);
       if (url) best.sessionUrl = url;
     }

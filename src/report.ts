@@ -5,7 +5,17 @@ import { type Finding, type Manifest, type Request, type Result, RequestSchema, 
 export function escape(text: string): string {
   return text.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/[&<>"'`|@\[\]()*_#!\\:]/g, c => `&#${c.charCodeAt(0)};`);
 }
-export function sourceLink(r: Request, f: Finding): string {
+// Preserve explicit inline code while keeping every model-provided character literal.
+// Trusted code tags also work inside HTML summaries and Markdown table cells.
+export function prose(text: string, markdown = false): string {
+  let output = '', offset = 0;
+  for (const match of text.matchAll(/(?<!`)`([^`\r\n]+)`(?!`)/g)) {
+    output += escape(text.slice(offset, match.index)) + (markdown ? '`' + match[1]!.replace(/\|/g, '\\|') + '`' : `<code>${escape(match[1]!)}</code>`);
+    offset = match.index + match[0].length;
+  }
+  return output + escape(text.slice(offset));
+}
+export function sourceLink(r: Pick<Request, 'repository' | 'head' | 'mergeBase'>, f: Pick<Finding, 'location'>): string {
   const sha = f.location.revision === 'head' ? r.head : r.mergeBase;
   if (!sha) throw new Error('Missing source revision');
   const encoded = f.location.path.split('/').map(p => encodeURIComponent(p).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16)}`)).join('/');
@@ -63,19 +73,19 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     if (r.state === 'failed') body += '**Review could not be completed. This is not a clean review.**\n\n';
     body += 'Source inspection only; PR code, tests, and benchmarks were not executed.\n\n';
     if (notes.length) {
-      body += notes.slice(0, shownNotes).map(n => `- ${escape(n.slice(0, 250))}`).join('\n') + '\n';
+      body += notes.slice(0, shownNotes).map(n => `- ${prose(n)}`).join('\n') + '\n';
       if (notes.length > shownNotes) body += `- ${notes.length - shownNotes} additional coverage limitations were recorded.\n`;
       body += '\n';
     }
     if (omitted) body += `**${omitted} findings omitted to fit the comment size limit.**\n\n`;
     if (findings.length) {
       body += '| Finding | Location |\n| --- | --- |\n';
-      for (const f of findings) body += `| **${f.priority} - ${escape(f.title)}** | ${sourceLink(r, f)} |\n`;
+      for (const f of findings) body += `| **${f.priority} - ${prose(f.title)}** | ${sourceLink(r, f)} |\n`;
       body += '\n';
       for (const f of options.sessionUrl ? [] : findings) {
-        body += `<details>\n<summary>${f.priority} - ${escape(f.title)}</summary>\n\n**Location:** ${sourceLink(r, f)}\n\n`;
+        body += `<details>\n<summary>${f.priority} - ${prose(f.title)}</summary>\n\n**Location:** ${sourceLink(r, f)}\n\n`;
         for (const [label, content] of [['Problem', f.problem], ['Trigger', f.trigger], ['Impact', f.impact], ['Suggested correction', f.suggestion]]) {
-          body += `**${label}:** ${escape(content!)}\n\n`;
+          body += `**${label}:** ${prose(content!)}\n\n`;
         }
         const d = diagram(f.diagram); if (d) body += `\`\`\`mermaid\n${d}\n\`\`\`\n\n`;
         body += '</details>\n\n';
@@ -88,4 +98,44 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     else if (shownNotes) shownNotes--;
     else throw new Error('Report metadata exceeds the configured size limit');
   }
+}
+
+// Render the validated result so session readers see the same findings as GitHub.
+export function renderSessionReview(request: Pick<Request, 'repository' | 'head' | 'mergeBase'>, result: Result, manifest?: Manifest): string {
+  const text = (value: string) => {
+    let rendered = '', offset = 0;
+    for (const match of value.matchAll(/`?((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)(?::(\d+)(?:-(\d+))?)?`?/g)) {
+      const reference = match[1]!, revision = reference.startsWith('base/') ? 'base' : 'head';
+      const path = reference.replace(/^(head|base)\//, '');
+      const file = manifest?.files.find(f => f.revision === revision && f.path === path);
+      const start = Number(match[2] ?? 1), end = Number(match[3] ?? start);
+      if (!file || start < 1 || end < start || end > file.lines) continue;
+      rendered += prose(value.slice(offset, match.index), true);
+      const link = sourceLink(request, { location: { revision, path, start, end } });
+      rendered += '[' + prose('`' + match[0].replace(/^`|`$/g, '') + '`', true) + link.slice(link.indexOf(']('));
+      offset = match.index + match[0].length;
+    }
+    return rendered + prose(value.slice(offset), true);
+  };
+  const findings = [...result.findings].sort((a, b) => a.priority.localeCompare(b.priority));
+  let body = `# ToFaRev review
+
+${result.coverage.complete ? 'Review complete within the supplied scope.' : '**Partial review. Some analysis remains unfinished.**'}
+
+Source inspection only; PR code, tests, and benchmarks were not executed.
+
+`;
+  if (findings.length) {
+    body += '| Finding | Location |\n| --- | --- |\n';
+    for (const f of findings) body += `| **${f.priority} - ${text(f.title)}** | ${sourceLink(request, f)} |\n`;
+    for (const f of findings) {
+      body += `\n## ${f.priority} - ${text(f.title)}\n\n**Location:** ${sourceLink(request, f)}\n\n`;
+      for (const [label, content] of [['Problem', f.problem], ['Trigger', f.trigger], ['Impact', f.impact], ['Suggested correction', f.suggestion]]) {
+        body += `**${label}:** ${text(content!)}\n\n`;
+      }
+      const d = diagram(f.diagram); if (d) body += '\x60\x60\x60mermaid\n' + d + '\n\x60\x60\x60\n';
+    }
+  } else body += 'No supported findings were reported within the reviewed scope.\n\n';
+  body += '\n## Coverage\n\n' + result.coverage.notes.map(n => `- ${text(n)}`).join('\n') + `\n\n---\n${FOOTER}\n\n`;
+  return body + '\x60\x60\x60json\n' + JSON.stringify(result, null, 2) + '\n\x60\x60\x60';
 }

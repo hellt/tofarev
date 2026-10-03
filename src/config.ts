@@ -12,11 +12,11 @@ export const ConfigSchema = z.strictObject({
   shareSessions: z.boolean().default(false),
   reasoningEffort: z.enum(['low', 'high', 'max']).default('high'),
   limits: z.strictObject({
-    durationMs: z.number().int().min(1000).max(900_000).default(900_000),
+    durationMs: z.number().int().min(1000).max(1_800_000).default(1_800_000),
     turns: z.number().int().min(1).max(1000).optional(),
     contextTokens: z.number().int().min(1024).max(100_000).default(100_000),
     requestBytes: z.number().int().min(1024).max(2_097_152).default(2_097_152),
-    outputTokens: z.number().int().min(512).max(16_384).default(8192),
+    outputTokens: z.number().int().min(512).max(16_384).default(16_384),
     blobBytes: z.number().int().min(1).max(1_048_576).default(1_048_576),
     snapshotBytes: z.number().int().min(1).max(104_857_600).default(104_857_600),
     diffBytes: z.number().int().min(1).max(250_000).default(250_000),

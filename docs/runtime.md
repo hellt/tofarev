@@ -12,7 +12,7 @@ The reviewer uses a fresh non-Git working directory and isolated XDG directories
 
 There is no default inference-call cap or agent step cap. OpenCode continues until completion or the reviewer deadline. Repair resumes the existing session and preserves its source inspection. If trusted configuration sets `limits.turns`, that allowance includes compaction and result repair. Near an explicit cap, the proxy removes tools and requests the investigated findings as JSON. The runner marks that result partial even if the model claims complete coverage.
 
-The runner reserves up to 4.5 minutes for final output before the 15-minute deadline. Near that deadline, the proxy requests investigated findings and marks unfinished scope as partial. The proxy ends streaming at `[DONE]`, without waiting for the provider to close its HTTP connection. Logs distinguish response-header latency, first-data latency, and total call duration.
+The runner reserves up to 3 minutes for final output before the 30-minute deadline. Near that deadline, the proxy requests investigated findings and marks unfinished scope as partial. The proxy ends streaming at `[DONE]`, without waiting for the provider to close its HTTP connection. Logs distinguish response-header latency, first-data latency, and total call duration.
 
 The proxy sends `reasoning_effort: high` by default on every model call, including compaction and repair. Trusted configuration accepts `low`, `high`, or `max`. Actions logs show call counts, request sizes, effort, and elapsed time. Logs exclude request contents and credentials.
 

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
 import { SessionUrl } from './types.js';
 
 // Keep the native server alive so its share watchers upload each new message.
@@ -39,13 +40,13 @@ async function sessionServer(executable: string, working: string, env: NodeJS.Pr
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const messages = await json(`${endpoint}/session/${sessionId}/message`, 'GET', undefined, controller.signal);
-      const partIds = new Set<string>((messages as any[]).flatMap(m => m.parts.map((p: any) => p.id)));
+      const parts = (messages as any[]).flatMap(m => m.parts);
       const shareId = new URL(url).pathname.split('/').pop()!;
       while (!controller.signal.aborted) {
         try {
           const data = await json(`https://opncd.ai/api/share/${shareId}/data`, 'GET', undefined, controller.signal);
-          const uploaded = new Set<string>((data as any[]).filter(d => d.type === 'part').map(d => d.data.id));
-          if (data.some((d: any) => d.type === 'session' && d.data.id === sessionId) && [...partIds].every(id => uploaded.has(id))) return url;
+          const uploaded = new Map<string, unknown>((data as any[]).filter(d => d.type === 'part').map(d => [d.data.id, d.data]));
+          if (data.some((d: any) => d.type === 'session' && d.data.id === sessionId) && parts.every(p => isDeepStrictEqual(p, uploaded.get(p.id)))) return url;
         } catch { if (controller.signal.aborted) break; }
         await new Promise<void>(resolve => {
           const delay = setTimeout(done, 500);
@@ -80,6 +81,13 @@ export async function startSharedSession(executable: string, working: string, en
         const messages = await server.json(`${server.endpoint}/session/${sessionId}/message`);
         const assistant = messages.findLast((m: any) => m.info.role === 'assistant');
         return assistant?.parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('') ?? '';
+      },
+      renderResult: async (text: string) => {
+        const messages = await server.json(`${server.endpoint}/session/${sessionId}/message`);
+        const assistant = messages.findLast((m: any) => m.info.role === 'assistant');
+        const part = assistant?.parts.find((p: any) => p.type === 'text');
+        if (!part) throw new Error('Final review text unavailable');
+        await server.json(`${server.endpoint}/session/${sessionId}/message/${assistant.info.id}/part/${part.id}`, 'PATCH', { ...part, text });
       },
       waitForSync: async () => url ? server.waitForSync(sessionId, url) : undefined };
   } catch { await server.close(); }

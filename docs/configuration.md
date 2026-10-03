@@ -6,13 +6,13 @@ All settings are validated; unknown keys are errors. Model and endpoint are fixe
 
 | Setting | Default / maximum |
 | --- | --- |
-| `limits.durationMs` | 900000 (15 minutes) |
+| `limits.durationMs` | 1800000 (30 minutes) |
 | `shareSessions` | false in the CLI; true in the generated public-repository caller |
 | `reasoningEffort` | `high`; accepts `low`, `high`, or `max` |
 | `limits.turns` | Unset: no call cap. Optional explicit cap: 1–1000 calls. |
 | `limits.contextTokens` | 100000 (OpenCode compaction window, not provider capacity) |
 | `limits.requestBytes` | 2097152 (HTTP request body bytes, independent of token count) |
-| `limits.outputTokens` | 8192 / 16384 |
+| `limits.outputTokens` | 16384 (room for Markdown review plus JSON) |
 | `limits.blobBytes` | 1048576 |
 | `limits.snapshotBytes` | 104857600 |
 | `limits.diffBytes` | 250000 |

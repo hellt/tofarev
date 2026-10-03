@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inferenceProxy, runCli } from '../src/opencode.js';
+import { inferenceProxy, runCli, parseReviewResult } from '../src/opencode.js';
 import { config, MODEL, apiKey } from '../src/config.js';
 import { cases, score } from '../src/evaluation.js';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -15,7 +15,7 @@ test('proxy requires key and fixed model, caps output, retries transient failure
   const p = await inferenceProxy(config({ limits: { turns: 1 } }), 'secret', (async (url, init) => {
     assert.equal(url, 'https://api.tokenfactory.nebius.com/v1/chat/completions');
     assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer secret');
-    assert.equal(JSON.parse(String(init?.body)).max_tokens, 8192);
+    assert.equal(JSON.parse(String(init?.body)).max_tokens, 16_384);
     assert.equal(JSON.parse(String(init?.body)).reasoning_effort, 'high');
     if (++calls === 1) return new Response('retry', { status: 503 });
     return new Response('ok');
@@ -122,4 +122,15 @@ test('evaluation scoring counts duplicate findings as false positives and checks
   const f = { priority: 'P2' as const, title: 'Division by zero', location: { revision: 'head' as const, path: 'core/ratio.go', start: 2, end: 2 }, problem: 'panic', impact: 'crash', trigger: 'zero', suggestion: 'guard' };
   assert.deepEqual(score(c, { version: 1, findings: [f, f], coverage: { complete: true, notes: [] } }), { name: c.name, expected: 1, matched: 1, missed: 0, falsePositives: 1, correctSeverity: 1, completeCoverage: true });
   assert.equal(score(c, null).missed, 1);
+});
+
+test('review parser accepts readable Markdown before final JSON and rejects invalid final output', () => {
+  const result = { version: 1, findings: [], coverage: { complete: true, notes: [] } };
+  const block = '\x60\x60\x60json\n' + JSON.stringify(result) + '\n\x60\x60\x60';
+  assert.deepEqual(parseReviewResult('# Review\n\nNo findings.\n\n' + block), result);
+  assert.deepEqual(parseReviewResult(JSON.stringify(result)), result);
+  assert.deepEqual(parseReviewResult('\x60\x60\x60json\n{}\n\x60\x60\x60\n' + block), result);
+  assert.throws(() => parseReviewResult(block + '\nextra output'));
+  assert.throws(() => parseReviewResult('\x60\x60\x60json\n{}\n\x60\x60\x60'));
+  assert.throws(() => parseReviewResult(JSON.stringify({ ...result, sessionUrl: 'https://evil.example' })));
 });

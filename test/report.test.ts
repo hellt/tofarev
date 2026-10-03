@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderReport, diagram, sourceLink } from '../src/report.js';
+import { renderReport, renderSessionReview, prose, diagram, sourceLink } from '../src/report.js';
 import { ResultSchema, validateLocations, type Finding, type Manifest } from '../src/types.js';
 import { FOOTER } from '../src/requests.js';
 
@@ -80,4 +80,25 @@ test('hostile fields stay literal, reserved Mermaid words are rejected and metad
   assert.equal(diagram('flowchart TD\nend["End"]\nA["A"]\nA --> end'), null);
   const limited = renderReport(r, result, manifest, { maxBytes: 4000, notes: Array.from({ length: 10 }, (_, i) => `${i}${'&'.repeat(2000)}`) });
   assert.ok(Buffer.byteLength(limited.body) <= 4000); assert.ok(limited.body.endsWith(FOOTER)); assert.match(limited.body, /additional coverage limitations/);
+});
+
+test('inline code stays safe, coverage sentences remain complete, and native report uses immutable links', () => {
+  const note = 'A complete sentence with `NodeConfig.Components` and ' + 'continued analysis '.repeat(30) + 'its final words.';
+  const result = ResultSchema.parse({ version: 1, findings: [{ ...finding, title: 'Check `ComputeDiff`', problem: 'Read `cfg.KindConfig` before comparing.' }], coverage: { complete: false, notes: [note] } });
+  const body = renderReport(r, result, manifest).body;
+  assert.match(body, /<code>ComputeDiff<\/code>/);
+  assert.match(body, /<code>NodeConfig&#46;Components<\/code>|<code>NodeConfig.Components<\/code>/);
+  assert.ok(body.includes('its final words.'));
+  assert.equal(prose('`<script>@hellt | x`'), '<code>&#60;script&#62;&#64;hellt &#124; x</code>');
+  assert.ok(!prose('```<script>```').includes('<script>'));
+  result.findings[0]!.suggestion = 'See `removed.go:1-2` and `base/removed.go:1-2`.';
+  const session = renderSessionReview(r, result, manifest);
+  assert.match(session, /Check `ComputeDiff`/);
+  assert.match(session, /Read `cfg.KindConfig` before comparing/);
+  assert.match(session, /#L2-L3/);
+  assert.match(session, /Suggested correction/);
+  assert.match(session, /\[`base\/removed.go:1-2`\]\(https:\/\/github.com\/srl-labs\/containerlab\/blob\/c{40}\/removed.go#L1-L2\)/);
+  assert.ok(session.includes('`removed.go:1-2`'));
+  assert.ok(!session.includes('/blob/' + r.head + '/removed.go'));
+  assert.ok(session.includes('its final words.'));
 });
