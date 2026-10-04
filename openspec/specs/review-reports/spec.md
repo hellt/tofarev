@@ -33,6 +33,8 @@ When trusted configuration enables session sharing, the runner SHALL use OpenCod
 
 Each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table, regardless of session sharing status. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction from the validated OpenCode result. Sharing failure SHALL NOT discard valid findings or turn complete analysis into partial coverage.
 
+The report SHALL place an H2 heading `Detailed findings:` between the summary table and individual finding blocks. Review scope and coverage notes SHALL appear in a default-collapsed block titled `review conditions` after all individual findings. Failed, partial, and stale status notices SHALL remain visible above the table.
+
 #### Scenario: Native sharing succeeds
 - **WHEN** the runner verifies all recorded parts are available in the shared session
 - **THEN** the report contains its summary table, matching collapsed finding blocks, clickable file references, full-session link, and branded footer

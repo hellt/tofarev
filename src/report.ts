@@ -94,17 +94,11 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     if (options.currentHead && options.currentHead !== r.head) body += '**Newer commits are present; they were not reviewed.**\n\n';
     if (r.state === 'partial') body += '**Partial review. The findings below do not cover all changes.**\n\n';
     if (r.state === 'failed') body += '**Review could not be completed. This is not a clean review.**\n\n';
-    body += 'Source inspection only; PR code, tests, and benchmarks were not executed.\n\n';
-    if (notes.length) {
-      body += notes.slice(0, shownNotes).map(n => `- ${prose(n)}`).join('\n') + '\n';
-      if (notes.length > shownNotes) body += `- ${notes.length - shownNotes} additional coverage limitations were recorded.\n`;
-      body += '\n';
-    }
     if (omitted) body += `**${omitted} findings omitted to fit the comment size limit.**\n\n`;
     if (findings.length) {
       body += '| Finding | Location |\n| --- | --- |\n';
       for (const f of findings) body += `| **${f.priority} - ${prose(f.title)}** | ${sourceLink(r, f)} |\n`;
-      body += '\n';
+      body += '\n## Detailed findings:\n\n';
       for (const f of findings) {
         body += `<details>\n<summary>${f.priority} - ${prose(f.title)}</summary>\n\n**Location:** ${sourceLink(r, f)}\n\n`;
         for (const [label, content] of [['Problem', f.problem], ['Trigger', f.trigger], ['Impact', f.impact], ['Suggested correction', f.suggestion]]) {
@@ -115,6 +109,13 @@ export function renderReport(request: Request, result: Result | null, manifest: 
       }
     } else if (checked && !omitted) body += r.state === 'completed' ? 'No actionable findings were found within the reviewed scope.\n\n' : 'No validated findings are available within the incomplete reviewed scope.\n\n';
     if (!options.sessionUrl && options.sharingEnabled) body += 'OpenCode session link unavailable; finding details are included above when available.\n\n';
+    body += '<details>\n<summary>review conditions</summary>\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n';
+    if (notes.length) {
+      body += notes.slice(0, shownNotes).map(n => `- ${prose(n)}`).join('\n') + '\n';
+      if (notes.length > shownNotes) body += `- ${notes.length - shownNotes} additional coverage limitations were recorded.\n`;
+      body += '\n';
+    }
+    body += '</details>\n\n';
     body += `---\n${FOOTER}`;
     if (Buffer.byteLength(body) <= maxBytes) return { body, request: r };
     if (findings.length) findings = findings.slice(0, -1);

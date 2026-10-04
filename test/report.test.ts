@@ -10,10 +10,12 @@ export const finding: Finding = { priority: 'P2', title: 'Repeated runtime query
   problem: 'The loop repeats the same runtime query.', trigger: 'Deploy a topology with many nodes.', impact: 'Startup incurs an extra runtime round trip per node.', suggestion: 'Fetch once before iterating.' };
 export const manifest: Manifest = { version: 1, head: r.head, base: r.base, mergeBase: r.mergeBase, changed: [], incomplete: false, notes: [],
   files: [{ revision: 'head', path: finding.location.path, lines: 5, bytes: 100 }, { revision: 'base', path: 'removed.go', lines: 3, bytes: 30 }] };
-test('review failure reasons remain visible ahead of a large snapshot warning list', () => {
+test('review conditions preserve failure reasons ahead of a large snapshot warning list', () => {
   const warnings = Array.from({ length: 100 }, (_, i) => `Skipped unrelated image ${i}`);
   const { body, request } = renderReport(r, null, { ...manifest, notes: warnings }, { notes: ['Inference request byte limit exceeded.'] });
   assert.equal(request.state, 'failed');
+  assert.ok(body.indexOf('<summary>review conditions</summary>') < body.indexOf('Inference request byte limit exceeded.'));
+  assert.match(body, /\*\*Review could not be completed/);
   assert.ok(body.indexOf('Inference request byte limit exceeded.') < body.indexOf(warnings[0]!));
   assert.match(body, /93 additional coverage limitations/);
 });
@@ -33,12 +35,17 @@ test('table and details match, sort P0 to P4, and always include footer', () => 
   const result = ResultSchema.parse({ version: 1, findings, coverage: { complete: true, notes: [] } });
   const { body } = renderReport(r, result, manifest);
   assert.ok(body.indexOf('| **P0') < body.indexOf('| **P1'));
-  assert.equal((body.match(/<details>/g) ?? []).length, 5);
+  assert.equal((body.match(/<details>/g) ?? []).length, 6);
   assert.equal((body.match(/<summary>P\d - Repeated/g) ?? []).length, 5);
   assert.ok(!body.includes('<details open'));
+  assert.ok(body.indexOf('| **P4') < body.indexOf('## Detailed findings:'));
+  assert.ok(body.indexOf('## Detailed findings:') < body.indexOf('<summary>P0'));
+  assert.ok(body.indexOf('<summary>P4') < body.indexOf('<summary>review conditions</summary>'));
+  assert.ok(body.indexOf('<summary>review conditions</summary>') < body.indexOf('Source inspection only'));
   assert.ok(body.endsWith(FOOTER));
   const empty = renderReport(r, { ...result, findings: [] }, manifest).body;
   assert.match(empty, /No actionable findings/); assert.ok(!empty.includes('| Finding |'));
+  assert.ok(!empty.includes('## Detailed findings:'));
   for (const variant of [renderReport(r, null, manifest), renderReport(r, result, { ...manifest, incomplete: true }),
     renderReport(r, result, manifest, { currentHead: 'e'.repeat(40) })]) assert.ok(variant.body.endsWith(FOOTER));
 });
@@ -48,7 +55,7 @@ test('a native session link preserves collapsed finding details and file links',
   assert.match(shared.body, /\| \*\*P2 - Repeated/); assert.match(shared.body, /blob\/a{40}/);
   assert.match(shared.body, /\[Live OpenCode session\]\(https:\/\/opncd.ai\/share\/test1234\)/);
   assert.ok(shared.body.indexOf('[Live OpenCode session]') < shared.body.indexOf('[Workflow run]'));
-  assert.equal((shared.body.match(/<details>/g) ?? []).length, 1);
+  assert.equal((shared.body.match(/<details>/g) ?? []).length, 2);
   assert.ok(shared.body.includes('<summary>P2 - Repeated runtime query per node</summary>'));
   assert.ok(!shared.body.includes('<details open'));
   for (const field of ['problem', 'trigger', 'impact', 'suggestion'] as const) assert.ok(shared.body.includes(finding[field]));
@@ -80,7 +87,7 @@ test('hostile fields stay literal, reserved Mermaid words are rejected and metad
   const result = ResultSchema.parse({ version: 1, findings: [{ ...finding, title: hostile, problem: hostile, suggestion: hostile }], coverage: { complete: true, notes: [] } });
   const normal = renderReport(r, result, manifest).body;
   assert.match(normal, /&#60;script&#62;/); assert.match(normal, /&#64;hellt/); assert.match(normal, /&#96;&#96;&#96;/);
-  assert.ok(!normal.includes('](https://evil')); assert.equal((normal.match(/<details>/g) ?? []).length, 1);
+  assert.ok(!normal.includes('](https://evil')); assert.equal((normal.match(/<details>/g) ?? []).length, 2);
   assert.equal(diagram('flowchart TD\nend["End"]\nA["A"]\nA --> end'), null);
   const limited = renderReport(r, result, manifest, { maxBytes: 4000, notes: Array.from({ length: 10 }, (_, i) => `${i}${'&'.repeat(2000)}`) });
   assert.ok(Buffer.byteLength(limited.body) <= 4000); assert.ok(limited.body.endsWith(FOOTER)); assert.match(limited.body, /additional coverage limitations/);
