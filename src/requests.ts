@@ -40,7 +40,7 @@ export function publishedSessionUrl(body: string): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 const BRAND_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets';
-export const FOOTER = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="middle"></picture></a>`;
+export const FOOTER = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>`;
 export function statusBody(r: Request, message: string, sessionUrl?: string) {
   if (sessionUrl) SessionUrl.parse(sessionUrl);
   return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Live OpenCode session](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;

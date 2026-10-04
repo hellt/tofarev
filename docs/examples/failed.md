@@ -13,4 +13,4 @@ Source inspection only; PR code, tests, and benchmarks were not executed.
 </details>
 
 ---
-Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg"><img src="https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="middle"></picture></a>
+Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg"><img src="https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>
