@@ -113,3 +113,13 @@ test('code references remain consistent when the model omits title and coverage 
   assert.equal(result.findings[0]!.title, 'Check ComputeDiff and component-config');
   assert.deepEqual(formatted.findings[0]!.location, finding.location);
 });
+
+test('session links resolve unique filenames and reject ambiguous or out-of-range references', () => {
+  const file = { revision: 'head' as const, path: 'tests/config.clab.yml', lines: 5, bytes: 100 };
+  const result = ResultSchema.parse({ version: 1, findings: [{ ...finding, suggestion: 'See `config.clab.yml:2-3` and `config.clab.yml:999`.' }], coverage: { complete: true, notes: [] } });
+  const link = 'https://github.com/srl-labs/containerlab/blob/' + r.head + '/tests/config.clab.yml#L2-L3';
+  const body = renderSessionReview(r, result, { ...manifest, files: [...manifest.files, file] });
+  assert.ok(body.includes(link)); assert.ok(!body.includes('#L999'));
+  const ambiguous = renderSessionReview(r, result, { ...manifest, files: [...manifest.files, file, { ...file, path: 'other/config.clab.yml' }] });
+  assert.ok(!ambiguous.includes(link));
+});

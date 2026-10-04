@@ -130,11 +130,13 @@ export function renderSessionReview(request: Pick<Request, 'repository' | 'head'
     for (const match of value.matchAll(/`?((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)(?::(\d+)(?:-(\d+))?)?`?/g)) {
       const reference = match[1]!, revision = reference.startsWith('base/') ? 'base' : 'head';
       const path = reference.replace(/^(head|base)\//, '');
-      const file = manifest?.files.find(f => f.revision === revision && f.path === path);
+      const candidates = manifest?.files.filter(f => f.revision === revision &&
+        (f.path === path || (!path.includes('/') && f.path.endsWith('/' + path)))) ?? [];
+      const file = candidates.length === 1 ? candidates[0] : undefined;
       const start = Number(match[2] ?? 1), end = Number(match[3] ?? start);
       if (!file || start < 1 || end < start || end > file.lines) continue;
       rendered += prose(value.slice(offset, match.index), true);
-      const link = sourceLink(request, { location: { revision, path, start, end } });
+      const link = sourceLink(request, { location: { revision, path: file.path, start, end } });
       rendered += '[' + prose('`' + match[0].replace(/^`|`$/g, '') + '`', true) + link.slice(link.indexOf(']('));
       offset = match.index + match[0].length;
     }
