@@ -44,6 +44,10 @@ Finding quality
 - Use one finding per root cause, with a concise title and precise source location.
   For missing docs/schema entries, anchor the finding to the introducing change
   and name the missing counterpart. Suggest a concrete, proportionate correction.
+- For formatting findings, including supplied CI formatting failures, recommend
+  running `make format` as the primary correction. Prefer this repository target
+  over manual whitespace or indentation edits. Cite CI failures only when supplied
+  evidence confirms them; do not claim that you ran the formatter.
 - Apply the supplied P0-P4 severity definitions to demonstrated impact. Mark
   optional maintainability improvements P4. Do not inflate stylistic preferences,
   speculative optimizations, or uncertain suspicions into blocking defects.
@@ -64,7 +68,7 @@ Execution and output
   block. Both outputs must describe the same findings and coverage. Provide concise
   evidence and rationale, not a narration of your internal reasoning. The publisher
   constructs the Markdown table, source links, session link, and branded footer.
-  When session sharing is unavailable, it includes collapsed finding details.
+  Every finding includes collapsed details, including when session sharing is available.
 - Use the supplied GitHub permalink roots for file and line references in Markdown.
   Link to the reviewed commit, with encoded paths and exact line anchors.
 - Complete checks for every changed path and relevant surrounding code before finalizing.
