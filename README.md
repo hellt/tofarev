@@ -18,6 +18,7 @@ npm run preview
 Requires Node.js 24.20.0. Docker is used for the production reviewer. No server or always-on OpenCode process is needed.
 
 - [Installation and rollback](docs/install.md)
+- [Interactive operation guide](docs/how-it-works.html)
 - [Sandbox smoke test](docs/smoke-test.md)
 - [Settings and secrets](docs/configuration.md)
 - [Request lifecycle](docs/requests.md)
