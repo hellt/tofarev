@@ -18,9 +18,9 @@ export const LocationSchema = z.strictObject({
   revision: z.enum(['head', 'base']), path: RelativePath,
   start: z.number().int().positive(), end: z.number().int().positive(),
 }).refine(x => x.end >= x.start, 'invalid range');
-const Text = z.string().trim().min(1).max(8000);
+const Text = z.string().trim().min(1).max(8000).describe('Complete sentences. Preserve Markdown inline code around symbols, filenames, commands and configuration keys.');
 export const FindingSchema = z.strictObject({
-  priority: z.enum(['P0', 'P1', 'P2', 'P3', 'P4']), title: z.string().trim().min(1).max(200),
+  priority: z.enum(['P0', 'P1', 'P2', 'P3', 'P4']), title: z.string().trim().min(1).max(200).describe('Concise summary with code references in backticks, for example: Reject `gen-component-config`.'),
   location: LocationSchema, problem: Text, trigger: Text, impact: Text, suggestion: Text,
   diagram: z.string().max(4000).optional(),
 });

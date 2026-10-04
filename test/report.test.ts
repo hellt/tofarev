@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderReport, renderSessionReview, prose, diagram, sourceLink } from '../src/report.js';
+import { renderReport, renderSessionReview, formatInlineCode, prose, diagram, sourceLink } from '../src/report.js';
 import { ResultSchema, validateLocations, type Finding, type Manifest } from '../src/types.js';
 import { FOOTER } from '../src/requests.js';
 
@@ -101,4 +101,15 @@ test('inline code stays safe, coverage sentences remain complete, and native rep
   assert.ok(session.includes('`removed.go:1-2`'));
   assert.ok(!session.includes('/blob/' + r.head + '/removed.go'));
   assert.ok(session.includes('its final words.'));
+});
+
+test('code references remain consistent when the model omits title and coverage formatting', () => {
+  const result = ResultSchema.parse({ version: 1, findings: [{ ...finding, title: 'Check ComputeDiff and component-config', problem: 'Compare `component-config` in cfg.KindConfig.' }], coverage: { complete: true, notes: ['ComputeDiff compares cfg.KindConfig; GitHub hosts the review.'] } });
+  const formatted = formatInlineCode(result);
+  assert.equal(formatted.findings[0]!.title, 'Check `ComputeDiff` and `component-config`');
+  assert.equal(formatted.findings[0]!.problem, 'Compare `component-config` in `cfg.KindConfig`.');
+  assert.equal(formatted.coverage.notes[0], '`ComputeDiff` compares `cfg.KindConfig`; GitHub hosts the review.');
+  assert.deepEqual(formatInlineCode(formatted), formatted);
+  assert.equal(result.findings[0]!.title, 'Check ComputeDiff and component-config');
+  assert.deepEqual(formatted.findings[0]!.location, finding.location);
 });

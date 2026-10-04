@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { type Config, ENDPOINT, MODEL, apiKey } from './config.js';
 import { ResultSchema, type ReviewOutput, ManifestSchema, validateLocations } from './types.js';
-import { renderSessionReview } from './report.js';
+import { formatInlineCode, renderSessionReview } from './report.js';
 import { shareSession, startSharedSession } from './sharing.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -180,7 +180,7 @@ export async function review(source: string, c: Config, options: { transport?: t
       try {
         const parsed = parseReviewResult(shared ? await shared.resultText() : run.text);
         const validated = validateLocations(parsed, manifest);
-        best = { result: validated, notes: [], failed: false };
+        best = { result: formatInlineCode(validated), notes: [], failed: false };
         if (run.failed) best.notes.push('Reviewer execution ended before normal completion.');
         if (validated.findings.length === parsed.findings.length || attempt === 1) break;
       } catch { best.notes.push('Reviewer did not return a valid result.'); }

@@ -15,6 +15,28 @@ export function prose(text: string, markdown = false): string {
   }
   return output + escape(text.slice(offset));
 }
+// Reuse the model's explicit code references across titles and coverage notes.
+// Also recognize dotted and mixed-case identifiers when the model omits markers.
+export function formatInlineCode(result: Result): Result {
+  const fields = ['title', 'problem', 'trigger', 'impact', 'suggestion'] as const;
+  const values = [...result.findings.flatMap(f => fields.map(k => f[k])), ...result.coverage.notes];
+  const names = new Set(values.flatMap(v => [...v.matchAll(/`([^`\r\n]+)`/g)].map(m => m[1]!)));
+  const identifiers = /(?<![\w.-])(?:(?:[\w.-]+\/)+[\w.-]+\.\w+(?::\d+(?:-\d+)?)?|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|[a-z]\w*[A-Z]\w*|[A-Z][a-z]\w*[A-Z]\w*|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b/g;
+  for (const v of values) for (const m of v.matchAll(identifiers)) {
+    if (!['GitHub', 'OpenCode', 'ToFaRev', 'Markdown', 'Mermaid', 'e.g', 'i.e'].includes(m[0])) names.add(m[0]);
+  }
+  const escaped = [...names].filter(n => n.length <= 200).sort((a, b) => b.length - a.length)
+    .map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!escaped.length) return result;
+  const pattern = new RegExp('(?<![\\w.-])(?:' + escaped.join('|') + ')(?![\\w-]|\\.[\\w])', 'g');
+  const format = (v: string, limit: number) => {
+    const text = v.split(/(`[^`\r\n]+`)/g).map((part, i) => i % 2 ? part : part.replace(pattern, m => '`' + m + '`')).join('');
+    return text.length <= limit ? text : v;
+  };
+  return { ...result, findings: result.findings.map(f => ({ ...f,
+    ...Object.fromEntries(fields.map(k => [k, format(f[k], k === 'title' ? 200 : 8000)])),
+  })), coverage: { ...result.coverage, notes: result.coverage.notes.map(n => format(n, 2000)) } };
+}
 export function sourceLink(r: Pick<Request, 'repository' | 'head' | 'mergeBase'>, f: Pick<Finding, 'location'>): string {
   const sha = f.location.revision === 'head' ? r.head : r.mergeBase;
   if (!sha) throw new Error('Missing source revision');
@@ -55,7 +77,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
   options: { notes?: string[]; currentHead?: string; maxBytes?: number; sessionUrl?: string; sharingEnabled?: boolean } = {}): { body: string; request: Request } {
   const r = RequestSchema.parse(request);
   if (options.sessionUrl) SessionUrl.parse(options.sessionUrl);
-  const checked = result && manifest ? validateLocations(ResultSchema.parse(result), manifest) : null;
+  const checked = result && manifest ? formatInlineCode(validateLocations(ResultSchema.parse(result), manifest)) : null;
   const notes = [...new Set([...(options.notes ?? []), ...(checked?.coverage.notes ?? []), ...(manifest?.notes ?? [])])];
   let findings = [...(checked?.findings ?? [])].sort((a, b) => a.priority.localeCompare(b.priority) || a.location.path.localeCompare(b.location.path) || a.location.start - b.location.start);
   const total = findings.length;
@@ -102,6 +124,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
 
 // Render the validated result so session readers see the same findings as GitHub.
 export function renderSessionReview(request: Pick<Request, 'repository' | 'head' | 'mergeBase'>, result: Result, manifest?: Manifest): string {
+  result = formatInlineCode(result);
   const text = (value: string) => {
     let rendered = '', offset = 0;
     for (const match of value.matchAll(/`?((?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)(?::(\d+)(?:-(\d+))?)?`?/g)) {
