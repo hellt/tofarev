@@ -105,7 +105,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
       body += '| Finding | Location |\n| --- | --- |\n';
       for (const f of findings) body += `| **${f.priority} - ${prose(f.title)}** | ${sourceLink(r, f)} |\n`;
       body += '\n';
-      for (const f of options.sessionUrl && !options.sessionSyncPending ? [] : findings) {
+      for (const f of findings) {
         body += `<details>\n<summary>${f.priority} - ${prose(f.title)}</summary>\n\n**Location:** ${sourceLink(r, f)}\n\n`;
         for (const [label, content] of [['Problem', f.problem], ['Trigger', f.trigger], ['Impact', f.impact], ['Suggested correction', f.suggestion]]) {
           body += `**${label}:** ${prose(content!)}\n\n`;

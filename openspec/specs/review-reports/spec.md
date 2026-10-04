@@ -24,22 +24,22 @@ A report containing findings SHALL begin its findings section with a Markdown su
 - **WHEN** a successful review has no findings
 - **THEN** the report states that no actionable findings were found and omits empty tables and finding blocks
 
-### Requirement: Shared review session and fallback details
-When trusted configuration enables session sharing, the runner SHALL use OpenCode's native sharing API and SHALL verify the recorded session parts have synced before final publication. Running and final comments SHALL contain the session link immediately before the workflow run link. The final report SHALL omit collapsed finding blocks when that link is available. Model output SHALL NOT supply this URL. Shared transcripts are public and include the investigation and structured result; credentials SHALL remain outside the session.
+### Requirement: Shared review session and collapsed details
+When trusted configuration enables session sharing, the runner SHALL use OpenCode's native sharing API and check synchronization before final publication. Running and final comments SHALL contain the known session link immediately before the workflow run link. The final report SHALL retain collapsed finding blocks when that link is available. Model output SHALL NOT supply this URL. Shared transcripts are public and include the investigation and structured result; credentials SHALL remain outside the session.
 
 #### Scenario: Review is still running
 - **WHEN** session sharing is enabled and the native sharing service is available
 - **THEN** the runner creates and shares the session before inference, prints its validated URL in Actions logs, updates the running comment through a separate status publisher, and keeps native synchronization active throughout review
 
-If sharing is disabled or unavailable, each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction. Sharing failure SHALL NOT discard valid findings or turn complete analysis into partial coverage.
+Each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table, regardless of session sharing status. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction from the validated OpenCode result. Sharing failure SHALL NOT discard valid findings or turn complete analysis into partial coverage.
 
 #### Scenario: Native sharing succeeds
 - **WHEN** the runner verifies all recorded parts are available in the shared session
-- **THEN** the report contains its summary table, clickable file references, full-session link and branded footer without collapsed finding blocks
+- **THEN** the report contains its summary table, matching collapsed finding blocks, clickable file references, full-session link, and branded footer
 
 #### Scenario: Sharing service fails
-- **WHEN** a valid review cannot obtain a fully synced session link within the sharing deadline
-- **THEN** its findings are published with collapsed details and a notice that the session link is unavailable
+- **WHEN** a valid review cannot confirm session synchronization within the sharing deadline
+- **THEN** its findings are published with collapsed details, any known session link, and an upload status notice
 
 #### Scenario: Reader expands a finding
 - **WHEN** a reader opens a finding's collapsed block
