@@ -94,11 +94,14 @@ export async function startSharedSession(executable: string, working: string, en
 }
 
 export async function shareSession(executable: string, working: string, env: NodeJS.ProcessEnv,
-  sessionId: string, transport: typeof fetch = fetch, timeoutMs = 30_000): Promise<string | undefined> {
+  sessionId: string, transport: typeof fetch = fetch, timeoutMs = 30_000): Promise<{ url: string; synced: boolean } | undefined> {
   if (!/^ses_[a-zA-Z0-9]+$/.test(sessionId)) return;
   const server = await sessionServer(executable, working, env, transport, timeoutMs);
   if (!server) return;
-  try { return await server.waitForSync(sessionId, await server.share(sessionId)); }
+  try {
+    const url = await server.share(sessionId);
+    return { url, synced: Boolean(await server.waitForSync(sessionId, url)) };
+  }
   catch { /* A share outage must not discard valid findings. */ }
   finally { await server.close(); }
 }

@@ -65,6 +65,24 @@ test('offline end-to-end: admission, immutable snapshot, OpenCode/model, validat
     comment.body = statusBody(p.request, 'Running');
     assert.equal((await publish(p, out, config(), api, 'failure')).state, 'partial');
     assert.match(comment.body, /Reviewer job did not complete successfully/);
+    // The final artifact can lose its share URL after a sync outage or crash.
+    comment.body = statusBody(p.request, 'Running', session.url);
+    assert.equal((await publish(p, out, config({ shareSessions: true }), api)).state, 'partial');
+    assert.ok(comment.body.includes(session.url));
+    assert.match(comment.body, /Final report synchronization could not be confirmed/);
+    assert.match(comment.body, /<details>/);
+    assert.ok(!comment.body.includes('session link unavailable'));
+    comment.body = statusBody(p.request, 'Running', session.url);
+    assert.equal((await publish(p, null, config({ shareSessions: true }), api)).state, 'failed');
+    assert.ok(comment.body.includes(session.url));
+    // A sharing outage does not make complete source coverage partial.
+    comment.body = statusBody(p.request, 'Running', session.url);
+    const complete = { ...p, manifest: { ...p.manifest!, incomplete: false } };
+    assert.equal((await publish(complete, out, config({ shareSessions: true }), api)).state, 'completed');
+    assert.ok(comment.body.includes(session.url));
+    comment.body = statusBody(p.request, 'Running', session.url);
+    assert.equal((await publish(complete, { ...out, sessionUrl: session.url, sessionSyncPending: true }, config({ shareSessions: true }), api)).state, 'completed');
+    assert.ok(comment.body.includes(session.url));
     const tampered = { ...p, request: { ...p.request, repository: 'attacker/repo' } };
     await assert.rejects(publish(tampered, out, config(), api), /mismatch/);
   } finally { await rm(f.dir, { recursive: true, force: true }); await rm(work, { recursive: true, force: true }); }

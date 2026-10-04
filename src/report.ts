@@ -74,7 +74,7 @@ export function diagram(input?: string): string | null {
 }
 
 export function renderReport(request: Request, result: Result | null, manifest: Manifest | null,
-  options: { notes?: string[]; currentHead?: string; maxBytes?: number; sessionUrl?: string; sharingEnabled?: boolean } = {}): { body: string; request: Request } {
+  options: { notes?: string[]; currentHead?: string; maxBytes?: number; sessionUrl?: string; sharingEnabled?: boolean; sessionSyncPending?: boolean } = {}): { body: string; request: Request } {
   const r = RequestSchema.parse(request);
   if (options.sessionUrl) SessionUrl.parse(options.sessionUrl);
   const checked = result && manifest ? formatInlineCode(validateLocations(ResultSchema.parse(result), manifest)) : null;
@@ -90,6 +90,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     if (r.head) body += `Reviewed [${r.head.slice(0, 12)}](https://github.com/${r.repository}/commit/${r.head}) · `;
     if (options.sessionUrl) body += `[Live OpenCode session](${options.sessionUrl}) · `;
     body += `[Workflow run](${r.runUrl})\n\n`;
+    if (options.sessionUrl && options.sessionSyncPending) body += 'The live session link is retained. Final report synchronization could not be confirmed; finding details are included below.\n\n';
     if (options.currentHead && options.currentHead !== r.head) body += '**Newer commits are present; they were not reviewed.**\n\n';
     if (r.state === 'partial') body += '**Partial review. The findings below do not cover all changes.**\n\n';
     if (r.state === 'failed') body += '**Review could not be completed. This is not a clean review.**\n\n';
@@ -104,7 +105,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
       body += '| Finding | Location |\n| --- | --- |\n';
       for (const f of findings) body += `| **${f.priority} - ${prose(f.title)}** | ${sourceLink(r, f)} |\n`;
       body += '\n';
-      for (const f of options.sessionUrl ? [] : findings) {
+      for (const f of options.sessionUrl && !options.sessionSyncPending ? [] : findings) {
         body += `<details>\n<summary>${f.priority} - ${prose(f.title)}</summary>\n\n**Location:** ${sourceLink(r, f)}\n\n`;
         for (const [label, content] of [['Problem', f.problem], ['Trigger', f.trigger], ['Impact', f.impact], ['Suggested correction', f.suggestion]]) {
           body += `**${label}:** ${prose(content!)}\n\n`;

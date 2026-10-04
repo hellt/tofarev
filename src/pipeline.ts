@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import { GitHub } from './github.js';
-import { admit, beginRequest, parseMarker, statusBody } from './requests.js';
+import { admit, beginRequest, parseMarker, statusBody, publishedSessionUrl } from './requests.js';
 import { policyHash } from './opencode.js';
 import { fetchSource, snapshot } from './source.js';
 import { ManifestSchema, RequestSchema, ReviewOutputSchema, SessionUrl } from './types.js';
@@ -37,9 +37,10 @@ async function publicationContext(prepared: unknown, c: Config, api: GitHub) {
   if (r.repository !== c.repository || r.repositoryId !== c.repositoryId || !p.ready) throw new Error('Publication context mismatch');
   if (!p.manifest || p.manifest.head !== r.head || p.manifest.base !== r.base || p.manifest.mergeBase !== r.mergeBase) throw new Error('Source manifest mismatch');
   const a = { repository: r.repository, repositoryId: r.repositoryId, key: r.key, pr: r.pr, triggerId: r.triggerId, author: '' };
-  const current = parseMarker(await api.comment(r.repository, p.commentId), c, a);
+  const comment = await api.comment(r.repository, p.commentId);
+  const current = parseMarker(comment, c, a);
   if (!current || current.head !== r.head || current.base !== r.base || current.mergeBase !== r.mergeBase || current.runUrl !== r.runUrl || current.policy !== r.policy) throw new Error('Publication marker mismatch');
-  return { p, r, current };
+  return { p, r, current, sessionUrl: publishedSessionUrl(comment.body) };
 }
 export async function progress(prepared: unknown, session: unknown, c: Config, api: GitHub) {
   const url = z.strictObject({ url: SessionUrl }).parse(session).url;
@@ -50,7 +51,7 @@ export async function progress(prepared: unknown, session: unknown, c: Config, a
   return { skipped: false };
 }
 export async function publish(prepared: unknown, output: unknown, c: Config, api: GitHub, reviewJobStatus?: string) {
-  const { p, r, current } = await publicationContext(prepared, c, api);
+  const { p, r, current, sessionUrl: existingSessionUrl } = await publicationContext(prepared, c, api);
   if (current.state !== 'running') return { skipped: true };
   const parsed = ReviewOutputSchema.safeParse(output);
   const value = parsed.success ? parsed.data : { result: null, failed: true, notes: ['Reviewer result was unavailable or invalid.'] };
@@ -61,7 +62,8 @@ export async function publish(prepared: unknown, output: unknown, c: Config, api
   try { currentHead = (await api.pull(r.repository, r.pr)).head.sha; }
   catch { notes.push('Unable to check whether newer commits are present.'); }
   const rendered = renderReport(r, value.result, p.manifest, { notes, currentHead, maxBytes: c.limits.reportBytes,
-    sessionUrl: value.sessionUrl, sharingEnabled: c.shareSessions });
+    sessionUrl: c.shareSessions ? value.sessionUrl ?? existingSessionUrl : undefined, sharingEnabled: c.shareSessions,
+    sessionSyncPending: Boolean(value.sessionSyncPending || (c.shareSessions && existingSessionUrl && !value.sessionUrl)) });
   await api.update(r.repository, p.commentId, rendered.body);
   return { skipped: false, state: rendered.request.state };
 }

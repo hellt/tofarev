@@ -194,8 +194,12 @@ export async function review(source: string, c: Config, options: { transport?: t
         try { await shared.renderResult(renderSessionReview({ repository: c.repository, head: manifest.head, mergeBase: manifest.mergeBase }, best.result, manifest)); }
         catch { best.notes.push('The shared session final report could not be formatted.'); }
       }
-      const url = shared ? await shared.waitForSync() : await shareSession(executable, working, cliEnvironment(working, cfg), sessionId);
-      if (url) best.sessionUrl = url;
+      const sharing = shared ? { url: shared.url, synced: Boolean(await shared.waitForSync()) }
+        : await shareSession(executable, working, cliEnvironment(working, cfg), sessionId);
+      if (sharing?.url) {
+        best.sessionUrl = sharing.url;
+        if (!sharing.synced) best.sessionSyncPending = true;
+      }
     }
     return best;
   } finally { await shared?.close(); await proxy.close(); await rm(working, { recursive: true, force: true }); }

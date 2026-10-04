@@ -33,7 +33,14 @@ export async function findRequest(api: GitHub, c: Config, a: Admission) {
   }
   return null;
 }
-export const FOOTER = 'Powered by [Nebius Token Factory](https://nebius.com/services/token-factory)';
+// Read only the known status-link label, after verifying bot/request identity.
+export function publishedSessionUrl(body: string): string | undefined {
+  const candidate = body.match(/\[Live OpenCode session\]\(([^)\s]+)\)/)?.[1];
+  const parsed = SessionUrl.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+const BRAND_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets';
+export const FOOTER = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="middle"></picture></a>`;
 export function statusBody(r: Request, message: string, sessionUrl?: string) {
   if (sessionUrl) SessionUrl.parse(sessionUrl);
   return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Live OpenCode session](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;

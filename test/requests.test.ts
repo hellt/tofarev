@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../src/config.js';
 import { GitHub } from '../src/github.js';
-import { admit, beginRequest, marker, parseMarker } from '../src/requests.js';
+import { admit, beginRequest, marker, parseMarker, publishedSessionUrl } from '../src/requests.js';
 import type { Request } from '../src/types.js';
 
 export function event(user = 'hellt'): any {
@@ -74,4 +74,10 @@ test('recovery preserves source revision, paginates comments, and closed PRs fai
     assert.ok(seen.some(x => x.includes('page=2')));
     assert.match(update.body, state === 'closed' ? /closed or unavailable/ : /queued/);
   }
+});
+
+test('published session links accept only the fixed status label and OpenCode domain', () => {
+  assert.equal(publishedSessionUrl('[Live OpenCode session](https://opncd.ai/share/test1234)'), 'https://opncd.ai/share/test1234');
+  assert.equal(publishedSessionUrl('[Live OpenCode session](https://evil.example/session)'), undefined);
+  assert.equal(publishedSessionUrl('[Other session](https://opncd.ai/share/test1234)'), undefined);
 });

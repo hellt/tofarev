@@ -46,10 +46,11 @@ test('native session sharing waits for full sync and never publishes runner cred
     await writeFile(cfg, JSON.stringify({ ...reviewerConfig(c, source, 'Inspect the read-only source and return JSON.', proxy.endpoint), enterprise: { url: backendUrl } }));
     const executable = fileURLToPath(new URL(`../../node_modules/opencode-${process.platform}-${process.arch}/bin/opencode`, import.meta.url));
     const env = cliEnvironment(working, cfg);
-    let polls = 0, observedIncomplete = false, stale: any[] | undefined;
+    let polls = 0, observedIncomplete = false, shareDataUnavailable = false, stale: any[] | undefined;
     const transport = (async (url, init) => {
       if (!String(url).startsWith('https://opncd.ai/')) return fetch(url, init);
       polls++;
+      if (shareDataUnavailable) return new Response('{}', { status: 503 });
       if (stale) { const prior = stale; stale = undefined; return Response.json(prior); }
       if (data.length && !observedIncomplete) { observedIncomplete = true; return Response.json(data.filter(d => d.type !== 'part')); }
       return Response.json(data);
@@ -74,13 +75,17 @@ test('native session sharing waits for full sync and never publishes runner cred
       assert.equal(await synced, shared.url);
       assert.ok(polls >= before + 2);
       assert.ok(data.some(d => d.type === 'part' && d.data.text === markdown));
+      shareDataUnavailable = true;
+      assert.equal(await shared.waitForSync(), undefined);
+      assert.equal(shared.url, 'https://opncd.ai/share/test1234');
+      shareDataUnavailable = false;
     } finally { await shared.close(); }
     assert.ok(polls >= 2); assert.equal(observedIncomplete, true); assert.ok(syncs);
     const transcript = JSON.stringify(data);
     assert.ok(transcript.includes('share-source-evidence')); assert.ok(transcript.includes('coverage'));
     for (const secret of ['real-inference-secret', 'delete-only-secret', 'TOFAREV_GITHUB_TOKEN']) assert.ok(!transcript.includes(secret));
-    assert.equal(await shareSession(executable, working, env, run.sessionId!, (async (url, init) =>
-      String(url).startsWith('https://opncd.ai/') ? Response.json([]) : fetch(url, init)) as typeof fetch, 2500), undefined);
+    assert.deepEqual(await shareSession(executable, working, env, run.sessionId!, (async (url, init) =>
+      String(url).startsWith('https://opncd.ai/') ? Response.json([]) : fetch(url, init)) as typeof fetch, 2500), { url: shared.url, synced: false });
     denied = true;
     assert.equal(await shareSession(executable, working, env, run.sessionId!, transport, 10_000), undefined);
   } finally {

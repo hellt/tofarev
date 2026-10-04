@@ -41,7 +41,7 @@ export const ManifestSchema = z.strictObject({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 export const SessionUrl = z.string().max(200).regex(/^https:\/\/opncd\.ai\/(?:s|share)\/[A-Za-z0-9_-]+$/);
-export const ReviewOutputSchema = z.strictObject({ result: ResultSchema.nullable(), notes: z.array(z.string().max(2000)).max(100), failed: z.boolean(), sessionUrl: SessionUrl.optional() });
+export const ReviewOutputSchema = z.strictObject({ result: ResultSchema.nullable(), notes: z.array(z.string().max(2000)).max(100), failed: z.boolean(), sessionUrl: SessionUrl.optional(), sessionSyncPending: z.boolean().optional() });
 export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 
 export function validateLocations(result: Result, manifest: Manifest): Result {

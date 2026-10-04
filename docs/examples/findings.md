@@ -96,4 +96,4 @@ A --> B
 </details>
 
 ---
-Powered by [Nebius Token Factory](https://nebius.com/services/token-factory)
+Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg"><img src="https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="middle"></picture></a>
