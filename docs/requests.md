@@ -1,6 +1,6 @@
 # Requests and recovery
 
-Post exactly `/tofarev review` in an open PR's conversation. Surrounding whitespace is accepted. Only new comments from `hellt`, `flosch62`, and `kaelemc` in the configured repository are admitted. The comment author is checked, not the PR author or workflow rerun actor. Quoted commands, extra prompt text, edits, issue comments, and inline diff comments are ignored.
+Post exactly `/tofarev review` in an open PR's conversation. Surrounding whitespace is accepted. Only new comments from `hellt`, `flosch62`, and `kaelemc` in the configured repository are admitted; letter case in the login is ignored. The comment author is checked, not the PR author or workflow rerun actor. Quoted commands, extra prompt text, edits, issue comments, and inline diff comments are ignored.
 
 An accepted request creates one ToFaRev status comment. Its hidden versioned marker records the repository/comment identity, head, target base, comparison base, prompt hash, state, and workflow run. Only markers posted by the configured App bot are trusted. The status moves from `running` to `completed`, `partial`, or `failed`.
 

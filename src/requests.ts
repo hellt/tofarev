@@ -11,7 +11,8 @@ export function admit(event: unknown, eventName: string, c: Config): Admission |
   const parsed = Event.safeParse(event); if (eventName !== 'issue_comment' || !parsed.success) return null;
   const e = parsed.data;
   if (e.repository.full_name !== c.repository || e.repository.id !== c.repositoryId ||
-    e.comment.body.trim() !== '/tofarev review' || !c.allowedUsers.includes(e.comment.user.login)) return null;
+    e.comment.body.trim() !== '/tofarev review' ||
+    !c.allowedUsers.some(u => u.toLowerCase() === e.comment.user.login.toLowerCase())) return null;
   return { repository: c.repository, repositoryId: c.repositoryId, pr: e.issue.number,
     triggerId: e.comment.id, key: `${c.repositoryId}:${e.comment.id}`, author: e.comment.user.login };
 }
