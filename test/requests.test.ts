@@ -14,6 +14,8 @@ export const request: Request = { version: 1, key: '290960521:7', repository: 's
   policy: 'd'.repeat(64), runUrl: 'https://github.com/srl-labs/containerlab/actions/runs/1', state: 'running' };
 test('admission uses comment identity and exact command, never sender or PR config', () => {
   for (const name of config().allowedUsers) assert.ok(admit(event(name), 'issue_comment', config()));
+  assert.ok(admit(event('FloSch62'), 'issue_comment', config()));
+  assert.ok(admit(event('HELLT'), 'issue_comment', config()));
   assert.equal(admit(event('other'), 'issue_comment', config()), null);
   for (const edit of [(e: any) => e.comment.body = 'quote /tofarev review', (e: any) => e.action = 'edited',
     (e: any) => delete e.issue.pull_request, (e: any) => e.repository.id++, (e: any) => e.repository.full_name = 'other/repo',
