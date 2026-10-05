@@ -7,7 +7,7 @@ Allow designated Containerlab maintainers to request and track a review of a spe
 ## Requirements
 
 ### Requirement: Authorized command
-The system SHALL accept newly created PR conversation comments in `srl-labs/containerlab` whose trimmed body equals `/tofarev review` and whose human author is `hellt`, `flosch62`, or `kaelemc`. Authorization SHALL use GitHub's comment author metadata and trusted configuration before paid inference or bot publication.
+The system SHALL accept newly created PR conversation comments in `srl-labs/containerlab` whose trimmed body equals `/tofarev review` and whose human author is `hellt`, `flosch62`, or `kaelemc`, compared without letter-case sensitivity. Authorization SHALL use GitHub's comment author metadata and trusted configuration before paid inference or bot publication.
 
 #### Scenario: Allowed maintainer requests a review
 - **WHEN** any of the three allowed users posts the command on an open PR

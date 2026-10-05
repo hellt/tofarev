@@ -36,7 +36,7 @@ jobs:
     if: >-
       github.event.issue.pull_request &&
       github.event.comment.user.type == 'User' &&
-      contains(fromJSON('["hellt","flosch62","kaelemc"]'), github.event.comment.user.login) &&
+      contains(fromJSON('["hellt","flosch62","FloSch62","kaelemc"]'), github.event.comment.user.login) &&
       contains(github.event.comment.body, '/tofarev review')
     uses: __BOT_REPOSITORY__/.github/workflows/review.yml@__BOT_REF__
     with:
