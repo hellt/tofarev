@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "d44c69f72ab156474197f12b6fc1407b3f8a65c4",
-  "updatedAt": "2026-10-18T18:08:02.484Z",
-  "state": "running",
+  "updatedAt": "2026-10-18T18:09:59.648Z",
+  "state": "completed",
   "info": {
     "id": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 613952,
-      "output": 8923,
-      "reasoning": 16612,
+      "input": 630321,
+      "output": 12411,
+      "reasoning": 31581,
       "cache": {
-        "read": 1175808,
+        "read": 1620736,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792346522430,
-      "updated": 1792346827933
+      "updated": 1792346999539
     }
   },
   "messages": [
@@ -4778,7 +4778,8 @@
         "id": "msg_150322c97001uj2W43347p13ml",
         "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
         "time": {
-          "created": 1792346827927
+          "created": 1792346827927,
+          "completed": 1792346885985
         },
         "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -4791,14 +4792,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 44436,
+          "input": 8781,
+          "output": 111,
+          "reasoning": 6616,
           "cache": {
-            "read": 0,
+            "read": 28928,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -4812,12 +4815,1102 @@
           "id": "prt_1503235690014Wy6Pi6SEMu1I7",
           "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
           "messageID": "msg_150322c97001uj2W43347p13ml",
-          "text": "",
+          "text": "Now I have a very complete picture. Let me analyze for findings carefully.\n\n**Analysis of `componentWarnings` (chassis_info.go):**\n\nLine 180: `if entry.Integrated || (slot != slotAName && slot != slotBName)` — MDAs are validated for integrated entries or non-CPM slots. For a distributed base node (e.g. `sr-7s` non-integrated) with CPM slots A/B and MDA entries on CPM component — MDAs on CPM slots are not validated. That matches hardware semantics (MDAs live on line cards/IOMs). OK.\n\nWait, but there's a subtlety at line 180: for the redundant integrated case (ixr-r6 with A and B components, entry.Integrated=true), each CPM component's MDAs are validated. In the test `redundant_integrated_components_are_distributed`, component A has MDA {Slot 1, m6-10g...} → validated against entry.MDA. OK.\n\n**Potential issue 1 — `validateMDAs` and `FixedMDAs` interaction with env-configured MDAs.** Fine.\n\n**Potential issue 2 — `componentWarnings` for line-card components with MDA under a non-integrated entry**: for line card slot 2 on sr-7s, MDAs validated against entry.MDA (the chassis-level MDA list). Reasonable.\n\n**Potential issue 3 — `warnUnsupportedComponents` nodeType: `n.Cfg.Env[envNokiaSrosChassis]`.** srosEnv sets `srosEnv[envNokiaSrosChassis] = n.Cfg.NodeType` (line 309, package-level map mutation). For the standalone node, Cfg.Env merged contains chassis = NodeType. So nodeType := Cfg.Env[envNokiaSrosChassis] equals lowercased? No — it's NodeType as-is (e.g. \"ixr-e2\"). `chassisInfo.entry` does case-insensitive match, fine. But note: the override `nodeType = chassis` only differs from `n.Cfg.NodeType` if... they're the same by construction (srosEnv set from NodeType). Unless a user explicitly sets NOKIA_SROS_CHASSIS env to something different — then MergeStringMaps order: `srosEnv, vars, n.Cfg.Env` — user env last wins. So user can override NOKIA_SROS_CHASSIS, and the validation then checks against the user-specified chassis. That's intentional (\"chassis env override\"). Hmm wait — is that intentional? srosEnv[envNokiaSrosChassis] is set to NodeType; user can override. The warning path uses it. Reasonable.\n\n**Package-level `srosEnv` mutation race** — pre-existing (lines 309/312 in base too). Not a finding.\n\n**Potential issue 4 — `entry()` alias loop map iteration order nondeterminism:** if multiple keys match EqualFold... map iteration order is random; but keys differing only in case shouldn't co-exist in well-formed chassis_info.json. Not a real issue.\n\n**Potential issue 5 — alias cycle detection returns \"not present\" warning on cycle:** acceptable best-effort.\n\n**Potential issue 6 — `warnUnsupportedComponents` uses `n.componentForConfig(nil)` when effective empty.** For a standalone non-integrated node (e.g., sr-7s without components): effective = component from env only (card from NOKIA_SROS_CARD env). If no card env, component.Type = \"\" → no warnings. Fine.\n\nBut wait — for a standalone integrated node (sr-1 with no components), `effective = []*Component{n.componentForConfig(nil)}` — componentWarnings then checks the synthesized component (slot A) against entry.FixedHWCfg. For sr-1: FixedHWCfg = \"iom-1\"? If env NOKIA_SROS_CARD=iom-2, warning issued. But note generateIntegratedComponentConfig SKIPS config generation when card override is set (log.Info + return \"\"). So for sr-1 + NOKIA_SROS_CARD=iom-2, no card config is generated, but the warning machinery validates the override. OK.\n\nHmm, but actually for sr-1 with env card override, `generateIntegratedComponentConfig` returns \"\" — meaning no card/MDA config at all is generated (previously the default config was generated when no components). Is that a behavior regression? Old behavior (base): `generateComponentConfig` — base version: for integrated with no components → `buildIntegratedComponentCfgLines(...)` → default config. With env NOKIA_SROS_CARD set (standalone single-slot): base code errored in setupStandaloneComponents if isSingleSlotIntegratedSrosNodeType. Hmm — for sr-1 the env override path: base `isSingleSlotIntegratedSrosNodeType(nodeType)` — which node types were \"single slot integrated\"? Let me check base version of isSingleSlotIntegratedSrosNodeType. From the removed diff code (line 1771-1778): error \"is integrated and does not support component card-type override\". And base `generateComponentConfig` used `buildIntegratedComponentCfgLines(n.Cfg.NodeType, n.Cfg.Env)` — passing ENV, and buildIntegratedComponentCfgLines(base) probably read env overrides. The head version: skip generation entirely when NOKIA_SROS_CARD set on integrated chassis. So behavior change: previously env override produced modified config; now it produces NO component config (the card is presumably configured by the image itself via NOKIA_SROS_CARD env since the SR-SIM image auto-configures based on env?). This matches the docs statement: \"a components `type` sets NOKIA_SROS_CARD and makes containerlab skip generated card/MDA config\". OK, intentional.\n\n**Potential issue 7 — `buildComponentCfgLines` emits SFM line for every line card slot:** `if sfm != \"\" { lines = append(..., Kind: \"sfm\", Slot: slot...) }`. For multiple line cards, each gets `/configure sfm <slot> sfm-type X admin-state enable`. Is that correct SR OS syntax — SFMs are separate chassis slots, not per line-card slot. Hmm. In base code, buildComponentCfgLines existed already (moved). Let me check whether base had the same sfm emission — yes, buildComponentCfgLines is moved from base sros.go (component_config.go is new file but logic moved). Actually wait — component_config.go is a NEW file (A in manifest). Was buildComponentCfgLines previously in sros.go? The diff for component_config.go (lines 312-537) is all additions. Let me check if buildComponentCfgLines was removed from sros.go in the diff — the sros.go diff hunks I read show removals of generateComponentConfig, componentConfigFromLines, prepareConfigTemplateData etc. buildComponentCfgLines wasn't shown as removed from sros.go in the hunks I read (1588-2547). Hmm, maybe it was in another removed hunk. The removals in sros.go: DeleteNetnsSymlink, setComponentEnvVars, GetNSPath, checkComponentSlotsConfig, createSROSConfigFiles, buildStartupConfig, prepareConfigTemplateData, isIXRNode/isSARNode/isSARHmNode, getTemplateForVariant, selectConfigTemplate, addDefaultConfig, addPartialConfig, buildPKIImportXML, buildTLSProfileXML, isConfigClassic, isFullConfigFile, generateComponentConfig, componentConfigFromLines, ensureNetnsProgramming... So buildComponentCfgLines must have already existed somewhere — in component.go base? component.go base version — diff hunk 643-851 showed additions to component.go (Component struct etc.). Base component.go existed (M). So buildComponentCfgLines likely already in base component.go — moved to component_config.go. Since component_config.go is a new file with all-added lines, and component.go diff may show removals of buildComponentCfgLines. I read component.go diff 643-851 earlier? Per prior summary I read the component.go hunk. I don't remember exactly. This is refactoring; not a new-behavior concern unless semantics changed. The SFM-per-linecard emission is pre-existing logic moved. Not a finding.\n\n**Now the key new-code issues to weigh:**\n\nA. **`warnUserEnvOverrides` and SFM inline duplication (P4).** The Init SFM branch inlines exactly the same warn logic as warnUserEnvOverrides for one key. Could be `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` — but only when sfm != \"\". Actually simpler: keep. P4 optional.\n\nHmm, but wait — there's an inconsistency: in Init, the SFM warn fires when `userEnv[envNokiaSrosSFM]` differs from kindSpecificCfg().SFM. But `componentSFM()` already gives priority to env. The inline warn duplicates. Also the log message says \"component value %q will not be used because environment variable %s is set\" — fine.\n\nBut notice: the SFM branch sets `n.Cfg.Env[envNokiaSrosSFM] = sfm` only when user didn't set it. But it does this BEFORE the standalone merge `MergeStringMaps(srosEnv, vars, n.Cfg.Env)` — so Cfg.Env now contains SFM value; then MergeStringMaps merges again with Cfg.Env — SFM from kindSpecificCfg lands in final env. OK.\n\nHowever — for standalone nodes, if the user set NOKIA_SROS_SFM at node level to a different value, warn fires from the inline branch. And ALSO `warnUserEnvOverrides(n.Cfg.ShortName, vars, n.userEnv)` at line 327 — vars comes from setupStandaloneComponents which does NOT include SFM (setComponentEnvVars sets card/xiom/mda only; component env c.Env could include SFM). So no double warning unless component env also sets SFM. OK.\n\nB. **`componentsForConfig` allocation**: `make([]*Component, len(components))` fine.\n\nC. **`applyHardwareEnv(out, out.Env)`** — applies per-component env overrides onto the cloned component; then node env. Precedence: per-component env, then node env. But what about `c.Env` values that aren't hardware keys — they stay in out.Env harmlessly. OK.\n\nD. **Bug candidate — `componentForConfig` in `generateIntegratedComponentConfig` double-application.** `n.componentForConfig(n.integratedComponentOverride())` — integratedComponentOverride returns the topology component; componentForConfig applies out.Env (component env) and hardwareEnv (node env). Fine.\n\nBut hold on: for the redundant integrated CPM component node, `n.Cfg.Env[envNokiaSrosCard]` — component node env includes NOKIA_SROS_CARD if user set it at node level OR if the component has Type set (keepUserEnv sets card from component.Type derived env). Wait! For ixr-r6 with components A (type cpiom-ixr-r6, as in test): component node env gets NOKIA_SROS_CARD=cpiom-ixr-r6 (from componentDerivedEnv → setComponentEnvVars sets envNokiaSrosCard). Then component node Init → isStandaloneNode? Component node: Components=nil (line 658), envNokiaSrosSlot set → isDistributedCardNode() true → standalone false. generateComponentConfig → isIntegratedSrosNodeType(\"ixr-r6\") → generateIntegratedComponentConfig → card := Cfg.Env[envNokiaSrosCard] = \"cpiom-ixr-r6\" ≠ \"\" → log.Info \"Card type override set on integrated chassis type, skipping component SR OS config generation\" → return \"\".\n\nHmm! So for the redundant integrated case, when components have explicit `type`, each CPM component node SKIPS integrated config generation (because NOKIA_SROS_CARD is set), even though the test `redundant_integrated_components_are_distributed` expects cfgA to contain card config. In the test, components are `{Slot: A}, {Slot: B}` with no Type — so no NOKIA_SROS_CARD is derived → card == \"\" → integrated config generated per CPM. OK consistent.\n\nBut what about the docs claim: \"a components `type` sets `NOKIA_SROS_CARD` and makes containerlab skip generated card/MDA config\". Consistent.\n\nE. **Now the SFM env on component nodes:** The base node Init sets `n.Cfg.Env[envNokiaSrosSFM] = sfm` when user didn't set SFM. Then component deep copy includes that SFM env. Component node Init: envAlreadyResolved=true → skips SFM apply. Component env contains SFM → config gen uses componentSFM() → hardwareEnv = userEnv (cloned base userEnv, which does NOT contain SFM unless user set it) → falls back to kindSpecificCfg().SFM. OK.\n\nHmm wait — but there's an issue: the base node's `n.Cfg.Env[envNokiaSrosSFM]` gets set BEFORE setupComponentNodes deep-copies Cfg.Env? Order: Init (sets SFM env in Cfg.Env) → ... when is setupComponentNodes called? Let me check: grep setupComponentNodes call site. If it's called in PreDeploy (after Init), the component env will contain the base's NOKIA_SROS_SFM. Then in component Init, `if sfm := n.kindSpecificCfg().SFM; sfm != \"\" && !envAlreadyResolved` — skipped. Good.\n\nBut there's a subtle wrinkle: the base Cfg.Env contains NOKIA_SROS_SFM set from kind config; for the component node, kindSpecificCfg().SFM — componentConfig deep copy includes KindSpecificCfg? kindSpecificConfig.Of(componentConfig) — the base's kind config with Components=nil. SFM field preserved. Fine.\n\nF. **`warnUserEnvOverrides` in component Init path**: component node Init → isStandaloneNode false → skip the standalone branch entirely (warnUserEnvOverrides at 327 only in standalone branch). For component nodes, keepUserEnv was already called in setupComponentNodes with warnings. But note: component node Init ALSO merges `srosEnv, vars, n.Cfg.Env`? No — that's in the standalone branch. In the else branch (non-standalone), what happens? From the earlier diff at 1747: `} else {` ... need to see. Presumably sets envNokiaSrosSlot to \"\" or leaves. Not critical.\n\nG. **Now a REAL potential issue: `n.Cfg.Env` in Init standalone branch after userEnv snapshot.** `n.userEnv = maps.Clone(n.Cfg.Env)` then later `n.Cfg.Env = clabutils.MergeStringMaps(srosEnv, vars, n.Cfg.Env)`. Fine.\n\nH. **`warnUnsupportedComponents` for distributed base**: For a non-integrated distributed base node (sr-7s + components), which node runs warnUnsupportedComponents? The BASE node's PreDeploy: base is not standalone; base slot env — base Init for distributed: what's envNokiaSrosSlot on base? Probably deleted/empty. isCPM(slotAName): slot not exists → return true! (isCPM with no slot env returns true). So base node passes the guard `!n.isStandaloneNode() && !n.isCPM(slotAName)` → isCPM(slotAName) true → proceeds. Then components = rootComponents (base has rootComponents? `n.rootComponents` — set where? For base node, rootComponents... hmm. In setupComponentNodes, only srosNode (component) gets rootComponents. Does the BASE node get rootComponents set? grep rootComponents assignments: `srosNode.rootComponents = n.kindSpecificCfg().Components` (component). For base, `n.rootComponents` presumably set in Init for distributed base? Let me check: in generateComponentConfig head (line 281): `components := n.rootComponents; if len(components)==0 return \"\"` — for base non-integrated distributed node, generateComponentConfig returns \"\" — because config is generated per component node. And for CPM component nodes, rootComponents set. OK.\n\nBut warnUnsupportedComponents on the base: `components := n.rootComponents; if len==0 { components = kindSpecificCfg().Components }` — so base uses its own components list. Then effective = componentsForConfig(components) → all components incl. line cards → validates all. Good, warnings appear once per lab for distributed (from base node). And the guard: base node isCPM(slotAName)=true (no slot). But ALSO each CPM component node (A) runs warnUnsupportedComponents with rootComponents → duplicate warnings? Guard: `!n.isStandaloneNode() && !n.isCPM(slotAName)` → for CPM A component: isCPM(slotAName) true → proceeds → warns AGAIN (base warned once, CPM A warns again). Hmm — so for a distributed node with components, warnings appear twice: once from base node, once from CPM A component node. Is that true? Base node runs createSROSFiles? Base PreDeploy → createSROSFiles? Let me check base PreDeploy flow: line 447 `return n.createSROSFiles(ctx)` — in PreDeploy, gated by `if` something. Line 415-448: within PreDeploy there's a condition — line 440 license, 447 createSROSFiles. Let me look at the beginning of PreDeploy to see the gating condition. Earlier I saw at line 410: `n.isStandaloneNode() || (n.isDistributedCardNode() && n.isCPM(\"\"))` — that was from prior summary about PreDeploy. Let me verify by reading sros.go 395-450.\n\nActually from prior summary: \"PreDeploy line 410: `n.isStandaloneNode() || (n.isDistributedCardNode() && n.isCPM(\"\"))`\". But the code I just read at 420-448 shows the PreDeploy body (binds, license, createSROSFiles) — need the enclosing if. Let me read 395-420.\n\nIf base distributed node does NOT call createSROSFiles, then writeChassisInfoToLabDir (which contains the warn call) never runs for base → no duplicate. writeChassisInfoToLabDir is called within createSROSFiles presumably. So only CPM A warns for distributed. Let me verify: grep writeChassisInfoToLabDir call sites.\n\nLet me also double check the standalone node with components==0: warnUnsupportedComponents → isStandaloneNode true → proceeds → effective = componentForConfig(nil) → validates env-configured hardware. Good.\n\nI. **One more potential issue — `n.Cfg.Env[envNokiaSrosChassis]` for the chassis override in warnUnsupportedComponents**: `chassis := strings.TrimSpace(n.Cfg.Env[envNokiaSrosChassis])` — for base distributed node (if it runs), chassis = base NodeType. For CPM component node, chassis env inherited from base = base NodeType. Good.\n\nJ. **`IsHealthy` for component nodes** — moved, fine.\n\nK. **Now check `verifyNokiaSrsimImage` / CheckDeploymentConditions changes** — previously read; skip.\n\nL. **Potential issue with `keepUserEnv` in `setupComponentNodes`:** `componentConfig.Env` is a deep copy of base `n.Cfg.Env`, which for a distributed base INCLUDES `NOKIA_SROS_SLOT` (if user set slot at node level for distributed? envNokiaSrosSlot for base — Init uppercases `n.Cfg.Env[envNokiaSrosSlot]` \"make sure we always have uppercase slot definition\" — that's for card nodes). The comment at line 669-670: \"Slot identifies this container. A node-level NOKIA_SROS_SLOT cannot apply to every card.\" → slot forced to c.Slot AFTER keepUserEnv. Good.\n\nM. **The `keepUserEnv` dst pollution:** `keepUserEnv(n.Cfg.ShortName, componentConfig.Env, componentDerivedEnv(c), n.userEnv)` — derived includes envNokiaSrosCard when component.Type != \"\". But for a distributed base, the components list includes CPM A/B entries with Type \"\" typically, and line cards with types. For CPM A component node, derived env has no card → fine.\n\nN. **Now — a REAL issue candidate: duplicate `MDA` env key naming for xiom mdas.** setComponentEnvVars (moved): keys `NOKIA_SROS_MDA_X<xiom>_<mda>` and `NOKIA_SROS_MDA_<slot>`. And applyHardwareEnv parses `NOKIA_SROS_MDA_X` prefix. Consistent.\n\nO. **`upsertXiomMDA`** — fine.\n\nP. **Check `sros_test.go` additions** — read earlier. Tests cover classification, warnings, template data, component config gen. Good coverage.\n\nQ. **Docs/README**: docs/manual/kinds/sros.md updated with new components model; README updated. Schema: clab.schema.json got new enum values (ixr-e3, sar-10x, ixr-e2sc, cpm/iom/mda/xiom types incl. xiom types?). The schema diff hunk 3000-3119: I read it earlier — added node type enums and mda types + xiom enum? Prior summary says \"new chassis types (ixr-e2sc, ixr-e3, sar-10x)\". Also `sros_schema_gen.sh` regenerates. Fine.\n\nR. **Robot tests**: new shared resource + shards. Fine.\n\nS. **Now potential P3: `integratedSrosSlotAllowed` uses `standaloneSlotName`** — what is standaloneSlotName? Probably \"\" or \"A\"? If slot == \"\" → standaloneSlotName. Let me check its value. grep.\n\nT. **`isRedundantIntegratedSrosComponents` requires ALL components' slots allowed** — for ixr-r6 allowedSlots A/B; two components A and B → redundant → distributed base. One component A → not redundant → standalone. What if user gives components A and C (invalid slot for ixr-r6)? isRedundantIntegrated... returns false → len(components)>1 → for integrated type... isDistributedBaseNode: isIntegratedSrosNodeType → return isRedundant... = false. isDistributedCardNode: slot env set && len(components)==0 → false (len=2). isStandaloneNode → true → setupStandaloneComponents errors (>1 components for ixr-r6? The error message: \"expected at most one component override for standalone SR-SIM node %q, or one component per slot %s for redundant type %q\" — good error.\n\nHmm wait, but what about `integratedSrosAllowedSlots` for ixr-r6 = [A, B]; components A+B → redundant. What about ixr-e2 (allowedSlots=[A]) with components A+A? checkComponentSlotsConfig catches duplicate slots (moved to component.go line ~150: \"node %s slot %s duplicate definition\"). Where is checkComponentSlotsConfig called? In CheckDeploymentConditions presumably. But note the duplicate check uses `componentNames[component.Slot]` (raw, not uppercased) for insertion while checking uppercased key — pre-existing bug (inserts raw slot, checks upper). If user provides \"a\" and \"A\": ToUpper both → \"A\" exists → error caught. If \"a\" and \"a\": ToUpper(\"a\")=\"A\" not in map (map has \"a\") → no error; then components \"a\",\"a\" both → isRedundant... integratedSrosSlotAllowed(\"a\") → ToUpper → A allowed → redundant=true → distributed base with two components both slot \"a\" → calcComponentName both named same? componentConfig.ShortName = calcComponentName(base, \"a\") → suffix \"-a\" both → duplicate container names! Hmm wait — but slot \"a\" — calcComponentName probably uppercases? Let me check calcComponentName. Also this duplicate-slot-check insertion bug is pre-existing (moved unchanged from base). Let me verify base version: base sros.go line ~1046 had same code with `componentNames[component.Slot] = struct{}{}` insertion and ToUpper check. Yes — from the diff removal (lines 1966-1987): check `_, exists := componentNames[slot]` (uppercased) then `componentNames[component.Slot] = struct{}{}` (raw). Pre-existing bug, moved verbatim into component.go. It's pre-existing → not introduced by this PR; per instructions \"focus on issues introduced or materially worsened by this PR\". A moved bug isn't introduced. I could mention as P4? The rule says focus on issues introduced or materially worsened. Moving code doesn't worsen it. But it's now in a new file being reviewed... I'll mention briefly as P4 (optional) — actually, better: it IS pre-existing; flagging as P4 \"while moving, consider fixing\" is legitimate actionable improvement. Hmm, but I should be careful not to inflate. It's a genuine latent bug: two components with same lower-case slot bypass the duplicate check → duplicate container names. That's a real correctness edge case, pre-existing. I'll include as P4 with note it's pre-existing but surfaced by the move.\n\nWait — actually let me double check calcComponentName to assess impact: `calcComponentName(name, slot)` — from base: appends suffix? Let me check head. If it uppercases the slot for naming, then \"a\" → name suffix \"-A\"? Even so, two components with identical slot \"a\" produce identical names → duplicate. But would the deploy even get there? isRedundantIntegratedSrosComponents requires ALL slots allowed (A/B) — \"a\"→A allowed for ixr-r6 → redundant → distributed base. For non-integrated (sr-7s) with components \"1\",\"1\": duplicate check missed (both raw \"1\" in map after first insertion? No wait: first component: slot=ToUpper(\"1\")=\"1\", exists? map empty → no; insert componentNames[\"1\"]. Second component: slot=\"1\", exists → YES → error. Ah right — for same-case duplicates the check works. Only mixed-case duplicates (\"a\" then \"A\"): first: slot=\"A\", not exists, insert componentNames[\"a\"]. Second: slot=\"A\", exists in map? map has \"a\" only → no exists → insert componentNames[\"A\"]. So mixed-case duplicates pass the check. Then downstream: e.g. non-integrated with slots \"a\" and \"A\" → buildComponentCfgLines ToUpper → both slot A → two card lines for same slot; setupComponentNodes → calcComponentName with slot \"a\" and \"A\" → names differ? calcComponentName(name, slot) — let me check: probably `fmt.Sprintf(\"%s-%s\", name, strings.ToLower(slot))`? If lowercase → \"-a\" and \"-a\" identical → duplicate container names → deploy failure. Mixed-case duplicate slots is a weird user input; error message would be better. Pre-existing. P4.\n\nU. **Now check `componentSFM` vs docs**: \"SFM type from kind config or env\". Fine.\n\nV. **Check `n.integratedComponentOverride()` for component CPM nodes when rootComponents slot match**: `strings.EqualFold(strings.TrimSpace(c.Slot), slot)` — slot is Cfg.Env[envNokiaSrosSlot] = c.Slot raw (line 670 sets raw c.Slot, e.g. \"a\" lowercase). EqualFold handles. Good.\n\nW. **Potential issue: `generateIntegratedComponentConfig` reads `n.Cfg.Env[envNokiaSrosCard]`** — for component CPM nodes with component type set, skip. For standalone integrated node with env card override — skip. But for standalone integrated node with NO components but env NOKIA_SROS_CARD set by... user. Skip generation. OK per docs.\n\nX. **Now, importantly — check `config.go` `createSROSConfigFiles`** and whether `generateComponentConfig` is called for distributed base (rootComponents empty → \"\" → fine) and for line cards (rootComponents set, slot non-CPM → buildComponentCfgLines over rootComponents filtered to ALL non-CPM components — WAIT. For a LINE CARD component node (slot 2), generateComponentConfig iterates rootComponents and generates config for ALL non-CPM components (slots 1..N), not just slot 2! So each line card container generates the full component config for all cards? Then buildStartupConfig for line card includes card 1..N config? Hmm — but each card container mounts its own cf3 dir (LabDir/slot/). If every line card generates config for ALL cards, then card 2's startup config would include card 1's config lines — is that intended? In SR-SIM, each line card container boots a full SR OS instance managing its own card... Actually in SR-SIM distributed mode, each line card container runs an SR OS instance that configures its own card only. Generating all cards' config on every line card would conflict. Let me check base behavior: base generateComponentConfig: `if len(n.kindSpecificCfg().Components) > 1 || n.rootCtrName != \"\" { return \"\" }` — wait base returned \"\" when rootCtrName != \"\" (i.e., component nodes) unless rootComponents non-empty path. Base:\n\n```go\ncomponents := n.rootComponents\nif len(components) == 0 {\n    if len(n.kindSpecificCfg().Components) > 1 || n.rootCtrName != \"\" {\n        return \"\"\n    }\n    lines := buildIntegratedComponentCfgLines(...)\n    ...\n}\nfor _, c := range components { ... }\nlines := buildComponentCfgLines(components, ...)\n```\n\nHmm base had the same structure: rootComponents non-empty → build for all non-CPM components. So same as head. Pre-existing behavior — each line card generates config for all cards? That seems odd but is pre-existing. Actually wait — maybe that's intentional: in SR-SIM, CPM configures all cards; line card containers... hmm. Not my concern — pre-existing.\n\nHmm, actually wait. Let me reconsider: for line card component node, `generateComponentConfig` uses `n.componentsForConfig(components)` where components = rootComponents (base's full list). So yes, all cards. Pre-existing (base did the same). OK.\n\nY. **`IsHealthy` for component nodes** — moved, fine.\n\nZ. **Check `verifyNokiaSrsimImage` / CheckDeploymentConditions changes** — previously read; skip.\n\nNow let me verify the PreDeploy gating and writeChassisInfoToLabDir call sites to close loop H.",
           "time": {
-            "start": 1792346830185
+            "start": 1792346830185,
+            "end": 1792346885533
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_150330da1001mEjnthqzEKwzjX",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150322c97001uj2W43347p13ml",
+          "text": "Let me verify the `PreDeploy` gating and `writeChassisInfoToLabDir` call sites, plus `standaloneSlotName` and `calcComponentName` semantics.",
+          "time": {
+            "start": 1792346885537,
+            "end": 1792346885967
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150330ebc0018gOjhG4gVXihHs",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150322c97001uj2W43347p13ml",
+          "callID": "call_9850ee4ecfa742049e55d014",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes/sros",
+              "pattern": "writeChassisInfoToLabDir|standaloneSlotName =|func \\(n \\*sros\\) PreDeploy"
+            },
+            "output": "Found 5 matches\n/source/head/nodes/sros/sros.go:\n  Line 57: \tstandaloneSlotName = slotAName\n\n  Line 394: func (n *sros) PreDeploy(ctx context.Context, params *clabnodes.PreDeployParams) error {\n\n  Line 1028: \tif err := n.writeChassisInfoToLabDir(ctx); err != nil {\n\n  Line 1048: // writeChassisInfoToLabDir fetches /opt/nokia/chassis_info.json from the node image\n\n  Line 1051: func (n *sros) writeChassisInfoToLabDir(ctx context.Context) error {\n",
+            "title": "writeChassisInfoToLabDir|standaloneSlotName =|func \\(n \\*sros\\) PreDeploy",
+            "metadata": {
+              "matches": 5,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346885826,
+              "end": 1792346885837
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150330f46001h6y9GezzFJN7s1",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150322c97001uj2W43347p13ml",
+          "callID": "call_2948f8a5d7884ac4b9fb2934",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/sros/sros.go",
+              "limit": 35,
+              "offset": 385
+            },
+            "output": "<path>/source/head/nodes/sros/sros.go</path>\n<type>file</type>\n<content>\n385: \n386: \tsetComponentEnvVars(vars, slotA)\n387: \n388: \tmaps.Copy(vars, slotA.Env)\n389: \n390: \treturn vars, nil\n391: }\n392: \n393: // Pre Deploy func for SR-SIM kind.\n394: func (n *sros) PreDeploy(ctx context.Context, params *clabnodes.PreDeployParams) error {\n395: \tlog.Debug(\"Running pre-deploy\")\n396: \n397: \tif err := n.verifyNokiaSrsimImage(ctx); err != nil {\n398: \t\treturn err\n399: \t}\n400: \n401: \t// store the preDeployParams\n402: \tn.preDeployParams = params\n403: \n404: \tn.InterfaceHelp = InterfaceHelp\n405: \n406: \t// store provided pubkeys\n407: \tn.sshPubKeys = params.SSHPubKeys\n408: \n409: \t// Create files/dir structure for standalone nodes or distributed CPM nodes\n410: \tif n.isStandaloneNode() || (n.isDistributedCardNode() && n.isCPM(\"\")) {\n411: \t\t// generate the certificate\n412: \t\tif *n.Cfg.Certificate.Issue {\n413: \t\t\tn.Cfg.Certificate.SANs = append(n.Cfg.Certificate.SANs, n.baseShortName, n.baseLongName)\n414: \t\t\tcertificate, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n415: \t\t\tif err != nil {\n416: \t\t\t\treturn err\n417: \t\t\t}\n418: \n419: \t\t\t// set the certificate data\n\n(Showing lines 385-419 of 1910. Use offset=420 to continue.)\n</content>",
+            "title": "source/head/nodes/sros/sros.go",
+            "metadata": {
+              "preview": "\n\tsetComponentEnvVars(vars, slotA)\n\n\tmaps.Copy(vars, slotA.Env)\n\n\treturn vars, nil\n}\n\n// Pre Deploy func for SR-SIM kind.\nfunc (n *sros) PreDeploy(ctx context.Context, params *clabnodes.PreDeployParams) error {\n\tlog.Debug(\"Running pre-deploy\")\n\n\tif err := n.verifyNokiaSrsimImage(ctx); err != nil {\n\t\treturn err\n\t}\n\n\t// store the preDeployParams\n\tn.preDeployParams = params\n\n\tn.InterfaceHelp = InterfaceHelp",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/sros/sros.go",
+                "text": "\n\tsetComponentEnvVars(vars, slotA)\n\n\tmaps.Copy(vars, slotA.Env)\n\n\treturn vars, nil\n}\n\n// Pre Deploy func for SR-SIM kind.\nfunc (n *sros) PreDeploy(ctx context.Context, params *clabnodes.PreDeployParams) error {\n\tlog.Debug(\"Running pre-deploy\")\n\n\tif err := n.verifyNokiaSrsimImage(ctx); err != nil {\n\t\treturn err\n\t}\n\n\t// store the preDeployParams\n\tn.preDeployParams = params\n\n\tn.InterfaceHelp = InterfaceHelp\n\n\t// store provided pubkeys\n\tn.sshPubKeys = params.SSHPubKeys\n\n\t// Create files/dir structure for standalone nodes or distributed CPM nodes\n\tif n.isStandaloneNode() || (n.isDistributedCardNode() && n.isCPM(\"\")) {\n\t\t// generate the certificate\n\t\tif *n.Cfg.Certificate.Issue {\n\t\t\tn.Cfg.Certificate.SANs = append(n.Cfg.Certificate.SANs, n.baseShortName, n.baseLongName)\n\t\t\tcertificate, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\n\t\t\t// set the certificate data",
+                "lineStart": 385,
+                "lineEnd": 419,
+                "totalLines": 1910,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792346885963,
+              "end": 1792346885977
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_150330f5c001JAraYK0lOp1Rpa",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150322c97001uj2W43347p13ml",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 44436,
+            "input": 8781,
+            "output": 111,
+            "reasoning": 6616,
+            "cache": {
+              "read": 28928,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_150330f71001z0oJV0z6D4QS8S",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346886001,
+          "completed": 1792346891118
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 45446,
+          "input": 728,
+          "output": 86,
+          "reasoning": 344,
+          "cache": {
+            "read": 44288,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1503316aa001JzblxEfWopiGjw",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150330f71001z0oJV0z6D4QS8S"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1503316ac001oh6dbzwHVZCujW",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150330f71001z0oJV0z6D4QS8S",
+          "text": "Confirmed: `PreDeploy` → `createSROSFiles` only for standalone or distributed CPM cards. Distributed base node does NOT run createSROSFiles → `writeChassisInfoToLabDir`/`warnUnsupportedComponents` never runs on the base; only on standalone nodes and CPM component nodes. So for distributed (non-integrated) nodes, warnings come from CPM A only. And line cards: isDistributedCardNode() && isCPM(\"\") false → no PreDeploy file creation. Good, no duplicate warnings.\n\nHmm wait — but there's now a subtle gap: for the redundant integrated node (ixr-r6 A+B), the component CPM nodes are `isDistributedCardNode() && isCPM(\"\")` → both A and B run PreDeploy → createSROSFiles → writeChassisInfoToLabDir → warnUnsupportedComponents: guard `!n.isStandaloneNode() && !n.isCPM(slotAName)` → B returns early, A warns. Good.\n\nAlso: for the distributed base node (non-integrated), the base itself never writes chassis_info.json — fine, component CPM A does (rootComponents set). Good.\n\nBut wait: for a distributed base (sr-7s with components), CPM A component node — `components := n.rootComponents` non-empty → effective = componentsForConfig(rootComponents) → validates all. Good.\n\nNow `standaloneSlotName = slotAName` — so integratedSrosSlotAllowed(\"\") → A. Fine.\n\nNow let me also double-check `createSROSFiles` body (line 999-1047) to see the full flow and error handling.",
+          "time": {
+            "start": 1792346887852,
+            "end": 1792346890474
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1503320ec001fTh28Rm76NjrOw",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150330f71001z0oJV0z6D4QS8S",
+          "text": "`PreDeploy` gating confirmed — only standalone nodes and distributed CPM cards run `createSROSFiles`, so warnings fire once (CPM A only). Let me read `createSROSFiles` and `writeChassisInfoToLabDir` bodies to finish.",
+          "time": {
+            "start": 1792346890476,
+            "end": 1792346891095
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15033234e001pQTYPV2CqmW5kw",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150330f71001z0oJV0z6D4QS8S",
+          "callID": "call_3d63ab4352fa4e27894fcbfc",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/sros/sros.go",
+              "limit": 90,
+              "offset": 995
+            },
+            "output": "<path>/source/head/nodes/sros/sros.go</path>\n<type>file</type>\n<content>\n995: \treturn n.DefaultNode.CheckDeploymentConditions(ctx)\n996: }\n997: \n998: // Func that creates the Dirs used for the kind SR-SIM and sets/merges the default Env vars.\n999: func (n *sros) createSROSFiles(ctx context.Context) error {\n1000: \tlog.Debug(\"Creating directory structure for SR OS container\", \"node\", n.Cfg.ShortName)\n1001: \n1002: \tvar err error\n1003: \n1004: \tif n.Cfg.License != \"\" && (n.isCPM(\"\") || n.isStandaloneNode()) {\n1005: \t\t// copy license file to node specific directory in lab\n1006: \t\tlicPath := filepath.Join(n.Cfg.LabDir, \"license.key\")\n1007: \t\tif err := clabutils.CopyFile(context.Background(), n.Cfg.License, licPath,\n1008: \t\t\tclabconstants.PermissionsFileDefault); err != nil {\n1009: \t\t\treturn fmt.Errorf(\n1010: \t\t\t\t\"license copying src %s -> dst %s failed: %v\",\n1011: \t\t\t\tn.Cfg.License,\n1012: \t\t\t\tlicPath,\n1013: \t\t\t\terr,\n1014: \t\t\t)\n1015: \t\t}\n1016: \t\tlog.Debug(\"SR OS license copied\", \"src\", n.Cfg.License, \"dst\", licPath)\n1017: \t}\n1018: \tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot]),\n1019: \t\tclabconstants.PermissionsOpen)\n1020: \tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], \"config\"),\n1021: \t\tclabconstants.PermissionsOpen)\n1022: \tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], configCf1),\n1023: \t\tclabconstants.PermissionsOpen)\n1024: \tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], configCf2),\n1025: \t\tclabconstants.PermissionsOpen)\n1026: \tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], configCf3),\n1027: \t\tclabconstants.PermissionsOpen)\n1028: \tif err := n.writeChassisInfoToLabDir(ctx); err != nil {\n1029: \t\tlog.Debug(\"Didn't write chassis_info.json to lab dir. Docker version is likely too new.\",\n1030: \t\t\t\"node\", n.Cfg.ShortName, \"path\", n.Cfg.LabDir, \"error\", err)\n1031: \t}\n1032: \tif n.isCPM(slotAName) || n.isStandaloneNode() {\n1033: \t\terr = n.createSROSCertificates()\n1034: \t}\n1035: \tif err != nil {\n1036: \t\treturn err\n1037: \t}\n1038: \t// Skip config if node is not CPM\n1039: \tif n.isCPM(\"\") || n.isStandaloneNode() {\n1040: \t\terr = n.createSROSConfigFiles()\n1041: \t\tif err != nil {\n1042: \t\t\treturn err\n1043: \t\t}\n1044: \t}\n1045: \treturn nil\n1046: }\n1047: \n1048: // writeChassisInfoToLabDir fetches /opt/nokia/chassis_info.json from the node image\n1049: // (via graph driver, same as srosVersionFromImage) and writes it under n.Cfg.LabDir\n1050: // with the same filename (chassis_info.json).\n1051: func (n *sros) writeChassisInfoToLabDir(ctx context.Context) error {\n1052: \timageInspect, err := n.Runtime.InspectImage(ctx, n.Cfg.Image)\n1053: \tif err != nil {\n1054: \t\treturn fmt.Errorf(\"inspect image: %w\", err)\n1055: \t}\n1056: \tcontent, err := ReadFileFromImageInspect(imageInspect, DefaultChassisInfoPath)\n1057: \tif err != nil {\n1058: \t\treturn err\n1059: \t}\n1060: \tdstPath := filepath.Join(n.Cfg.LabDir, filepath.Base(DefaultChassisInfoPath))\n1061: \tlicensed := append([]byte(chassisInfoFileLicense), content...)\n1062: \tif err := os.WriteFile(dstPath, licensed, clabconstants.PermissionsFileDefault); err != nil {\n1063: \t\treturn fmt.Errorf(\"write %s: %w\", dstPath, err)\n1064: \t}\n1065: \tlog.Debug(\"Wrote chassis_info.json to lab dir\", \"node\", n.Cfg.ShortName, \"path\", dstPath)\n1066: \tn.warnUnsupportedComponents(content)\n1067: \treturn nil\n1068: }\n1069: \n1070: // warnUnsupportedComponents validates the effective component configuration against the\n1071: // chassis_info.json extracted from this exact image. Validation is advisory and never blocks\n1072: // deploy.\n1073: func (n *sros) warnUnsupportedComponents(content []byte) {\n1074: \t// A distributed node validates once, from CPM A, to avoid duplicate warnings from CPM B.\n1075: \tif !n.isStandaloneNode() && !n.isCPM(slotAName) {\n1076: \t\treturn\n1077: \t}\n1078: \n1079: \tinfo, err := parseChassisInfo(content)\n1080: \tif err != nil {\n1081: \t\tlog.Warn(\"Could not validate SR-SIM components against chassis_info.json\",\n1082: \t\t\t\"node\", n.Cfg.ShortName, \"error\", err)\n1083: \t\treturn\n1084: \t}\n\n(Showing lines 995-1084 of 1910. Use offset=1085 to continue.)\n</content>",
+            "title": "source/head/nodes/sros/sros.go",
+            "metadata": {
+              "preview": "\treturn n.DefaultNode.CheckDeploymentConditions(ctx)\n}\n\n// Func that creates the Dirs used for the kind SR-SIM and sets/merges the default Env vars.\nfunc (n *sros) createSROSFiles(ctx context.Context) error {\n\tlog.Debug(\"Creating directory structure for SR OS container\", \"node\", n.Cfg.ShortName)\n\n\tvar err error\n\n\tif n.Cfg.License != \"\" && (n.isCPM(\"\") || n.isStandaloneNode()) {\n\t\t// copy license file to node specific directory in lab\n\t\tlicPath := filepath.Join(n.Cfg.LabDir, \"license.key\")\n\t\tif err := clabutils.CopyFile(context.Background(), n.Cfg.License, licPath,\n\t\t\tclabconstants.PermissionsFileDefault); err != nil {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"license copying src %s -> dst %s failed: %v\",\n\t\t\t\tn.Cfg.License,\n\t\t\t\tlicPath,\n\t\t\t\terr,\n\t\t\t)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/sros/sros.go",
+                "text": "\treturn n.DefaultNode.CheckDeploymentConditions(ctx)\n}\n\n// Func that creates the Dirs used for the kind SR-SIM and sets/merges the default Env vars.\nfunc (n *sros) createSROSFiles(ctx context.Context) error {\n\tlog.Debug(\"Creating directory structure for SR OS container\", \"node\", n.Cfg.ShortName)\n\n\tvar err error\n\n\tif n.Cfg.License != \"\" && (n.isCPM(\"\") || n.isStandaloneNode()) {\n\t\t// copy license file to node specific directory in lab\n\t\tlicPath := filepath.Join(n.Cfg.LabDir, \"license.key\")\n\t\tif err := clabutils.CopyFile(context.Background(), n.Cfg.License, licPath,\n\t\t\tclabconstants.PermissionsFileDefault); err != nil {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"license copying src %s -> dst %s failed: %v\",\n\t\t\t\tn.Cfg.License,\n\t\t\t\tlicPath,\n\t\t\t\terr,\n\t\t\t)\n\t\t}\n\t\tlog.Debug(\"SR OS license copied\", \"src\", n.Cfg.License, \"dst\", licPath)\n\t}\n\tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot]),\n\t\tclabconstants.PermissionsOpen)\n\tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], \"config\"),\n\t\tclabconstants.PermissionsOpen)\n\tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], configCf1),\n\t\tclabconstants.PermissionsOpen)\n\tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], configCf2),\n\t\tclabconstants.PermissionsOpen)\n\tclabutils.CreateDirectory(path.Join(n.Cfg.LabDir, n.Cfg.Env[envNokiaSrosSlot], configCf3),\n\t\tclabconstants.PermissionsOpen)\n\tif err := n.writeChassisInfoToLabDir(ctx); err != nil {\n\t\tlog.Debug(\"Didn't write chassis_info.json to lab dir. Docker version is likely too new.\",\n\t\t\t\"node\", n.Cfg.ShortName, \"path\", n.Cfg.LabDir, \"error\", err)\n\t}\n\tif n.isCPM(slotAName) || n.isStandaloneNode() {\n\t\terr = n.createSROSCertificates()\n\t}\n\tif err != nil {\n\t\treturn err\n\t}\n\t// Skip config if node is not CPM\n\tif n.isCPM(\"\") || n.isStandaloneNode() {\n\t\terr = n.createSROSConfigFiles()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\treturn nil\n}\n\n// writeChassisInfoToLabDir fetches /opt/nokia/chassis_info.json from the node image\n// (via graph driver, same as srosVersionFromImage) and writes it under n.Cfg.LabDir\n// with the same filename (chassis_info.json).\nfunc (n *sros) writeChassisInfoToLabDir(ctx context.Context) error {\n\timageInspect, err := n.Runtime.InspectImage(ctx, n.Cfg.Image)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"inspect image: %w\", err)\n\t}\n\tcontent, err := ReadFileFromImageInspect(imageInspect, DefaultChassisInfoPath)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdstPath := filepath.Join(n.Cfg.LabDir, filepath.Base(DefaultChassisInfoPath))\n\tlicensed := append([]byte(chassisInfoFileLicense), content...)\n\tif err := os.WriteFile(dstPath, licensed, clabconstants.PermissionsFileDefault); err != nil {\n\t\treturn fmt.Errorf(\"write %s: %w\", dstPath, err)\n\t}\n\tlog.Debug(\"Wrote chassis_info.json to lab dir\", \"node\", n.Cfg.ShortName, \"path\", dstPath)\n\tn.warnUnsupportedComponents(content)\n\treturn nil\n}\n\n// warnUnsupportedComponents validates the effective component configuration against the\n// chassis_info.json extracted from this exact image. Validation is advisory and never blocks\n// deploy.\nfunc (n *sros) warnUnsupportedComponents(content []byte) {\n\t// A distributed node validates once, from CPM A, to avoid duplicate warnings from CPM B.\n\tif !n.isStandaloneNode() && !n.isCPM(slotAName) {\n\t\treturn\n\t}\n\n\tinfo, err := parseChassisInfo(content)\n\tif err != nil {\n\t\tlog.Warn(\"Could not validate SR-SIM components against chassis_info.json\",\n\t\t\t\"node\", n.Cfg.ShortName, \"error\", err)\n\t\treturn\n\t}",
+                "lineStart": 995,
+                "lineEnd": 1084,
+                "totalLines": 1910,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792346891092,
+              "end": 1792346891111
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15033236a001tnupLgVfO670xZ",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150330f71001z0oJV0z6D4QS8S",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 45446,
+            "input": 728,
+            "output": 86,
+            "reasoning": 344,
+            "cache": {
+              "read": 44288,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15033237d001k7RDZL8V6GQ5wz",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346891133,
+          "completed": 1792346910758
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 48809,
+          "input": 1481,
+          "output": 123,
+          "reasoning": 1893,
+          "cache": {
+            "read": 45312,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_150332ba6001x96jbopgHOM5HK",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_150332ba80012om4Wfs0iHLwWk",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz",
+          "text": "All main flows verified. Now let me consolidate the findings.\n\nRecap of candidate findings and their final assessment:\n\n**1. Mixed-case duplicate component slots bypass the duplicate-slot check (P4, pre-existing, moved verbatim).**\n`checkComponentSlotsConfig` in `component.go` (lines ~145-168): checks `componentNames[slot]` (uppercased) but inserts `componentNames[component.Slot]` (raw). Two components with slots `a` and `A` pass validation; downstream, both normalize to slot A → duplicate config lines and, for distributed nodes, identical component container names. Pre-existing bug (moved from `sros.go` unchanged), so P4 optional fix while touching the file. Verify base had identical code — yes (diff lines 1966-1987 removed the identical body). Also `calcComponentName` — let me quickly confirm name collision. calcComponentName(name, slot) probably does `fmt.Sprintf(\"%s-%s\", name, strings.ToLower(slot))` or keeps slot as-is. Either way \"a\" vs \"A\" → both normalize to A in buildComponentCfgLines. For setupComponentNodes, slots \"a\" and \"A\" → component names \"<name>-a\" vs \"<name>-A\"? If calcComponentName preserves case, container names differ but config lines duplicate for slot A. If lowercased, identical names. Let me check calcComponentName quickly.\n\n**2. Inline SFM warning duplicates `warnUserEnvOverrides` (P4).**\n`sros.go` Init lines 273-297 (head): the SFM branch inlines the same warn-message shape as `warnUserEnvOverrides`. Could be reduced by passing a derived map `{envNokiaSrosSFM: sfm}` to `warnUserEnvOverrides`. Minor maintainability. P4.\n\nActually — wait. Is it exactly duplicated semantics? warnUserEnvOverrides(node, derived, userEnv) warns for keys where userEnv has a differing value. The inline block: if userEnv has SFM and differs → warn; else if not set → set Cfg.Env. So yes, identical warning semantics for one key. The inline version additionally sets the env. A cleaner form: derive map, warn, then set if absent. P4.\n\n**3. Anything P2/P3?** Let me think harder about actual defects in new code:\n\n- `componentWarnings` line 96: `if sfm != \"\" && len(entry.SFM) > 0 && !slices.Contains(entry.SFM, sfm)` — SFM validated even for CPM-slot components without SFM... fine.\n\n- `warnUnsupportedComponents`: `components = n.rootComponents; if len(components)==0 { components = kindSpecificCfg().Components }`. For a CPM component node of a distributed node, rootComponents set → fine. For standalone: kindSpecificCfg().Components. For redundant integrated CPM A: rootComponents set (the A+B list) → effective includes both A and B → slot B validated against entry.Redundant (ixr-r6 Redundant=true presumably) → no warning. But hold on: for ixr-r6 redundant, componentsForConfig applies per-component env; each component may have its own MDA. Fine.\n\nHmm — but for the redundant integrated CPM A node: `n.componentForConfig(components)` applies `n.hardwareEnv()` (userEnv of the component node = base userEnv). If the user set NOKIA_SROS_MDA_2 at node level, it applies to BOTH components A and B (each gets MDA 2 override). The warn for that: warnUnsupportedComponents doesn't warn — but keepUserEnv already warned during setupComponentNodes if node env overrode derived component keys... derived env for component A doesn't include MDA_2 unless component A declared it. If user sets NOKIA_SROS_MDA_2 at node level with no component declaring it, it's applied to every component silently (no warning) — same as env-only semantics for standalone. Consistent with docs (\"node env overrides components\"). Fine.\n\n- **Potential issue: `warnUnsupportedComponents` for standalone node uses `n.componentSFM()`** — includes kindSpecificCfg().SFM fallback; componentWarnings checks entry.SFM list. Good.\n\n- **`buildIntegratedComponentCfgLines` ignores `override.Type`** — for integrated nodes, the card type comes from the defaults table; override.Type is ignored (card override → skip generation). But if a user sets component Type on an integrated single-slot node (now allowed), NOKIA_SROS_CARD is set → generation skipped entirely → default card/mda config NOT generated. Per docs, intended.\n\n- **`isRedundantIntegratedSrosComponents` doesn't check component count == exactly 2** — components A+B+C for ixr-r6: allowedSlots A/B → C fails → not redundant → not distributed base → isDistributedCardNode false (components non-empty) → standalone → setupStandaloneComponents: len>1 → error listing allowed slots A/B. Good.\n\n- **ixr-r6 components A+A (duplicate, mixed case \"a\",\"A\")**: checkComponentSlotsConfig passes (bug above) → isRedundant → distributed base → two components both slot A → calcComponentName: need to check. Let me read calcComponentName.\n\n- **`componentConfigFromLines` with power config**: moved, fine.\n\n- **Schema**: clab.schema.json — new node types and mda types added; do the new enum values include `xiom` types? The script generates sros-xiom-types enum. Does the schema previously have sros-xiom-types? Let me spot-check the head schema for \"sros-xiom-types\" and the new node types (ixr-e3, sar-10x, ixr-e2sc). Also `Components` schema — does it have a `type` field? Presumably yes already. Let me grep the schema quickly.\n\n- **Docs**: updated. New `26_10_TESTS` gate in robot tests — is that var set in CI workflow? The workflow change (lines 1-83 of diff) — I read it earlier: shards SRSIM_TEST_SUITE etc. Does the workflow set `26_10_TESTS`? If the new-chassis test requires `26_10_TESTS=26.10` and CI doesn't set it, the new tests would be skipped in CI. Let me check the workflow diff for 26_10_TESTS. This is a real potential coverage gap. Let me grep diff for 26_10_TESTS.\n\n- **`sros_schema_gen.sh`**: uses `first(...; select(type == \"array\" and index(\"ixr-e2n\")))` — jq 1.6 supports `first(...)`? `first(expr)` is a jq builtin since 1.5? `first(f)` is defined as `def first(f): label $out | f, ., break $out;` — yes, standard since jq 1.5. Fine.\n\n- **`keepUserEnv` when userSet but dst already has same value**: writes same value — fine.\n\n- **One more: `hardwareEnv()` fallback `n.Cfg.Env`** for nodes not through Init — comment explains. For the base node, userEnv is set in Init always (unless envAlreadyResolved). For component nodes, userEnv = base clone. OK.\n\n- **`componentForConfig` applies `out.Env` (component env) then `hardwareEnv()`** — but for a component node, `n.Cfg.Env` was already merged with component-derived env during Init (else branch? component node Init: envAlreadyResolved=true, so SFM skip; then standalone branch not taken (isDistributedCardNode) → else branch — what does else branch do? Let me check Init lines 315-335 head. If else branch merges srosEnv into Cfg.Env only, fine.) For config gen on component nodes, hardwareEnv() = userEnv (correct precedence).\n\nHmm wait — for the component node, `applyHardwareEnv(out, n.hardwareEnv())` uses userEnv — the NODE-level (base) env. But the component node's own `n.Cfg.Env` includes both base env and component-derived env. Using userEnv (base user env) for config gen means node env wins over component env — correct precedence per docs.\n\n- **What about `NOKIA_SROS_SLOT` in applyHardwareEnv?** Explicitly skipped. Good.\n\nNow, the SFM inline-duplication P4 and the pre-existing duplicate-slot P4. Let me also double check the docs statement \"a components type sets NOKIA_SROS_CARD\" — actually per setComponentEnvVars, component.Type sets envNokiaSrosCard. Yes.\n\nLet me now check:\n1. calcComponentName (for duplicate slot impact).\n2. CI workflow for 26_10_TESTS.\n3. Schema head enums for new types (ixr-e2sc, ixr-e3, sar-10x) and xiom enum presence.",
+          "time": {
+            "start": 1792346893224,
+            "end": 1792346910206
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_150336e02001X3lDBtI2N8POHA",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz",
+          "text": "Let me verify `calcComponentName`, check whether CI sets `26_10_TESTS` for the new test file, and spot-check the head schema enums.",
+          "time": {
+            "start": 1792346910210,
+            "end": 1792346910741
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150336f33001Gvbg59r2YddpL0",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz",
+          "callID": "call_f3f0781026eb4e2197357059",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes/sros/sros.go",
+              "pattern": "func \\(n \\*sros\\) calcComponentName"
+            },
+            "output": "Found 1 matches\n/source/head/nodes/sros/sros.go:\n  Line 833: func (n *sros) calcComponentName(name, slot string) string {\n",
+            "title": "func \\(n \\*sros\\) calcComponentName",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346910521,
+              "end": 1792346910534
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150336f9f001tlc535ARZru5k6",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz",
+          "callID": "call_2e5ce2f990674b0c809360c7",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/diff.txt",
+              "pattern": "26_10_TESTS"
+            },
+            "output": "Found 6 matches\n/source/diff.txt:\n  Line 3818: +Suite Setup         Skip If    '${26_10_TESTS}'.lower() != 'true'\n\n  Line 3819: +...                 SR-SIM 26.10 is required; enable with --variable 26_10_TESTS:true\n\n  Line 3827: +${26_10_TESTS}      false\n\n\n/source/head/tests/13-srsim/14-srsim-new-chassis.robot:\n  Line 7: Suite Setup         Skip If    '${26_10_TESTS}'.lower() != 'true'\n\n  Line 8: ...                 SR-SIM 26.10 is required; enable with --variable 26_10_TESTS:true\n\n  Line 16: ${26_10_TESTS}      false\n",
+            "title": "26_10_TESTS",
+            "metadata": {
+              "matches": 6,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346910628,
+              "end": 1792346910659
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15033700e001KizqHk6kcW1S9m",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz",
+          "callID": "call_ba21c3d12dcf4b128d39ff74",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/schemas/clab.schema.json",
+              "pattern": "sar-10x|ixr-e3|sros-xiom-types"
+            },
+            "output": "Found 12 matches\n/source/head/schemas/clab.schema.json:\n  Line 945:                                             \"ixr-e3\",\n\n  Line 946:                                             \"ixr-e3c\",\n\n  Line 947:                                             \"ixr-e3x\",\n\n  Line 958:                                             \"sar-10x\",\n\n  Line 2020:                 \"cpm-ixr-e3/imm8-sfp112+18-sfp28+2-qsfpdd\",\n\n  Line 2021:                 \"cpm-ixr-e3c/imm4-qsfp28+16-sfp28+8-sfp56\",\n\n  Line 2022:                 \"cpm-ixr-e3x/imm16-sfp112+15-sfp56+6-qsfpdd\",\n\n  Line 2117:                 \"cpm-ixr-e3/imm8-sfp112+18-sfp28+2-qsfpdd\",\n\n  Line 2118:                 \"cpm-ixr-e3c/imm4-qsfp28+16-sfp28+8-sfp56\",\n\n  Line 2119:                 \"cpm-ixr-e3x/imm16-sfp112+15-sfp56+6-qsfpdd\",\n\n  Line 2252:         \"sros-xiom-types\": {\n\n  Line 2342:                                 \"$ref\": \"#/definitions/sros-xiom-types\"\n",
+            "title": "sar-10x|ixr-e3|sros-xiom-types",
+            "metadata": {
+              "matches": 12,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346910739,
+              "end": 1792346910750
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_150337021001YxeTB1RriT8XI8",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033237d001k7RDZL8V6GQ5wz",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 48809,
+            "input": 1481,
+            "output": 123,
+            "reasoning": 1893,
+            "cache": {
+              "read": 45312,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_150337032001LiBerPTQC6INt5",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346910770,
+          "completed": 1792346915833
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 49703,
+          "input": 687,
+          "output": 104,
+          "reasoning": 272,
+          "cache": {
+            "read": 48640,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1503378eb001UxOJAaR615Y2DK",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150337032001LiBerPTQC6INt5"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1503378ee0017B3H2v7AL7X8gC",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150337032001LiBerPTQC6INt5",
+          "text": "Findings on these:\n\n1. `26_10_TESTS` — the new robot test file `14-srsim-new-chassis.robot` skips unless `26_10_TESTS:true`. The CI workflow diff (lines 1-83): does it pass `--variable 26_10_TESTS:true` for a shard? Let me check the workflow head file. If CI never enables it, the new-chassis tests only run manually. That's a coverage note, not necessarily a defect (gated tests for unreleased image are reasonable). But if the workflow has a shard intended to run them and doesn't set the variable, tests silently skip. Let me check the head workflow.\n\n2. Schema: ixr-e3, sar-10x in node-type enum; sros-xiom-types defined and referenced. Good. ixr-e2sc? Line 945-958 area — grep showed ixr-e3, sar-10x but not ixr-e2sc in output... The grep matched 12 lines; ixr-e2sc might be elsewhere. Let me check quickly. Also need `cpm-ixr-e2sc/...` in card types? Not necessarily. Let me grep ixr-e2sc in head schema.\n\n3. calcComponentName at 833 — read it.",
+          "time": {
+            "start": 1792346913006,
+            "end": 1792346915442
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150338275001jT3rDTAvLU82bU",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150337032001LiBerPTQC6INt5",
+          "callID": "call_7a30d310b47a42159235a70b",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/sros/sros.go",
+              "limit": 20,
+              "offset": 833
+            },
+            "output": "<path>/source/head/nodes/sros/sros.go</path>\n<type>file</type>\n<content>\n833: func (n *sros) calcComponentName(name, slot string) string {\n834: \tif n.renameDone {\n835: \t\treturn name\n836: \t}\n837: \treturn fmt.Sprintf(\"%s-%s\", name, strings.ToLower(slot))\n838: }\n839: \n840: // calcComponentFqdn computes the FQDN for a given slot.\n841: func (n *sros) calcComponentFqdn(slot string) string {\n842: \tif n.renameDone {\n843: \t\treturn n.Cfg.Fqdn\n844: \t}\n845: \tfqdnDotIndex := strings.Index(n.Cfg.Fqdn, \".\")\n846: \tif fqdnDotIndex < 0 {\n847: \t\treturn fmt.Sprintf(\"%s-%s\", n.Cfg.Fqdn, strings.ToLower(slot))\n848: \t}\n849: \tresult := fmt.Sprintf(\n850: \t\t\"%s-%s%s\",\n851: \t\tn.Cfg.Fqdn[:fqdnDotIndex],\n852: \t\tstrings.ToLower(slot),\n\n(Showing lines 833-852 of 1910. Use offset=853 to continue.)\n</content>",
+            "title": "source/head/nodes/sros/sros.go",
+            "metadata": {
+              "preview": "func (n *sros) calcComponentName(name, slot string) string {\n\tif n.renameDone {\n\t\treturn name\n\t}\n\treturn fmt.Sprintf(\"%s-%s\", name, strings.ToLower(slot))\n}\n\n// calcComponentFqdn computes the FQDN for a given slot.\nfunc (n *sros) calcComponentFqdn(slot string) string {\n\tif n.renameDone {\n\t\treturn n.Cfg.Fqdn\n\t}\n\tfqdnDotIndex := strings.Index(n.Cfg.Fqdn, \".\")\n\tif fqdnDotIndex < 0 {\n\t\treturn fmt.Sprintf(\"%s-%s\", n.Cfg.Fqdn, strings.ToLower(slot))\n\t}\n\tresult := fmt.Sprintf(\n\t\t\"%s-%s%s\",\n\t\tn.Cfg.Fqdn[:fqdnDotIndex],\n\t\tstrings.ToLower(slot),",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/sros/sros.go",
+                "text": "func (n *sros) calcComponentName(name, slot string) string {\n\tif n.renameDone {\n\t\treturn name\n\t}\n\treturn fmt.Sprintf(\"%s-%s\", name, strings.ToLower(slot))\n}\n\n// calcComponentFqdn computes the FQDN for a given slot.\nfunc (n *sros) calcComponentFqdn(slot string) string {\n\tif n.renameDone {\n\t\treturn n.Cfg.Fqdn\n\t}\n\tfqdnDotIndex := strings.Index(n.Cfg.Fqdn, \".\")\n\tif fqdnDotIndex < 0 {\n\t\treturn fmt.Sprintf(\"%s-%s\", n.Cfg.Fqdn, strings.ToLower(slot))\n\t}\n\tresult := fmt.Sprintf(\n\t\t\"%s-%s%s\",\n\t\tn.Cfg.Fqdn[:fqdnDotIndex],\n\t\tstrings.ToLower(slot),",
+                "lineStart": 833,
+                "lineEnd": 852,
+                "totalLines": 1910,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792346915450,
+              "end": 1792346915461
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1503382f9001VslYbsewg0KReS",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150337032001LiBerPTQC6INt5",
+          "callID": "call_451fb8609e4a4820b2c69270",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/schemas/clab.schema.json",
+              "pattern": "ixr-e2sc|cpm-sar|sar-10x"
+            },
+            "output": "Found 9 matches\n/source/head/schemas/clab.schema.json:\n  Line 944:                                             \"ixr-e2sc\",\n\n  Line 958:                                             \"sar-10x\",\n\n  Line 2019:                 \"cpm-ixr-e2sc/imm16-sfp++4-sfp28\",\n\n  Line 2027:                 \"cpm-sar-hm\",\n\n  Line 2028:                 \"cpm-sar-hmc\",\n\n  Line 2116:                 \"cpm-ixr-e2sc/imm16-sfp++4-sfp28\",\n\n  Line 2128:                 \"cpm-sar\",\n\n  Line 2129:                 \"cpm-sar-hm\",\n\n  Line 2130:                 \"cpm-sar-hmc\",\n",
+            "title": "ixr-e2sc|cpm-sar|sar-10x",
+            "metadata": {
+              "matches": 9,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346915582,
+              "end": 1792346915591
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1503383df0015H0c2i1bHypiS2",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150337032001LiBerPTQC6INt5",
+          "callID": "call_29f04f1975344470adf1e3a2",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/.github/workflows/srsim-tests.yml",
+              "pattern": "26_10_TESTS|robot|shard|matrix|suite"
+            },
+            "output": "Found 100 matches (more matches available)\n/source/head/.github/workflows/cicd.yml:\n  Line 110:       matrix:\n\n  Line 119:       runner: ${{ matrix.runner }}\n\n  Line 120:       arch: ${{ matrix.arch }}\n\n\n/source/head/.github/workflows/frr-tests.yml:\n  Line 21:       matrix:\n\n  Line 22:         test-suite:\n\n  Line 23:           - \"01*.robot\"\n\n  Line 62:       - name: Sanitize test-suite name\n\n  Line 63:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n  Line 67:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/14-basic-frr/${{ matrix.test-suite }}\n\n\n/source/head/.github/workflows/srsim-tests.yml:\n  Line 45:       matrix:\n\n  Line 47:           - shard: basic\n\n  Line 48:             test_suites: \"01-sros-to-linux.robot 07-srsim-with-mgmt-network.robot 12-srsim-veth-stitch.robot\"\n\n  Line 49:           - shard: lifecycle\n\n  Line 50:             test_suites: \"04-sros-classic.robot 06-srsim-sar.robot 10-srsim-lifecycle.robot\"\n\n  Line 51:           - shard: components\n\n  Line 52:             test_suites: \"05-sros-comp-to-linux.robot 09-srsim-pause-container.robot 14-srsim-new-chassis.robot\"\n\n  Line 53:           - shard: provisioning\n\n  Line 54:             test_suites: \"03-sros-dist-to-linux.robot 08-srsim-comp-cfg-test.robot 13-srsim-integrated.robot\"\n\n  Line 55:           - shard: apply\n\n  Line 56:             test_suites: \"11-srsim-apply.robot\"\n\n  Line 98:       - name: Set shard name\n\n  Line 99:         run: echo \"TEST_SUITE=${{ matrix.shard }}\" >> \"$GITHUB_ENV\"\n\n  Line 122:           for test_suite in ${{ matrix.test_suites }}; do\n\n  Line 123:             ./tests/rf-run.sh ${{ inputs.runtime }} \"./tests/13-srsim/${test_suite}\"\n\n\n/source/head/.github/workflows/download-tests.yml:\n  Line 20:       matrix:\n\n  Line 21:         test-suite:\n\n  Line 22:           - \"*.robot\"\n\n  Line 61:       - name: Sanitize test-suite name\n\n  Line 62:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n  Line 66:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/09-download/${{ matrix.test-suite }}\n\n\n/source/head/.github/workflows/sros-tests.yml:\n  Line 21:       matrix:\n\n  Line 22:         test-suite:\n\n  Line 23:           - \"01*.robot\"\n\n  Line 61:       - name: Sanitize test-suite name\n\n  Line 62:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n  Line 66:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/07-sros/${{ matrix.test-suite }}\n\n\n/source/head/.github/workflows/kind-tests.yml:\n  Line 20:       matrix:\n\n  Line 21:         test-suite:\n\n  Line 22:           - \"01*.robot\"\n\n  Line 69:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/05-k8s-kind/${{ matrix.test-suite }}\n\n  Line 71:       - name: Sanitize test-suite name\n\n  Line 72:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n\n/source/head/.github/workflows/build-devcontainer.yml:\n  Line 32:     runs-on: ${{ matrix.runner }}\n\n  Line 34:       matrix:\n\n  Line 117:           TAGS=$(echo '${{ steps.meta.outputs.tags }}' | awk -F: '{print $2}' | sed \"s/$/\\-${{ matrix.arch-suffix }}/\" | paste -sd \",\" -)\n\n  Line 126:           imageName: ghcr.io/${{ github.repository }}/devcontainer${{ matrix.image-suffix }}\n\n  Line 129:           platform: ${{ matrix.platform }}\n\n  Line 130:           configFile: ${{ matrix.devContFile }}\n\n  Line 136:       matrix:\n\n  Line 178:             IMAGE_BASE=\"ghcr.io/${{ github.repository }}/devcontainer${{ matrix.variant.image-suffix }}\"\n\n\n/source/head/.github/workflows/cumulus-tests.yml:\n  Line 22:       matrix:\n\n  Line 23:         test-suite:\n\n  Line 24:           - \"01*.robot\"\n\n  Line 72:       - name: Sanitize test-suite name\n\n  Line 73:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n  Line 77:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/15-cumulus/${{ matrix.test-suite }}\n\n\n/source/head/.github/workflows/fdio_vpp-tests.yml:\n  Line 20:       matrix:\n\n  Line 21:         test-suite:\n\n  Line 22:           - \"01*.robot\"\n\n  Line 60:       - name: Sanitize test-suite name\n\n  Line 61:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n  Line 68:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/11-fdio-vpp/${{ matrix.test-suite }}\n\n\n/source/head/.github/workflows/build-binaries.yml:\n  Line 97:       matrix:\n\n  Line 110:       runner: ${{ matrix.runner }}\n\n  Line 111:       arch: ${{ matrix.arch }}\n\n\n/source/head/.github/workflows/srlinux-tests.yml:\n  Line 20:       matrix:\n\n  Line 21:         test-suite:\n\n  Line 22:           - \"01*.robot\"\n\n  Line 23:           - \"03*.robot\"\n\n  Line 69:       - name: Sanitize test-suite name\n\n  Line 70:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n  Line 74:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/02-basic-srl/${{ matrix.test-suite }}\n\n\n/source/head/.github/workflows/smoke-tests.yml:\n  Line 25:       matrix:\n\n  Line 26:         test-suite:\n\n  Line 27:           - \"01*.robot\"\n\n  Line 28:           - \"02*.robot\"\n\n  Line 29:           - \"03*.robot\"\n\n  Line 30:           - \"04*.robot\"\n\n  Line 31:           - \"06*.robot\"\n\n  Line 32:           - \"08*.robot\"\n\n  Line 33:           - \"09*.robot\"\n\n  Line 34:           - \"10*.robot\"\n\n  Line 35:           - \"11*.robot\"\n\n  Line 36:           - \"12*.robot\"\n\n  Line 37:           - \"13*.robot\"\n\n  Line 38:           - \"14*.robot\"\n\n  Line 39:           - \"15*.robot\"\n\n  Line 40:           - \"17*.robot\"\n\n  Line 41:           - \"18*.robot\"\n\n  Line 42:           - \"19*.robot\"\n\n  Line 43:           - \"20*.robot\"\n\n  Line 44:           - \"21*.robot\"\n\n  Line 45:           - \"22*.robot\"\n\n  Line 46:           - \"23*.robot\"\n\n  Line 47:           - \"24*.robot\"\n\n  Line 48:           - \"25*.robot\"\n\n  Line 49:           - \"26*.robot\"\n\n  Line 50:           - \"27*.robot\"\n\n  Line 51:           - \"28*.robot\"\n\n  Line 52:           - \"29*.robot\"\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "title": "26_10_TESTS|robot|shard|matrix|suite",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "time": {
+              "start": 1792346915813,
+              "end": 1792346915827
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1503383f5001mbTVDe7EIoSozQ",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150337032001LiBerPTQC6INt5",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 49703,
+            "input": 687,
+            "output": 104,
+            "reasoning": 272,
+            "cache": {
+              "read": 48640,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_150338404001EcysP8FW1mHzTq",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346915845,
+          "completed": 1792346934083
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 53770,
+          "input": 2307,
+          "output": 84,
+          "reasoning": 1715,
+          "cache": {
+            "read": 49664,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_150338d68001XP10NBtEpLktwf",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150338404001EcysP8FW1mHzTq"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_150338d6a001oEGbuWTRfiQcho",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150338404001EcysP8FW1mHzTq",
+          "text": "Key finding: the CI workflow's `components` shard includes `14-srsim-new-chassis.robot`, but nothing sets `26_10_TESTS:true` — the grep for `26_10_TESTS` in the workflow returned no matches (only robot file matches). Let me double-check by grepping the workflow file itself for `26_10_TESTS` (the grep pattern included it but matched only other patterns; the result shows no `26_10_TESTS` line in srsim-tests.yml). So in CI the new-chassis suite will always be skipped. Is that intentional (image 26.10 not yet released; SRSIM_IMAGE_TAG=26.7.R1)? Likely intentional gating, but the shard lists it and it will silently skip. This is a coverage note rather than a defect — or a P4: \"CI shard lists 14-srsim-new-chassis.robot which always skips because no runner sets 26_10_TESTS\". It's actionable: either add a variable to the workflow call or note it. I'd call it P4 (or coverage note). Given \"Return only supported, useful findings\", a P4 is fine.\n\nAlso confirm: does rf-run.sh accept `--variable`? The suite reads env or robot variable. `Skip If '${26_10_TESTS}'.lower() != 'true'` — robot variable default false. CI doesn't set it. So the new suite never runs in CI. Coverage note + P4.\n\nNow calcComponentName: `fmt.Sprintf(\"%s-%s\", name, strings.ToLower(slot))` — for mixed-case duplicate slots \"a\" and \"A\" → both \"-a\" → identical ShortName/LongName → duplicate containers. Confirms the impact of the pre-existing duplicate-slot-check bug. Pre-existing though (the check was moved verbatim). P4.\n\nNow, is there anything genuinely P2/P3 introduced?\n\nLet me reconsider the Init userEnv snapshot logic for a subtle regression:\n\n```go\nenvAlreadyResolved := n.userEnv != nil\nif !envAlreadyResolved {\n    if n.Cfg.Env == nil {\n        n.userEnv = map[string]string{}\n    } else {\n        n.userEnv = maps.Clone(n.Cfg.Env)\n    }\n}\nif n.Cfg.Env == nil {\n    n.Cfg.Env = map[string]string{}\n}\n```\n\nWait — in the first branch, `n.userEnv = map[string]string{}` when Cfg.Env is nil; then `n.Cfg.Env = map[string]string{}`. Fine.\n\nBut consider: a node whose `Init` is called TWICE? Not typical.\n\nConsider the standalone path where Cfg.Env already contains envNokiaSrosSlot (card node). Standalone node = slot env NOT set OR components set. Hmm: isStandaloneNode for a node with NOKIA_SROS_SLOT set and components set? isDistributedCardNode = slot set && len(components)==0 → false. isDistributedBaseNode → integrated? For sr-1 with slot set and one component: isIntegrated → isRedundant (needs 2) → false; non-integrated: len>1 false → not distributed base → standalone. So a node can have slot env AND components → standalone. Then setupStandaloneComponents sets vars[envNokiaSrosSlot] = slotName (overriding node slot env — with warn? warnUserEnvOverrides(vars, userEnv) — if user set NOKIA_SROS_SLOT at node env, warn shows \"component value A will not be used because environment variable NOKIA_SROS_SLOT is set\"? Actually vars[NOKIA_SROS_SLOT]=slotName (from components entry), userEnv[NOKIA_SROS_SLOT]=user value → warn if differ. Hmm — is warning about SLOT appropriate? The slot env on a standalone node... edge case; the merge puts user env last so user value wins. Reasonable semantics.\n\nNow — **the SFM inline warn + env for the standalone node: order**. In Init, SFM env is set into Cfg.Env BEFORE the standalone merge `MergeStringMaps(srosEnv, vars, n.Cfg.Env)` — Cfg.Env contains SFM; merge: later maps win → Cfg.Env SFM retained. Good.\n\n**Another check — `warnUserEnvOverrides` for standalone is called with `vars` which includes NOKIA_SROS_SLOT.** If user set node-level NOKIA_SROS_SLOT and also components entry with different slot → warn. Fine.\n\n**Now check `config.go` createSROSConfigFiles version detection is retained** — yes, moved.\n\n**Check `template.go`**: getTemplateForVariant with swVersion unused param? `getTemplateForVariant(v ConfigVariant, swVersion *SrosVersion)` — swVersion used in comment only. Pre-existing? Base had the same function with the same comment. Moved. Fine.\n\n**Check `netns.go`** — newNetnsConfig builds the pause container config. Previously inline in sros.go. Moved.\n\n**Check `variant.go`** — ConfigVariant etc. Moved.\n\n**Check `power.go`** — generatePowerConfig moved.\n\n**One more potential issue — `componentWarnings` for line-card slot with `IOMSlots == 0`:** if entry.IOMSlots == 0, slot range check skipped. Fine.\n\n**Now `docs` claim check: \"ixr-r6 accepts A and B\" — integratedSrosAllowedSlots(ixr-r6) = [A, B]. Docs consistent.\n\n**Docs claim: \"two ixr-r6 entries = dual-CPIOM distributed\"** — matches isRedundantIntegratedSrosComponents.\n\n**Schema check**: does schema's `components` allow `type` field? Presumably pre-existing. And are there new required constraints? The schema hunk added enum values only (from script). And new `fixed_mdas` in chassis_info is a script-side thing (not schema). Fine.\n\n**Now — one thing I want to verify: the `warnUserEnvOverrides` call in the standalone Init path uses `vars`, but `vars` also includes component `c.Env` keys (maps.Copy(vars, slotA.Env) at line 388).** So node env vs component env warnings fire. Good.\n\n**Potential missed issue: `keepUserEnv` writes user env value into `dst` for keys user set — but `dst` (componentConfig.Env) already contains those (deep copy of base env). Redundant but harmless.\n\n**Now consider a REAL new-code bug candidate: In `setupComponentNodes`, `componentConfig.Env` is a deep copy of the base node's `n.Cfg.Env`. When is `setupComponentNodes` called relative to base `Init`?** If called BEFORE base Init (i.e., during topology load Init phase), base Cfg.Env wouldn't yet contain srosEnv chassis/mac — then component env lacks NOKIA_SROS_CHASSIS → `warnUnsupportedComponents` uses `n.Cfg.NodeType` fallback (line: nodeType := n.Cfg.NodeType; if chassis env set → override). Since Cfg.NodeType == base NodeType (line 657), still correct. And srosEnv chassis... base sets it in Init; component nodes' Init also sets srosEnv[envNokiaSrosChassis] = component NodeType — same value. OK regardless of order.\n\nBut wait — actually where is setupComponentNodes called? grep: likely in CheckDeploymentConditions or Init. Let me check quickly — it matters for whether `n.userEnv` is non-nil when setupComponentNodes runs (line 688 uses n.userEnv). If setupComponentNodes ran before base Init, userEnv would be nil → component userEnv = clone of nil → nil → hardwareEnv falls back to Cfg.Env (which contains merged component env!) → wrong precedence in config gen (component env treated as user env). Let me check the call site.\n\nFrom earlier reading, I believe setupComponentNodes is called from `Init` (after userEnv snapshot) — the comment at line 686-687 says \"Preserve the topology env. Init must not snapshot the merged component env\" implying Init calls setupComponentNodes after snapshotting userEnv. Let me verify with grep.",
+          "time": {
+            "start": 1792346918250,
+            "end": 1792346933660
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_15033c99f001os06sBE97JImhI",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150338404001EcysP8FW1mHzTq",
+          "text": "Let me confirm where `setupComponentNodes` is called (to validate the `userEnv` ordering assumption).",
+          "time": {
+            "start": 1792346933663,
+            "end": 1792346934076
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15033cac3001c3GZ6DQCMdP5Ya",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150338404001EcysP8FW1mHzTq",
+          "callID": "call_854e9e338d5f44a9a8cb0eee",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes/sros/sros.go",
+              "pattern": "setupComponentNodes\\(\\)|n\\.userEnv"
+            },
+            "output": "Found 11 matches\n/source/head/nodes/sros/sros.go:\n  Line 265: \tenvAlreadyResolved := n.userEnv != nil\n\n  Line 268: \t\t\tn.userEnv = map[string]string{}\n\n  Line 270: \t\t\tn.userEnv = maps.Clone(n.Cfg.Env)\n\n  Line 280: \t\tif envSFM, ok := n.userEnv[envNokiaSrosSFM]; ok {\n\n  Line 328: \t\twarnUserEnvOverrides(n.Cfg.ShortName, vars, n.userEnv)\n\n  Line 343: \t\terr := n.setupComponentNodes()\n\n  Line 625: func (n *sros) setupComponentNodes() error {\n\n  Line 668: \t\tkeepUserEnv(n.Cfg.ShortName, componentConfig.Env, componentDerivedEnv(c), n.userEnv)\n\n  Line 688: \t\tsrosNode.userEnv = maps.Clone(n.userEnv)\n\n\n/source/head/nodes/sros/component_config.go:\n  Line 309: \tif n.userEnv != nil {\n\n  Line 310: \t\treturn n.userEnv\n",
+            "title": "setupComponentNodes\\(\\)|n\\.userEnv",
+            "metadata": {
+              "matches": 11,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346933961,
+              "end": 1792346933973
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15033cb1c001A7tg7m9WYJTCqF",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150338404001EcysP8FW1mHzTq",
+          "callID": "call_fb5ec616c414423ab9a106f2",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/sros/sros.go",
+              "limit": 45,
+              "offset": 300
+            },
+            "output": "<path>/source/head/nodes/sros/sros.go</path>\n<type>file</type>\n<content>\n300: \n301: \t// make sure we always have uppercase slot definition\n302: \tfor _, c := range n.kindSpecificCfg().Components {\n303: \t\tc.Slot = strings.ToUpper(c.Slot)\n304: \t}\n305: \t// Merge Environment\n306: \tif n.Cfg.NodeType == \"\" {\n307: \t\tn.Cfg.NodeType = SrosDefaultType\n308: \t}\n309: \tsrosEnv[envNokiaSrosChassis] = n.Cfg.NodeType // Override NodeType var with existing env\n310: \n311: \tmac := genMac(n.Cfg)\n312: \tsrosEnv[envNokiaSrosSystemBaseMac] = mac\n313: \t// Ensure n.Cfg.Certificate.Issue is not nil\n314: \tif n.Cfg.Certificate.Issue == nil {\n315: \t\tn.Cfg.Certificate.Issue = new(false)\n316: \t}\n317: \tif n.isStandaloneNode() {\n318: \t\tlog.Debugf(\n319: \t\t\t\"%q is standalone node. %v\",\n320: \t\t\tn.Cfg.ShortName,\n321: \t\t\tlen(n.kindSpecificCfg().Components),\n322: \t\t)\n323: \n324: \t\tvars, err := n.setupStandaloneComponents()\n325: \t\tif err != nil {\n326: \t\t\treturn err\n327: \t\t}\n328: \t\twarnUserEnvOverrides(n.Cfg.ShortName, vars, n.userEnv)\n329: \n330: \t\t// n.Cfg.Env overrides component vars, overrides default srosEnv\n331: \t\tn.Cfg.Env = clabutils.MergeStringMaps(srosEnv, vars, n.Cfg.Env)\n332: \t\tlog.Debug(\"Merged env file\", \"env\", fmt.Sprintf(\"%+v\", n.Cfg.Env), \"node\", n.Cfg.ShortName)\n333: \t} else {\n334: \t\tlog.Debugf(\n335: \t\t\t\"%q is distributed node. %v\",\n336: \t\t\tn.Cfg.ShortName,\n337: \t\t\tlen(n.kindSpecificCfg().Components),\n338: \t\t)\n339: \n340: \t\tn.Cfg.Env = clabutils.MergeStringMaps(srosEnv, n.Cfg.Env)\n341: \t\tlog.Debug(\"Merged env file\", \"env\", fmt.Sprintf(\"%+v\", n.Cfg.Env), \"node\", n.Cfg.ShortName)\n342: \n343: \t\terr := n.setupComponentNodes()\n344: \t\tif err != nil {\n\n(Showing lines 300-344 of 1910. Use offset=345 to continue.)\n</content>",
+            "title": "source/head/nodes/sros/sros.go",
+            "metadata": {
+              "preview": "\n\t// make sure we always have uppercase slot definition\n\tfor _, c := range n.kindSpecificCfg().Components {\n\t\tc.Slot = strings.ToUpper(c.Slot)\n\t}\n\t// Merge Environment\n\tif n.Cfg.NodeType == \"\" {\n\t\tn.Cfg.NodeType = SrosDefaultType\n\t}\n\tsrosEnv[envNokiaSrosChassis] = n.Cfg.NodeType // Override NodeType var with existing env\n\n\tmac := genMac(n.Cfg)\n\tsrosEnv[envNokiaSrosSystemBaseMac] = mac\n\t// Ensure n.Cfg.Certificate.Issue is not nil\n\tif n.Cfg.Certificate.Issue == nil {\n\t\tn.Cfg.Certificate.Issue = new(false)\n\t}\n\tif n.isStandaloneNode() {\n\t\tlog.Debugf(\n\t\t\t\"%q is standalone node. %v\",",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/sros/sros.go",
+                "text": "\n\t// make sure we always have uppercase slot definition\n\tfor _, c := range n.kindSpecificCfg().Components {\n\t\tc.Slot = strings.ToUpper(c.Slot)\n\t}\n\t// Merge Environment\n\tif n.Cfg.NodeType == \"\" {\n\t\tn.Cfg.NodeType = SrosDefaultType\n\t}\n\tsrosEnv[envNokiaSrosChassis] = n.Cfg.NodeType // Override NodeType var with existing env\n\n\tmac := genMac(n.Cfg)\n\tsrosEnv[envNokiaSrosSystemBaseMac] = mac\n\t// Ensure n.Cfg.Certificate.Issue is not nil\n\tif n.Cfg.Certificate.Issue == nil {\n\t\tn.Cfg.Certificate.Issue = new(false)\n\t}\n\tif n.isStandaloneNode() {\n\t\tlog.Debugf(\n\t\t\t\"%q is standalone node. %v\",\n\t\t\tn.Cfg.ShortName,\n\t\t\tlen(n.kindSpecificCfg().Components),\n\t\t)\n\n\t\tvars, err := n.setupStandaloneComponents()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\twarnUserEnvOverrides(n.Cfg.ShortName, vars, n.userEnv)\n\n\t\t// n.Cfg.Env overrides component vars, overrides default srosEnv\n\t\tn.Cfg.Env = clabutils.MergeStringMaps(srosEnv, vars, n.Cfg.Env)\n\t\tlog.Debug(\"Merged env file\", \"env\", fmt.Sprintf(\"%+v\", n.Cfg.Env), \"node\", n.Cfg.ShortName)\n\t} else {\n\t\tlog.Debugf(\n\t\t\t\"%q is distributed node. %v\",\n\t\t\tn.Cfg.ShortName,\n\t\t\tlen(n.kindSpecificCfg().Components),\n\t\t)\n\n\t\tn.Cfg.Env = clabutils.MergeStringMaps(srosEnv, n.Cfg.Env)\n\t\tlog.Debug(\"Merged env file\", \"env\", fmt.Sprintf(\"%+v\", n.Cfg.Env), \"node\", n.Cfg.ShortName)\n\n\t\terr := n.setupComponentNodes()\n\t\tif err != nil {",
+                "lineStart": 300,
+                "lineEnd": 344,
+                "totalLines": 1910,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792346934049,
+              "end": 1792346934059
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15033cb3f00131MsZbQpIJ5aKZ",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150338404001EcysP8FW1mHzTq",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 53770,
+            "input": 2307,
+            "output": 84,
+            "reasoning": 1715,
+            "cache": {
+              "read": 49664,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15033cb4e001LhD8dpnT5MWc7D",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346934094,
+          "completed": 1792346959218
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 57042,
+          "input": 855,
+          "output": 130,
+          "reasoning": 2297,
+          "cache": {
+            "read": 53760,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15033d40c001ClEdEKbPHGg3Af",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033cb4e001LhD8dpnT5MWc7D"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15033d40e0010hDA3PK4V8gW5Z",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033cb4e001LhD8dpnT5MWc7D",
+          "text": "`setupComponentNodes` is called from `Init` at line 343, after the `userEnv` snapshot (line 265-270) — ordering is correct: `n.userEnv` is non-nil when line 668/688 run. Good.\n\nAlso note: line 302-304 uppercases component slots in-place in Init. This mutates the kind config's components slice — pre-existing pattern (base did the same? The diff line 1735-1736 shows \"make sure we always have uppercase slot definition\" as context, pre-existing). But note the uppercasing happens AFTER `isRedundantIntegratedSrosComponents` is not needed since slots already uppercase by then? Wait — Init uppercases slots at line 302, but `isDistributedBaseNode()` may be called BEFORE Init uppercasing? Init order: line 265 userEnv snapshot → line 273-297 SFM → line 301-304 uppercase slots → line 317 isStandaloneNode. isStandaloneNode → isDistributedBaseNode → isRedundantIntegratedSrosComponents (slots already uppercased). But `setupComponentNodes` (line 343) → isDistributedBaseNode again — slots still uppercase. And in tests or PreDeploy (after Init), slots uppercase. However — `isRedundantIntegratedSrosComponents` uses `strings.TrimSpace(c.Slot)` WITHOUT ToUpper before `integratedSrosSlotAllowed` — but integratedSrosSlotAllowed does ToUpper(TrimSpace). Wait line 254: `strings.TrimSpace(c.Slot) == \"\"` (empty check) then `integratedSrosSlotAllowed(nodeType, c.Slot)` which uppercases. OK.\n\nBut isDistributedBaseNode can be invoked on a base node where Init hasn't uppercased slots? E.g., called from GetShortName before Init? Unlikely. Fine.\n\nOne more consideration — line 309: package-level `srosEnv` mutation: `srosEnv[envNokiaSrosChassis] = n.Cfg.NodeType`. For component nodes' Init, this overwrites with component NodeType — same value. Pre-existing.\n\nNow — check the \"warn on node env overriding NOKIA_SROS_CHASSIS/MAC\"? Not applicable.\n\nNow the last big item to verify: **does the CI workflow pass `26_10_TESTS`?** Grep found no match in srsim-tests.yml. Let me look at the workflow diff more carefully (lines 1-83 of diff.txt) — I read it earlier. The workflow is a reusable workflow (workflow_call) with inputs; maybe the caller (cicd.yml) passes variables? The srsim-tests.yml inputs — does it have an inputs section allowing extra robot variables? Line 122-123: `./tests/rf-run.sh ${{ inputs.runtime }} \"./tests/13-srsim/${test_suite}\"` — no extra variables. Does rf-run.sh read env var 26_10_TESTS? No — it's a robot variable, not env. Actually `Skip If '${26_10_TESTS}'.lower() != 'true'` — robot variable, could be set via env? No, robot variables come from --variable flag or variable files, not env (unless ${26_10_TESTS%{...}}). So unless someone invokes with --variable 26_10_TESTS:true, the suite skips. The workflow includes it in the components shard → it will always skip in CI.\n\nIs this a defect? The PR adds the suite and schedules it in CI but doesn't enable the gate → dead CI coverage. Options: (a) intentional because 26.10 image isn't public yet (SRSIM_IMAGE_TAG=26.7.R1); (b) oversight. Either way, worth flagging as P3/P4: the shard runs a suite that always skips; suggest adding a workflow input (e.g., `26_10_TESTS` robot variable) or removing it from the shard until the image is available. I'd call it P4 (optional improvement / coverage note) since skipping is graceful and likely intentional for an unreleased image. Hmm — but if intentional, listing it in the shard is harmless. I'll flag as P4 with both readings.\n\nAlso the workflow removed the \"Sanitize test-suite name\" step and uses `TEST_SUITE=${{ matrix.shard }}` — fine.\n\nNow, are there any P2/P3 findings I'm confident about? Let me do one final sweep of things I haven't fully verified:\n\n1. `config.go` — full file (createSROSConfigFiles, prepareConfigTemplateData moved). I read it earlier per summary. It matched the removed code. OK.\n\n2. `sros_test.go` new tests — read earlier; they cover classification, warnings, env precedence. Good.\n\n3. `chassis_info_test.go` — read earlier (truncated at 57 but I saw most). It tests entry alias resolution and componentWarnings.\n\n4. Robot refactor: `tests/srsim.robot` shared resource at tests/ root — other suites updated to use it. Fine.\n\n5. README: updated with chassis_info flow and warnings (line 48 seen).\n\n6. One more possible issue: **`warnUnsupportedComponents` is called even when `writeChassisInfoToLabDir` fails?** No — only on success path. If ReadFileFromImageInspect fails (older images without chassis_info.json), no validation and no warning that validation was skipped — only Debug log. Acceptable (advisory).\n\n7. **Duplicate warnings for redundant integrated**: CPM A component warns once. Base node (distributed base) doesn't run createSROSFiles. Good.\n\n8. **`n.componentSFM()` for CPM component node uses userEnv — but the component node's kindSpecificCfg().SFM comes from base kind config. And base Cfg.Env SFM (set in Init) is in component env but NOT in componentSFM's lookup (hardwareEnv = userEnv only).** So SFM resolution for component nodes: userEnv (user-set) or kind config SFM. The base's Cfg.Env[NOKIA_SROS_SFM] (set from kind config when user didn't set) is not consulted — but it equals kindSpecificCfg().SFM, same result. Fine.\n\n9. **Now — a potential real P3: `componentSFM()` vs the SFM env set on the base.** For the standalone node, `hardwareEnv()` = userEnv; if user did NOT set SFM and kind config has SFM, componentSFM → kind SFM. Consistent with base env value. OK.\n\n10. **Check `checkComponentSlotsConfig` invocation still happens** — grep earlier showed it's called in CheckDeploymentConditions (component.go? or sros.go). It was moved to component.go. Fine.\n\n11. **Docs statement: \"Node env overrides component type, XIOM, MDA, SFM, and per-component env\"** — matches implementation.\n\n12. **One more edge: `applyHardwareEnv` — `envNokiaSrosMDA+\"_X\"` prefix check happens BEFORE `envNokiaSrosMDA+\"_\"` — correct.\n\n13. **`buildComponentCfgLines` for a CPM component node emits lines for ALL non-CPM root components** — pre-existing.\n\n14. Hmm — one NEW behavioral consideration: **For the redundant integrated node (ixr-r6 A+B), each CPM component node generates integrated config (card 1 iom-ixr-r6 + mda).** But the base node itself (rootCtrName == \"\"? base's rootCtrName — for base, rootCtrName is \"\" unless network-mode). Base is distributed base → not standalone → its createSROSFiles never runs → no config generated on base. Only component CPMs. Good.\n\n15. **What about `generatePowerConfig` for integrated nodes?** componentConfigFromLines appends power config — for integrated standalone, lines from defaults + power. Moved logic. Fine.\n\nNow, decide final findings:\n\n- **P4**: `checkComponentSlotsConfig` mixed-case duplicate slots bypass (pre-existing, moved into `component.go`); concrete impact with calcComponentName producing duplicate component container names for slots `a`/`A`; fix while moving: insert uppercased slot.\n- **P4**: SFM inline warning in `Init` duplicates `warnUserEnvOverrides` logic (could pass a one-key derived map).\n- **P4**: CI components shard lists `14-srsim-new-chassis.robot` but no runner sets `26_10_TESTS`, so the new suite always skips in CI; add a workflow input/robot variable or exclude the suite until the 26.10 image is generally available.\n\nWait — for the third one, let me double check the workflow diff (lines 1-83) to see if there's an input for extra robot variables. Let me quickly view the head workflow file top section. Also check whether rf-run.sh forwards env vars — the robot variable could be set via env? Actually Robot Framework does support environment-variable-based variables with syntax %{...}, not ${...}. So no.\n\nHmm, actually, wait: could `26_10_TESTS` be set in rf-run.sh or conftest? Let me grep tests dir for 26_10_TESTS quickly. If rf-run.sh doesn't set it, conclusion holds.\n\nAlso, one more potential finding I should double check — **the `IsPartialConfigFile` + `n.isCPM(\"\")` guard at line 1415 in config.go (moved)**: \"if IsPartialConfigFile && n.isCPM('')\" — for partial config on line cards: log.Warn \"startup-config will not have any effect\". Pre-existing.\n\nLet me also double-check there's no missing `SaveConfig`/healthcheck change... The diff hunks I read covered everything.\n\nAlso should check: **`components` schema property `type` docs vs schema**: schema has components.type presumably already (base). Not changed.\n\nOne more thing: **the schema `mda` types enum — does it include the new MDA types used in integratedSrosDefaultComponents (e.g. `m4-1g-tx+20-1g-sfp+6-10g-sfp+`)?** These are defaults used in generated config, not user input validation necessarily (components[].mda.type references sros-mda-types enum). If schema lacks some types used by defaults, user topo with those types would fail schema validation. The script adds FixedMDAs values to mda enum — integrated defaults' MDAs presumably come from chassis_info FixedMDAs. The script runs from chassis_info.json of the image, so enums should cover. Spot check one: `m4-1g-tx+20-1g-sfp+6-10g-sfp+` in schema. Quick grep.\n\nLet me run these two greps and then finalize.",
+          "time": {
+            "start": 1792346936334,
+            "end": 1792346958531
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_150342ac6001h7PG26TWsdoJg6",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033cb4e001LhD8dpnT5MWc7D",
+          "text": "Let me verify two last details: whether anything in the tests directory sets `26_10_TESTS`, and whether the schema MDA enum covers the integrated defaults.",
+          "time": {
+            "start": 1792346958534,
+            "end": 1792346959201
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150342c2e001PG5NNSbohwCGGZ",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033cb4e001LhD8dpnT5MWc7D",
+          "callID": "call_669a32d92b874300aab3f590",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/tests",
+              "pattern": "26_10_TESTS"
+            },
+            "output": "Found 3 matches\n/source/head/tests/13-srsim/14-srsim-new-chassis.robot:\n  Line 7: Suite Setup         Skip If    '${26_10_TESTS}'.lower() != 'true'\n\n  Line 8: ...                 SR-SIM 26.10 is required; enable with --variable 26_10_TESTS:true\n\n  Line 16: ${26_10_TESTS}      false\n",
+            "title": "26_10_TESTS",
+            "metadata": {
+              "matches": 3,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346958906,
+              "end": 1792346958926
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150342d58001eZe8gwmkQuwbfi",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033cb4e001LhD8dpnT5MWc7D",
+          "callID": "call_ae9cc54b47914a259a788613",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/schemas/clab.schema.json",
+              "pattern": "m4-1g-tx\\+20-1g-sfp\\+6-10g-sfp\\+|m6-10g-sfp\\+\\+1-100g-qsfp28|imm16-sfp\\+\\+4-sfp28"
+            },
+            "output": "Found 5 matches\n/source/head/schemas/clab.schema.json:\n  Line 2019:                 \"cpm-ixr-e2sc/imm16-sfp++4-sfp28\",\n\n  Line 2047:                 \"imm4-1g-tx+20-1g-sfp+6-10g-sfp+\",\n\n  Line 2116:                 \"cpm-ixr-e2sc/imm16-sfp++4-sfp28\",\n\n  Line 2184:                 \"m4-1g-tx+20-1g-sfp+6-10g-sfp+\",\n\n  Line 2197:                 \"m6-10g-sfp++1-100g-qsfp28\",\n",
+            "title": "m4-1g-tx\\+20-1g-sfp\\+6-10g-sfp\\+|m6-10g-sfp\\+\\+1-100g-qsfp28|imm16-sfp\\+\\+4-sfp28",
+            "metadata": {
+              "matches": 5,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792346959198,
+              "end": 1792346959211
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_150342d6d001of6iyZqNSakDNf",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_15033cb4e001LhD8dpnT5MWc7D",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 57042,
+            "input": 855,
+            "output": 130,
+            "reasoning": 2297,
+            "cache": {
+              "read": 53760,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_150342d7f00147DfnsXHGI9aB7",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346959231,
+          "completed": 1792346970884
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 58405,
+          "input": 460,
+          "output": 60,
+          "reasoning": 1053,
+          "cache": {
+            "read": 56832,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1503436b10011lvf0iISgZOMqb",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150342d7f00147DfnsXHGI9aB7"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1503436b3001rGTBKKPXTi7Ztm",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150342d7f00147DfnsXHGI9aB7",
+          "text": "Confirmed:\n- `26_10_TESTS` is only set inside the new robot file (default false) — nothing in CI or rf-run.sh enables it. So the new-chassis suite always skips in the `components` shard.\n- Schema enums cover the integrated default MDA types.\n\nI have completed the review. Final findings:\n\n1. **P4** — CI `components` shard includes `14-srsim-new-chassis.robot`, but no runner sets `26_10_TESTS`, so the suite always skips in CI. Location: `.github/workflows/srsim-tests.yml` line 52 (head). Suggest adding a workflow input/robot variable (e.g. pass `--variable 26_10_TESTS:true` for a dedicated shard or job) or removing the suite from the shard until the 26.10 image is generally available; either way, make the gating discoverable.\n\n2. **P4** — `checkComponentSlotsConfig` mixed-case duplicate-slot gap (pre-existing, moved verbatim from `sros.go` into `component.go`). Insert the uppercased slot into `componentNames` so slots `a` and `A` are rejected; downstream `calcComponentName` would otherwise produce two components with identical names (`-a`), and `buildComponentCfgLines` would emit duplicate slot-A card config.\n\n3. **P4** — Inline SFM override warning in `Init` (`sros.go` ~273-297) duplicates the `warnUserEnvOverrides` message/logic for a single key; could be `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` followed by the env set when absent.\n\nAre any of these P3? The CI one: the suite silently skipping in CI is a real coverage gap for new code paths (new chassis types untested in CI). But since it's guarded by an unreleased image (SRSIM_IMAGE_TAG=26.7.R1), likely intentional. P4.\n\nThe duplicate-slot one: pre-existing; per instructions, focus on issues introduced or materially worsened. Moving the code is part of the refactor; fixing while moving is reasonable. P4.\n\nThe SFM duplication: P4 maintainability.\n\nNothing P0-P3 found. All new logic verified: classification, env precedence, warnings once per lab, schema enums, docs.\n\nCoverage notes: complete; tests not executed (static review only); runtime behaviors (container naming, netns, image inspection) inferred from code; robot suite gating verified statically.\n\nNow write the final Markdown review + JSON. Permalinks: head root https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/, base root https://github.com/srl-labs/containerlab/blob/84cf630e6eedd662d9742fbcd6158a91372e3a56/.\n\nLocations:\n- Finding 1: head `.github/workflows/srsim-tests.yml` — need exact line numbers. Grep showed lines 45-56 (matrix), with `14-srsim-new-chassis.robot` at line 52. start 51 end 52.\n- Finding 2: head `nodes/sros/component.go` — checkComponentSlotsConfig region. I read component.go lines 160-168 which shows the tail of the function; the function starts around line 141. The grep earlier showed \"component.go:164: // add to component names map\" and line 165 insertion `componentNames[slot] = struct{}{}`... wait line 165 in my read shows `componentNames[slot] = struct{}{}`? Let me re-check: in the read of component.go lines 160-168: line 164 comment \"// add to component names map\", line 165 `componentNames[slot] = struct{}{}`. Hmm — line 165 shows `componentNames[slot]` — is that the uppercased `slot` variable? Wait, looking at the read output:\n\n```\n160: n.GetShortName(),\n161: component.Slot,\n162: )\n163: }\n164: // add to component names map\n165: componentNames[slot] = struct{}{}\n```\n\nLine 165 is `componentNames[slot]` — the UPPERCASED slot! That contradicts the base code which inserted `componentNames[component.Slot]`. So the PR FIXED the insertion bug while moving! Let me verify by reading component.go lines 135-170 again. From the read: lines 160-168. Line 165: `componentNames[slot] = struct{}{}`. The base version inserted `componentNames[component.Slot]` (raw). So the head version uses `componentNames[slot]` where `slot` is the ToUpper'd variable — the bug is FIXED in this PR. Great — so finding 2 is void. Let me confirm by reading component.go 135-170.",
+          "time": {
+            "start": 1792346961587,
+            "end": 1792346970428
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_15034593e0014LGoxAKVgMsUAw",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150342d7f00147DfnsXHGI9aB7",
+          "text": "One more verification — the moved `checkComponentSlotsConfig` may have actually fixed the insertion bug. Let me read the full function in `component.go`.",
+          "time": {
+            "start": 1792346970430,
+            "end": 1792346970873
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150345af300104e7PiiuiEB3NP",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150342d7f00147DfnsXHGI9aB7",
+          "callID": "call_d14151e7ba84468180f2e35f",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/sros/component.go",
+              "limit": 40,
+              "offset": 135
+            },
+            "output": "<path>/source/head/nodes/sros/component.go</path>\n<type>file</type>\n<content>\n135: \t\tenv[key] = x.Type\n136: \t\t// add the nested MDA\n137: \t\tfor _, m := range x.MDA {\n138: \t\t\tkey := fmt.Sprintf(\"%s_X%d_%d\", envNokiaSrosMDA, x.Slot, m.Slot)\n139: \t\t\tenv[key] = m.Type\n140: \t\t}\n141: \t}\n142: \n143: \tfor _, m := range c.MDA {\n144: \t\tkey := fmt.Sprintf(\"%s_%d\", envNokiaSrosMDA, m.Slot)\n145: \t\tenv[key] = m.Type\n146: \t}\n147: }\n148: \n149: func (n *sros) checkComponentSlotsConfig() error {\n150: \t// check Slots are unique\n151: \tcomponentNames := map[string]struct{}{}\n152: \tfor _, component := range n.kindSpecificCfg().Components {\n153: \t\t// convert slot to upper\n154: \t\tslot := strings.ToUpper(component.Slot)\n155: \t\t// check if slot exists\n156: \t\t_, exists := componentNames[slot]\n157: \t\tif exists {\n158: \t\t\treturn fmt.Errorf(\n159: \t\t\t\t\"node %s slot %s duplicate definition\",\n160: \t\t\t\tn.GetShortName(),\n161: \t\t\t\tcomponent.Slot,\n162: \t\t\t)\n163: \t\t}\n164: \t\t// add to component names map\n165: \t\tcomponentNames[slot] = struct{}{}\n166: \n167: \t}\n168: \treturn nil\n169: }\n170: \n171: // componentDerivedEnv is the environment a component would set from its type, XIOM, MDA,\n172: // and per-component env. Per-component env overrides the typed fields.\n173: func componentDerivedEnv(c *Component) map[string]string {\n174: \tderived := map[string]string{}\n\n(Showing lines 135-174 of 309. Use offset=175 to continue.)\n</content>",
+            "title": "source/head/nodes/sros/component.go",
+            "metadata": {
+              "preview": "\t\tenv[key] = x.Type\n\t\t// add the nested MDA\n\t\tfor _, m := range x.MDA {\n\t\t\tkey := fmt.Sprintf(\"%s_X%d_%d\", envNokiaSrosMDA, x.Slot, m.Slot)\n\t\t\tenv[key] = m.Type\n\t\t}\n\t}\n\n\tfor _, m := range c.MDA {\n\t\tkey := fmt.Sprintf(\"%s_%d\", envNokiaSrosMDA, m.Slot)\n\t\tenv[key] = m.Type\n\t}\n}\n\nfunc (n *sros) checkComponentSlotsConfig() error {\n\t// check Slots are unique\n\tcomponentNames := map[string]struct{}{}\n\tfor _, component := range n.kindSpecificCfg().Components {\n\t\t// convert slot to upper\n\t\tslot := strings.ToUpper(component.Slot)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/sros/component.go",
+                "text": "\t\tenv[key] = x.Type\n\t\t// add the nested MDA\n\t\tfor _, m := range x.MDA {\n\t\t\tkey := fmt.Sprintf(\"%s_X%d_%d\", envNokiaSrosMDA, x.Slot, m.Slot)\n\t\t\tenv[key] = m.Type\n\t\t}\n\t}\n\n\tfor _, m := range c.MDA {\n\t\tkey := fmt.Sprintf(\"%s_%d\", envNokiaSrosMDA, m.Slot)\n\t\tenv[key] = m.Type\n\t}\n}\n\nfunc (n *sros) checkComponentSlotsConfig() error {\n\t// check Slots are unique\n\tcomponentNames := map[string]struct{}{}\n\tfor _, component := range n.kindSpecificCfg().Components {\n\t\t// convert slot to upper\n\t\tslot := strings.ToUpper(component.Slot)\n\t\t// check if slot exists\n\t\t_, exists := componentNames[slot]\n\t\tif exists {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %s slot %s duplicate definition\",\n\t\t\t\tn.GetShortName(),\n\t\t\t\tcomponent.Slot,\n\t\t\t)\n\t\t}\n\t\t// add to component names map\n\t\tcomponentNames[slot] = struct{}{}\n\n\t}\n\treturn nil\n}\n\n// componentDerivedEnv is the environment a component would set from its type, XIOM, MDA,\n// and per-component env. Per-component env overrides the typed fields.\nfunc componentDerivedEnv(c *Component) map[string]string {\n\tderived := map[string]string{}",
+                "lineStart": 135,
+                "lineEnd": 174,
+                "totalLines": 309,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792346970871,
+              "end": 1792346970879
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_150345b01001BS8O3TjmcNz375",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150342d7f00147DfnsXHGI9aB7",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 58405,
+            "input": 460,
+            "output": 60,
+            "reasoning": 1053,
+            "cache": {
+              "read": 56832,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_150345b15001J6y8OyYBckLufC",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346970901,
+          "completed": 1792346975360
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59136,
+          "input": 481,
+          "output": 31,
+          "reasoning": 256,
+          "cache": {
+            "read": 58368,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15034640b0011RhN7i5NvjWyIY",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150345b15001J6y8OyYBckLufC"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15034640e0011VWt4Kj9hsUptr",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150345b15001J6y8OyYBckLufC",
+          "text": "Confirmed: the moved `checkComponentSlotsConfig` in the head inserts the uppercased `slot` (line 165: `componentNames[slot]`), which FIXES the base bug (`componentNames[component.Slot]`). Let me quickly double check the base version to be sure the base had the bug. From the diff removal (lines 1966-1987 of diff.txt):\n\n```\n-\t\t// add to component names map\n-\t\tcomponentNames[component.Slot] = struct{}{}\n```\n\nYes, base inserted raw. Head inserts uppercased. So the PR fixed it — good, no finding.\n\nFinal findings:\n1. P4 — CI components shard lists `14-srsim-new-chassis.robot` but nothing sets `26_10_TESTS`, so the new suite always skips in CI.\n2. P4 — SFM inline warning in `Init` duplicates `warnUserEnvOverrides` semantics for a single key.\n\nBoth P4. Nothing P0-P3.\n\nLet me double check finding 2's exact head line numbers in sros.go: Init SFM branch. From diff context: head lines ~273-297. Let me read sros.go 255-300 to get exact lines.",
+          "time": {
+            "start": 1792346973198,
+            "end": 1792346975339
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_150346c6e001x1IktMXYGWgk4E",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150345b15001J6y8OyYBckLufC",
+          "callID": "call_71dc0bcd925d4fbf9f2a4dc0",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/sros/sros.go",
+              "limit": 45,
+              "offset": 258
+            },
+            "output": "<path>/source/head/nodes/sros/sros.go</path>\n<type>file</type>\n<content>\n258: \t// if user was not initialized to a value, use root\n259: \tif n.Cfg.User == \"\" {\n260: \t\tn.Cfg.User = \"0:0\"\n261: \t}\n262: \n263: \t// Snapshot topology env before component and SFM flags are applied.\n264: \t// Component nodes set userEnv from the base node before Init.\n265: \tenvAlreadyResolved := n.userEnv != nil\n266: \tif !envAlreadyResolved {\n267: \t\tif n.Cfg.Env == nil {\n268: \t\t\tn.userEnv = map[string]string{}\n269: \t\t} else {\n270: \t\t\tn.userEnv = maps.Clone(n.Cfg.Env)\n271: \t\t}\n272: \t}\n273: \tif n.Cfg.Env == nil {\n274: \t\tn.Cfg.Env = map[string]string{}\n275: \t}\n276: \n277: \t// Distributed cards inherit SFM from the base node env. Applying it again\n278: \t// would warn once per card when the user also set NOKIA_SROS_SFM.\n279: \tif sfm := n.kindSpecificCfg().SFM; sfm != \"\" && !envAlreadyResolved {\n280: \t\tif envSFM, ok := n.userEnv[envNokiaSrosSFM]; ok {\n281: \t\t\tif envSFM != sfm {\n282: \t\t\t\tlog.Warn(\n283: \t\t\t\t\tfmt.Sprintf(\n284: \t\t\t\t\t\t\"component value %q will not be used because environment variable %s is set\",\n285: \t\t\t\t\t\tsfm,\n286: \t\t\t\t\t\tenvNokiaSrosSFM,\n287: \t\t\t\t\t),\n288: \t\t\t\t\t\"node\", n.Cfg.ShortName,\n289: \t\t\t\t\t\"env\", envNokiaSrosSFM,\n290: \t\t\t\t\t\"component-value\", sfm,\n291: \t\t\t\t\t\"env-value\", envSFM,\n292: \t\t\t\t)\n293: \t\t\t}\n294: \t\t} else {\n295: \t\t\tn.Cfg.Env[envNokiaSrosSFM] = sfm\n296: \t\t}\n297: \t}\n298: \n299: \tmaps.Copy(n.Cfg.Sysctls, srosSysctl)\n300: \n301: \t// make sure we always have uppercase slot definition\n302: \tfor _, c := range n.kindSpecificCfg().Components {\n\n(Showing lines 258-302 of 1910. Use offset=303 to continue.)\n</content>",
+            "title": "source/head/nodes/sros/sros.go",
+            "metadata": {
+              "preview": "\t// if user was not initialized to a value, use root\n\tif n.Cfg.User == \"\" {\n\t\tn.Cfg.User = \"0:0\"\n\t}\n\n\t// Snapshot topology env before component and SFM flags are applied.\n\t// Component nodes set userEnv from the base node before Init.\n\tenvAlreadyResolved := n.userEnv != nil\n\tif !envAlreadyResolved {\n\t\tif n.Cfg.Env == nil {\n\t\t\tn.userEnv = map[string]string{}\n\t\t} else {\n\t\t\tn.userEnv = maps.Clone(n.Cfg.Env)\n\t\t}\n\t}\n\tif n.Cfg.Env == nil {\n\t\tn.Cfg.Env = map[string]string{}\n\t}\n\n\t// Distributed cards inherit SFM from the base node env. Applying it again",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/sros/sros.go",
+                "text": "\t// if user was not initialized to a value, use root\n\tif n.Cfg.User == \"\" {\n\t\tn.Cfg.User = \"0:0\"\n\t}\n\n\t// Snapshot topology env before component and SFM flags are applied.\n\t// Component nodes set userEnv from the base node before Init.\n\tenvAlreadyResolved := n.userEnv != nil\n\tif !envAlreadyResolved {\n\t\tif n.Cfg.Env == nil {\n\t\t\tn.userEnv = map[string]string{}\n\t\t} else {\n\t\t\tn.userEnv = maps.Clone(n.Cfg.Env)\n\t\t}\n\t}\n\tif n.Cfg.Env == nil {\n\t\tn.Cfg.Env = map[string]string{}\n\t}\n\n\t// Distributed cards inherit SFM from the base node env. Applying it again\n\t// would warn once per card when the user also set NOKIA_SROS_SFM.\n\tif sfm := n.kindSpecificCfg().SFM; sfm != \"\" && !envAlreadyResolved {\n\t\tif envSFM, ok := n.userEnv[envNokiaSrosSFM]; ok {\n\t\t\tif envSFM != sfm {\n\t\t\t\tlog.Warn(\n\t\t\t\t\tfmt.Sprintf(\n\t\t\t\t\t\t\"component value %q will not be used because environment variable %s is set\",\n\t\t\t\t\t\tsfm,\n\t\t\t\t\t\tenvNokiaSrosSFM,\n\t\t\t\t\t),\n\t\t\t\t\t\"node\", n.Cfg.ShortName,\n\t\t\t\t\t\"env\", envNokiaSrosSFM,\n\t\t\t\t\t\"component-value\", sfm,\n\t\t\t\t\t\"env-value\", envSFM,\n\t\t\t\t)\n\t\t\t}\n\t\t} else {\n\t\t\tn.Cfg.Env[envNokiaSrosSFM] = sfm\n\t\t}\n\t}\n\n\tmaps.Copy(n.Cfg.Sysctls, srosSysctl)\n\n\t// make sure we always have uppercase slot definition\n\tfor _, c := range n.kindSpecificCfg().Components {",
+                "lineStart": 258,
+                "lineEnd": 302,
+                "totalLines": 1910,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792346975346,
+              "end": 1792346975355
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_150346c7d001nu37C9NGQRg0f1",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150345b15001J6y8OyYBckLufC",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 59136,
+            "input": 481,
+            "output": 31,
+            "reasoning": 256,
+            "cache": {
+              "read": 58368,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_150346c8d001FeqnMLn7ulSYvI",
+        "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+        "time": {
+          "created": 1792346975373,
+          "completed": 1792346999509
+        },
+        "parentID": "msg_150318b6b001z1GyFDwe1Oii29",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-aUhh0x",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 63007,
+          "input": 589,
+          "output": 2759,
+          "reasoning": 523,
+          "cache": {
+            "read": 59136,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_150347a09001mKQJYA2O8ZozDi",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150346c8d001FeqnMLn7ulSYvI"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_150347a0a001hTBgZPesEETFrk",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150346c8d001FeqnMLn7ulSYvI",
+          "text": "All verifications complete. Final review with two P4 findings.\n\nFindings:\n\n**P4-1: New `14-srsim-new-chassis.robot` suite is scheduled in CI but can never run there.**\n- Location: head `.github/workflows/srsim-tests.yml` (shard list, `components` shard at lines 51-52).\n- Problem: The suite gates itself on `${26_10_TESTS}` (default `false` in the robot file), and neither `srsim-tests.yml` nor `rf-run.sh` sets it. So the `components` shard always skips the new chassis tests.\n- Impact: The new-chassis paths (`ixr-e2sc`, `ixr-e3`, `sar-10x` classification, integrated/distributed routing, warnings) get no CI coverage; failures would only surface manually.\n- Suggestion: Add a workflow input (e.g. `extra_robot_vars` or a dedicated `26_10` shard passing `--variable 26_10_TESTS:true`), or exclude the suite from the shard until the 26.10 image is generally available so the shard listing reflects reality.\n\n**P4-2: SFM override warning in `Init` duplicates `warnUserEnvOverrides` for one key.**\n- Location: head `nodes/sros/sros.go` lines 277-297.\n- Problem: The inline block reproduces exactly the warn semantics of `warnUserEnvOverrides` (warn when the user env value differs) for the single `NOKIA_SROS_SFM` key.\n- Impact: Two copies of the same message format/log fields to keep in sync.\n- Suggestion: `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` then set `n.Cfg.Env[envNokiaSrosSFM] = sfm` when absent (the helper already checks `userSet`).\n\nCoverage notes: full static review of all 31 changed paths plus head/base comparison; verified classification routing, env precedence, single-warning behavior, schema enum coverage for new types and integrated MDA defaults, docs/README updates, moved-code equivalence. Tests were not executed (read-only review); runtime behaviors (container creation, netns join, image inspection) are inferred from code and robot expectations. Noted that the moved `checkComponentSlotsConfig` fixed the base insertion bug (now stores the uppercased slot).\n\nNow write the Markdown review and the JSON.",
+          "time": {
+            "start": 1792346978826,
+            "end": 1792346982797
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_150348990001iyoa423VgdZ9Lu",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150346c8d001FeqnMLn7ulSYvI",
+          "text": "All verification is complete. Here is the final review.\n\n---\n\n# PR Review: SR-SIM components model refactor, chassis_info validation, new chassis types, CI sharding\n\n**Head:** `d44c69f` · **Base:** `84cf630` · Scope: 31 changed paths (13 files under `nodes/sros/`, schema generator + `clab.schema.json`, docs/README, CI workflow, robot tests).\n\n## Summary\n\nThis PR is primarily a well-executed refactor of `nodes/sros`: template/config/power/netns/variant logic moves out of the oversized `sros.go` into focused files, and a new `chassis_info.go`-driven advisory validation layer is added. I verified the load-bearing behavior changes end-to-end:\n\n- **Classification routing** is coherent: `isDistributedBaseNode` now returns true for integrated types with redundant components (`ixr-r6` A+B), while `setupStandaloneComponents` still errors for the same input on a standalone path; component nodes strip their `Components` (`kindSpecificConfig.Of(componentConfig).Components = nil`) so they classify as distributed cards and cannot recurse.\n- **Env precedence** is consistent with the documented model: `userEnv` is snapshotted before component/SFM flags are applied (`sros.go:263-275`), component nodes inherit it (`sros.go:688`), and `keepUserEnv`/`warnUserEnvOverrides`/`applyHardwareEnv` implement \"node env wins over per-component env wins over derived types\" with warnings. `componentDerivedEnv` correctly folds in per-component `c.Env`.\n- **Warnings fire once per lab**: `PreDeploy` → `createSROSFiles` runs only for standalone nodes and distributed CPM cards (`sros.go:410`), and `warnUnsupportedComponents` guards to CPM A (`sros.go:1073-1077`), so neither CPM B nor line cards duplicate warnings.\n- **The moved `checkComponentSlotsConfig` actually fixes a base bug**: base inserted the raw slot into the dedup map while checking the uppercased slot; the head version (`component.go:165`) inserts the uppercased slot, so mixed-case duplicates (`a`/`A`) are now rejected.\n- **Schema and docs align**: new node types (`ixr-e2sc`, `ixr-e3`, `sar-10x`) and MDA types are present in `clab.schema.json` enums (generated via the updated `sros_schema_gen.sh`, which now derives enums from the chassis table and adds `fixed_mdas` values), and the integrated-default MDA types used by `integratedSrosDefaultComponents` all appear in the schema. `docs/manual/kinds/sros.md` and `nodes/sros/README.md` describe the new components model, the card-override skip behavior, and env override semantics accurately.\n\nNo P0–P3 defects were found. Two P4 improvements follow.\n\n## Findings\n\n| Priority | Count |\n|----------|-------|\n| P0 | 0 |\n| P1 | 0 |\n| P2 | 0 |\n| P3 | 0 |\n| P4 | 2 |\n\n### P4 — New `14-srsim-new-chassis.robot` suite is scheduled in CI but always skips there\n\n**Location:** [`.github/workflows/srsim-tests.yml` L51-L52](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/.github/workflows/srsim-tests.yml#L51-L52) and [`tests/13-srsim/14-srsim-new-chassis.robot` L7-L16](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/tests/13-srsim/14-srsim-new-chassis.robot#L7-L16)\n\n**Problem:** The new chassis suite gates itself with `Skip If '${26_10_TESTS}'.lower() != 'true'` and defaults the variable to `false`. Nothing in the repository sets it: `srsim-tests.yml` invokes `./tests/rf-run.sh ${{ inputs.runtime }} ./tests/13-srsim/${test_suite}` with no `--variable` flag and no input that could carry one, yet the `components` shard lists `14-srsim-new-chassis.robot`.\n\n**Trigger:** Every CI run of the `components` shard.\n\n**Impact:** The new-chassis code paths (`ixr-e2sc`, `ixr-e3`, `sar-10x` classification, integrated/distributed routing, component warnings) receive no automated CI coverage; regressions would only surface through manual runs with `--variable 26_10_TESTS:true`. The shard listing overstates actual coverage.\n\n**Suggestion:** Either add a workflow input (or a dedicated shard) that passes `--variable 26_10_TESTS:true` once the 26.10 image is generally available, or remove the suite from the `components` shard until then so the shard reflects reality. If the skip is intentionally permanent until the image ships, a comment in the workflow would make that explicit.\n\n### P4 — SFM override warning in `Init` duplicates `warnUserEnvOverrides` for one key\n\n**Location:** [`nodes/sros/sros.go` L277-L297](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/sros.go#L277-L297)\n\n**Problem:** The inline block reproduces exactly the semantics of `warnUserEnvOverrides` (`component.go:184-202`) — warn when the user env value exists and differs — for the single `NOKIA_SROS_SFM` key, including the identical message format and log fields. `warnUserEnvOverrides` exists precisely for this pattern and is already used two call sites later.\n\n**Trigger:** Any node whose kind config sets `SFM` while the user also sets `NOKIA_SROS_SFM` to a different value.\n\n**Impact:** Two copies of the same warning text/log-field contract to keep in sync; future changes to the message must be made in both places.\n\n**Suggestion:** Replace the inline warn with `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` and keep the `n.Cfg.Env[envNokiaSrosSFM] = sfm` assignment gated on the key being absent (the helper already computes `userSet`). This is a small local simplification, not a structural change.\n\n## Coverage Notes\n\n- **Complete static review.** All 31 changed paths were read from `diff.txt` in full; head files were cross-checked where the diff was ambiguous (including the complete `utils/sros_schema_gen.sh`, `chassis_info.go`, `component_config.go`, and `component.go`). Tests were **not executed**; all behavioral conclusions are from source inspection and the robot test expectations, not from runs.\n- Verified: classification routing for standalone/integrated/redundant/distributed cases; `userEnv` snapshot ordering relative to `setupComponentNodes` (called from `Init` at `sros.go:343`, after the snapshot — correct); single-warning behavior across CPM A/B and line cards; per-component env preservation via `componentDerivedEnv`; schema enum coverage for the new chassis types and integrated-default MDA types; docs/README consistency with the implementation.\n- Runtime-dependent behaviors (container creation, netns join, image inspection returning `chassis_info.json`, gnmic queries against distributed-base container names) are inferred from code and test expectations, not verified in a live environment.\n- The base `checkComponentSlotsConfig` insertion bug (raw-slot insert vs uppercased check) was fixed as part of the move; no finding was raised for it.\n- The package-level `srosEnv` map mutation (`sros.go:309,312`) and SFM-per-line-card config emission are pre-existing patterns carried over unchanged and were not flagged.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"CI `components` shard schedules `14-srsim-new-chassis.robot`, which always skips because no runner sets `26_10_TESTS`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \".github/workflows/srsim-tests.yml\",\n        \"start\": 51,\n        \"end\": 52\n      },\n      \"problem\": \"The new chassis suite gates itself with `Skip If '${26_10_TESTS}'.lower() != 'true'` and defaults the variable to `false` in `tests/13-srsim/14-srsim-new-chassis.robot`. Nothing in the repository sets it: `srsim-tests.yml` invokes `./tests/rf-run.sh ${{ inputs.runtime }} ./tests/13-srsim/${test_suite}` with no `--variable` flag and no input that could carry one, yet the `components` shard lists `14-srsim-new-chassis.robot`.\",\n      \"trigger\": \"Every CI run of the `components` shard.\",\n      \"impact\": \"The new-chassis code paths (`ixr-e2sc`, `ixr-e3`, `sar-10x` classification, integrated/distributed routing, component warnings) receive no automated CI coverage, and the shard listing overstates actual coverage. Regressions would only surface through manual runs with `--variable 26_10_TESTS:true`.\",\n      \"suggestion\": \"Either add a workflow input (or a dedicated shard) that passes `--variable 26_10_TESTS:true` once the 26.10 image is generally available, or remove the suite from the `components` shard until then. If the skip is intentionally permanent until the image ships, a comment in the workflow would make that explicit.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Inline SFM override warning in `Init` duplicates `warnUserEnvOverrides` for the `NOKIA_SROS_SFM` key\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/sros/sros.go\",\n        \"start\": 277,\n        \"end\": 297\n      },\n      \"problem\": \"The inline block in `Init` reproduces exactly the semantics of `warnUserEnvOverrides` (`component.go:184-202`) — warn when the user env value exists and differs — for the single `NOKIA_SROS_SFM` key, including the identical message format and log fields.\",\n      \"trigger\": \"Any node whose kind config sets `SFM` while the user also sets the `NOKIA_SROS_SFM` environment variable to a different value.\",\n      \"impact\": \"Two copies of the same warning text and log-field contract must be kept in sync; a future message change must be applied in both places, which is easy to miss during maintenance.\",\n      \"suggestion\": \"Replace the inline warn with `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` and keep the `n.Cfg.Env[envNokiaSrosSFM] = sfm` assignment gated on the key being absent (the helper already computes `userSet`). This is a small local simplification, not a structural change.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Static review only; tests were not executed. All 31 changed paths were read from diff.txt in full, and head files were cross-checked where the diff was ambiguous (including the complete utils/sros_schema_gen.sh, chassis_info.go, component_config.go, and component.go).\",\n      \"Verified: classification routing (standalone/integrated/redundant/distributed), userEnv snapshot ordering relative to setupComponentNodes (called from Init at sros.go:343, after the snapshot), single-warning behavior across CPM A/B and line cards via the PreDeploy gating, per-component env preservation in componentDerivedEnv, and schema enum coverage for the new chassis types and integrated-default MDA types.\",\n      \"Runtime-dependent behaviors (container creation, netns join, image inspection returning chassis_info.json, gnmic queries against distributed-base container names) are inferred from code and robot test expectations, not verified in a live environment.\",\n      \"The base checkComponentSlotsConfig insertion bug (raw-slot insert vs uppercased check) was fixed as part of the move; no finding was raised for it.\",\n      \"The package-level srosEnv map mutation (sros.go:309,312) and SFM-per-line-card config emission are pre-existing patterns carried over unchanged and were not flagged.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1792346982800,
+            "end": 1792346999499
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15034cacf001sSVa4ZE27JWr6S",
+          "sessionID": "ses_eafd27cc1ffeQYNILSKvQRUwlY",
+          "messageID": "msg_150346c8d001FeqnMLn7ulSYvI",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 63007,
+            "input": 589,
+            "output": 2759,
+            "reasoning": 523,
+            "cache": {
+              "read": 59136,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - CI `components` shard schedules [`14-srsim-new-chassis.robot`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/tests/13-srsim/14-srsim-new-chassis.robot#L1-L1), which always skips because no runner sets `26_10_TESTS`** | [.github/workflows/srsim-tests.yml:51-52](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/.github/workflows/srsim-tests.yml#L51-L52) |\n| **P4 - Inline `SFM` override warning in `Init` duplicates `warnUserEnvOverrides` for the `NOKIA_SROS_SFM` key** | [nodes/sros/sros.go:277-297](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/sros.go#L277-L297) |\n\n## P4 - CI `components` shard schedules [`14-srsim-new-chassis.robot`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/tests/13-srsim/14-srsim-new-chassis.robot#L1-L1), which always skips because no runner sets `26_10_TESTS`\n\n**Location:** [.github/workflows/srsim-tests.yml:51-52](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/.github/workflows/srsim-tests.yml#L51-L52)\n\n**Problem:** The new chassis suite gates itself with `Skip If '${26_10_TESTS}'.lower() != 'true'` and defaults the variable to `false` in [`tests/13-srsim/14-srsim-new-chassis.robot`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/tests/13-srsim/14-srsim-new-chassis.robot#L1-L1). Nothing in the repository sets it&#58; [`srsim-tests.yml`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/.github/workflows/srsim-tests.yml#L1-L1) invokes `./tests/rf-run.sh ${{ inputs.runtime }} ./tests/13-srsim/${test_suite}` with no `--variable` flag and no input that could carry one, yet the `components` shard lists [`14-srsim-new-chassis.robot`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/tests/13-srsim/14-srsim-new-chassis.robot#L1-L1).\n\n**Trigger:** Every CI run of the `components` shard.\n\n**Impact:** The new-chassis code paths &#40;`ixr-e2sc`, `ixr-e3`, `sar-10x` classification, integrated/distributed routing, component warnings&#41; receive no automated CI coverage, and the shard listing overstates actual coverage. Regressions would only surface through manual runs with `--variable 26_10_TESTS:true`.\n\n**Suggested correction:** Either add a workflow input &#40;or a dedicated shard&#41; that passes `--variable 26_10_TESTS:true` once the 26.10 image is generally available, or remove the suite from the `components` shard until then. If the skip is intentionally permanent until the image ships, a comment in the workflow would make that explicit.\n\n\n## P4 - Inline `SFM` override warning in `Init` duplicates `warnUserEnvOverrides` for the `NOKIA_SROS_SFM` key\n\n**Location:** [nodes/sros/sros.go:277-297](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/sros.go#L277-L297)\n\n**Problem:** The inline block in `Init` reproduces exactly the semantics of `warnUserEnvOverrides` &#40;[`component.go:184-202`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/component.go#L184-L202)&#41; — warn when the user env value exists and differs — for the single `NOKIA_SROS_SFM` key, including the identical message format and log fields.\n\n**Trigger:** Any node whose kind config sets `SFM` while the user also sets the `NOKIA_SROS_SFM` environment variable to a different value.\n\n**Impact:** Two copies of the same warning text and log-field contract must be kept in sync; a future message change must be applied in both places, which is easy to miss during maintenance.\n\n**Suggested correction:** Replace the inline warn with `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` and keep the `n.Cfg.Env[envNokiaSrosSFM] = sfm` assignment gated on the key being absent &#40;the helper already computes `userSet`&#41;. This is a small local simplification, not a structural change.\n\n\n## Coverage\n\n- Static review only; tests were not executed. All 31 changed paths were read from `diff.txt` in full, and head files were cross-checked where the diff was ambiguous &#40;including the complete [`utils/sros_schema_gen.sh`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/utils/sros_schema_gen.sh#L1-L1), [`chassis_info.go`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/chassis_info.go#L1-L1), [`component_config.go`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/component_config.go#L1-L1), and [`component.go`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/component.go#L1-L1)&#41;.\n- Verified&#58; classification routing &#40;standalone/integrated/redundant/distributed&#41;, `userEnv` snapshot ordering relative to `setupComponentNodes` &#40;called from `Init` at [`sros.go`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/sros.go#L1-L1)&#58;343, after the snapshot&#41;, single-warning behavior across CPM A/B and line cards via the `PreDeploy` gating, per-component env preservation in `componentDerivedEnv`, and schema enum coverage for the new chassis types and integrated-default MDA types.\n- Runtime-dependent behaviors &#40;container creation, netns join, image inspection returning `chassis_info.json`, gnmic queries against distributed-base container names&#41; are inferred from code and robot test expectations, not verified in a live environment.\n- The base `checkComponentSlotsConfig` insertion bug &#40;raw-slot insert vs uppercased check&#41; was fixed as part of the move; no finding was raised for it.\n- The package-level `srosEnv` map mutation &#40;[`sros.go`](https://github.com/srl-labs/containerlab/blob/d44c69f72ab156474197f12b6fc1407b3f8a65c4/nodes/sros/sros.go#L1-L1)&#58;309,312&#41; and SFM-per-line-card config emission are pre-existing patterns carried over unchanged and were not flagged.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"CI `components` shard schedules `14-srsim-new-chassis.robot`, which always skips because no runner sets `26_10_TESTS`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \".github/workflows/srsim-tests.yml\",\n        \"start\": 51,\n        \"end\": 52\n      },\n      \"problem\": \"The new chassis suite gates itself with `Skip If '${26_10_TESTS}'.lower() != 'true'` and defaults the variable to `false` in `tests/13-srsim/14-srsim-new-chassis.robot`. Nothing in the repository sets it: `srsim-tests.yml` invokes `./tests/rf-run.sh ${{ inputs.runtime }} ./tests/13-srsim/${test_suite}` with no `--variable` flag and no input that could carry one, yet the `components` shard lists `14-srsim-new-chassis.robot`.\",\n      \"trigger\": \"Every CI run of the `components` shard.\",\n      \"impact\": \"The new-chassis code paths (`ixr-e2sc`, `ixr-e3`, `sar-10x` classification, integrated/distributed routing, component warnings) receive no automated CI coverage, and the shard listing overstates actual coverage. Regressions would only surface through manual runs with `--variable 26_10_TESTS:true`.\",\n      \"suggestion\": \"Either add a workflow input (or a dedicated shard) that passes `--variable 26_10_TESTS:true` once the 26.10 image is generally available, or remove the suite from the `components` shard until then. If the skip is intentionally permanent until the image ships, a comment in the workflow would make that explicit.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Inline `SFM` override warning in `Init` duplicates `warnUserEnvOverrides` for the `NOKIA_SROS_SFM` key\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/sros/sros.go\",\n        \"start\": 277,\n        \"end\": 297\n      },\n      \"problem\": \"The inline block in `Init` reproduces exactly the semantics of `warnUserEnvOverrides` (`component.go:184-202`) — warn when the user env value exists and differs — for the single `NOKIA_SROS_SFM` key, including the identical message format and log fields.\",\n      \"trigger\": \"Any node whose kind config sets `SFM` while the user also sets the `NOKIA_SROS_SFM` environment variable to a different value.\",\n      \"impact\": \"Two copies of the same warning text and log-field contract must be kept in sync; a future message change must be applied in both places, which is easy to miss during maintenance.\",\n      \"suggestion\": \"Replace the inline warn with `warnUserEnvOverrides(n.Cfg.ShortName, map[string]string{envNokiaSrosSFM: sfm}, n.userEnv)` and keep the `n.Cfg.Env[envNokiaSrosSFM] = sfm` assignment gated on the key being absent (the helper already computes `userSet`). This is a small local simplification, not a structural change.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Static review only; tests were not executed. All 31 changed paths were read from `diff.txt` in full, and head files were cross-checked where the diff was ambiguous (including the complete `utils/sros_schema_gen.sh`, `chassis_info.go`, `component_config.go`, and `component.go`).\",\n      \"Verified: classification routing (standalone/integrated/redundant/distributed), `userEnv` snapshot ordering relative to `setupComponentNodes` (called from `Init` at `sros.go`:343, after the snapshot), single-warning behavior across CPM A/B and line cards via the `PreDeploy` gating, per-component env preservation in `componentDerivedEnv`, and schema enum coverage for the new chassis types and integrated-default MDA types.\",\n      \"Runtime-dependent behaviors (container creation, netns join, image inspection returning `chassis_info.json`, gnmic queries against distributed-base container names) are inferred from code and robot test expectations, not verified in a live environment.\",\n      \"The base `checkComponentSlotsConfig` insertion bug (raw-slot insert vs uppercased check) was fixed as part of the move; no finding was raised for it.\",\n      \"The package-level `srosEnv` map mutation (`sros.go`:309,312) and SFM-per-line-card config emission are pre-existing patterns carried over unchanged and were not flagged.\"\n    ]\n  }\n}\n```"
 }
