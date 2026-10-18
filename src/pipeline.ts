@@ -8,6 +8,7 @@ import { policyHash } from './opencode.js';
 import { fetchSource, snapshot } from './source.js';
 import { ManifestSchema, RequestSchema, ReviewOutputSchema, SessionUrl } from './types.js';
 import { renderReport } from './report.js';
+import { allowedSessionUrl } from './pages.js';
 
 export const PreparedSchema = z.strictObject({ request: RequestSchema, commentId: z.number().int().positive(),
   manifest: ManifestSchema.nullable(), ready: z.boolean() });
@@ -45,6 +46,7 @@ async function publicationContext(prepared: unknown, c: Config, api: GitHub) {
 export async function progress(prepared: unknown, session: unknown, c: Config, api: GitHub) {
   const url = z.strictObject({ url: SessionUrl }).parse(session).url;
   if (!c.shareSessions) return { skipped: true };
+  if (!allowedSessionUrl(url, c)) throw new Error('Session URL does not match trusted Pages configuration');
   const { p, r, current } = await publicationContext(prepared, c, api);
   if (current.state !== 'running') return { skipped: true };
   await api.update(r.repository, p.commentId, statusBody(r, 'Reviewing the recorded pull request revision.', url));
@@ -55,6 +57,8 @@ export async function publish(prepared: unknown, output: unknown, c: Config, api
   if (current.state !== 'running') return { skipped: true };
   const parsed = ReviewOutputSchema.safeParse(output);
   const value = parsed.success ? parsed.data : { result: null, failed: true, notes: ['Reviewer result was unavailable or invalid.'] };
+  if (value.sessionUrl && !allowedSessionUrl(value.sessionUrl, c)) delete value.sessionUrl;
+  const retainedSessionUrl = existingSessionUrl && allowedSessionUrl(existingSessionUrl, c) ? existingSessionUrl : undefined;
   const notes = [...value.notes];
   if (reviewJobStatus && reviewJobStatus !== 'success') notes.push('Reviewer job did not complete successfully.');
   if (value.failed) notes.push('Reviewer did not complete successfully.');
@@ -62,8 +66,8 @@ export async function publish(prepared: unknown, output: unknown, c: Config, api
   try { currentHead = (await api.pull(r.repository, r.pr)).head.sha; }
   catch { notes.push('Unable to check whether newer commits are present.'); }
   const rendered = renderReport(r, value.result, p.manifest, { notes, currentHead, maxBytes: c.limits.reportBytes,
-    sessionUrl: c.shareSessions ? value.sessionUrl ?? existingSessionUrl : undefined, sharingEnabled: c.shareSessions,
-    sessionSyncPending: Boolean(value.sessionSyncPending || (c.shareSessions && existingSessionUrl && !value.sessionUrl)) });
+    sessionUrl: c.shareSessions ? value.sessionUrl ?? retainedSessionUrl : undefined, sharingEnabled: c.shareSessions,
+    sessionSyncPending: Boolean(value.sessionSyncPending || (c.shareSessions && retainedSessionUrl && !value.sessionUrl)) });
   await api.update(r.repository, p.commentId, rendered.body);
   return { skipped: false, state: rendered.request.state };
 }

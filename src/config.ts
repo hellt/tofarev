@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const MODEL = 'zai-org/GLM-5.3-Flash';
 export const ENDPOINT = 'https://api.tokenfactory.nebius.com/v1';
-export const OPENCODE_VERSION = '1.18.33';
+export const OPENCODE_VERSION = '1.19.3';
 export const Rules = ['.cursor/rules/karpathy-guidelines.mdc', '.cursor/rules/ponytail.mdc'] as const;
 export const ConfigSchema = z.strictObject({
   repository: z.string().max(201).regex(/^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/).default('srl-labs/containerlab'),
@@ -10,6 +10,10 @@ export const ConfigSchema = z.strictObject({
   allowedUsers: z.array(z.string().regex(/^[\w-]+$/)).min(1).default(['hellt', 'flosch62', 'kaelemc']),
   appSlug: z.string().regex(/^[a-z0-9-]+$/).default('tofarev'),
   shareSessions: z.boolean().default(false),
+  sessionPages: z.strictObject({
+    repository: z.string().max(201).regex(/^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/).default('hellt/tofarev'),
+    intervalSeconds: z.number().int().min(60).max(900).default(120),
+  }).prefault({}),
   reasoningEffort: z.enum(['low', 'high', 'max']).default('high'),
   limits: z.strictObject({
     durationMs: z.number().int().min(1000).max(1_800_000).default(1_800_000),

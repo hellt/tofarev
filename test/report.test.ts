@@ -49,12 +49,12 @@ test('table and details match, sort P0 to P4, and always include footer', () => 
   for (const variant of [renderReport(r, null, manifest), renderReport(r, result, { ...manifest, incomplete: true }),
     renderReport(r, result, manifest, { currentHead: 'e'.repeat(40) })]) assert.ok(variant.body.endsWith(FOOTER));
 });
-test('a native session link preserves collapsed finding details and file links', () => {
+test('a session export link preserves collapsed finding details and file links', () => {
   const result = ResultSchema.parse({ version: 1, findings: [finding], coverage: { complete: true, notes: [] } });
   const shared = renderReport(r, result, manifest, { sessionUrl: 'https://opncd.ai/share/test1234', sharingEnabled: true });
   assert.match(shared.body, /\| \*\*P2 - Repeated/); assert.match(shared.body, /blob\/a{40}/);
-  assert.match(shared.body, /\[Live OpenCode session\]\(https:\/\/opncd.ai\/share\/test1234\)/);
-  assert.ok(shared.body.indexOf('[Live OpenCode session]') < shared.body.indexOf('[Workflow run]'));
+  assert.match(shared.body, /\[Session log\]\(https:\/\/opncd.ai\/share\/test1234\)/);
+  assert.ok(shared.body.indexOf('[Session log]') < shared.body.indexOf('[Workflow run]'));
   assert.equal((shared.body.match(/<details>/g) ?? []).length, 2);
   assert.ok(shared.body.includes('<summary>P2 - Repeated runtime query per node</summary>'));
   assert.ok(!shared.body.includes('<details open'));

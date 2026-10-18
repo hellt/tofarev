@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, rm, mkdir, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, realpath, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,8 @@ import { z } from 'zod';
 import { type Config, ENDPOINT, MODEL, apiKey } from './config.js';
 import { ResultSchema, type ReviewOutput, ManifestSchema, validateLocations } from './types.js';
 import { formatInlineCode, renderSessionReview } from './report.js';
-import { shareSession, startSharedSession } from './sharing.js';
+import { startSession } from './sharing.js';
+import { SessionSnapshotSchema } from './session.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 export async function policyText() { return readFile(path.join(root, 'prompts/containerlab-review.md'), 'utf8'); }
@@ -24,11 +25,11 @@ export function parseReviewResult(text: string) {
 
 export function reviewerConfig(c: Config, source: string, system: string, endpoint: string) {
   // With a fresh non-Git working directory OpenCode uses / as its worktree.
-  // v1.18.33 read permissions match paths relative to that worktree.
+  // Read permissions match paths relative to that worktree.
   const access = { '*': 'deny', [`${source.slice(1)}/*`]: 'allow' };
   const permission = { '*': 'deny', read: access, grep: 'allow', glob: 'allow',
     external_directory: { '*': 'deny', [source]: 'allow', [`${source}/*`]: 'allow' } };
-  return { $schema: 'https://opencode.ai/config.json', share: c.shareSessions ? 'manual' : 'disabled', autoupdate: false,
+  return { $schema: 'https://opencode.ai/config.json', autoupdate: false,
     enabled_providers: ['tofarev'], model: `tofarev/${MODEL}`, small_model: `tofarev/${MODEL}`,
     plugin: [], mcp: {}, lsp: false, formatter: false, instructions: [],
     compaction: { auto: true, prune: false }, permission,
@@ -149,13 +150,18 @@ export async function runCli(executable: string, working: string, cfg: string, m
   });
 }
 
-export async function review(source: string, c: Config, options: { transport?: typeof fetch; executable?: string; key?: string } = {}): Promise<ReviewOutput> {
+export async function review(source: string, c: Config, options: { transport?: typeof fetch; executable?: string; key?: string; sessionDirectory?: string } = {}): Promise<ReviewOutput> {
   source = await realpath(source);
   const key = options.key ?? apiKey();
   const working = await mkdtemp(path.join(os.tmpdir(), 'tofarev-review-'));
   const proxy = await inferenceProxy(c, key, options.transport);
   const started = Date.now();
-  let shared: Awaited<ReturnType<typeof startSharedSession>>;
+  let shared: Awaited<ReturnType<typeof startSession>>;
+  const sessionDirectory = options.sessionDirectory ?? process.env.TOFAREV_SESSION_DIR;
+  let captureTimer: ReturnType<typeof setInterval> | undefined;
+  let capture: Promise<void> = Promise.resolve();
+  let finishCapture: (() => Promise<void>) | undefined;
+  let best: ReviewOutput = { result: null, notes: [], failed: true };
   try {
     const manifest = ManifestSchema.parse(JSON.parse(await readFile(path.join(source, 'manifest.json'), 'utf8')));
     const cfg = path.join(working, 'opencode.json');
@@ -163,11 +169,31 @@ export async function review(source: string, c: Config, options: { transport?: t
     await writeFile(cfg, JSON.stringify(reviewerConfig(c, source, `${await policyText()}\n\n${contract}`, proxy.endpoint)));
     const intro = `Review the read-only PR snapshot at ${source}.\nRead standards.json and its referenced rules, then diff.txt and relevant head/ and base/ files. Track all ${manifest.changed.length} changed paths from the diff. Complete checks for each changed path and relevant callers, tests, docs, and schema before finalizing. Source-only review can be complete without executing tests; disclose that limitation. Use read offsets for truncated output and group independent tool calls. Use glob/grep for surrounding code. Return the trusted result schema.\nHead: ${manifest.head}. Comparison base: ${manifest.mergeBase}. Target base: ${manifest.base}.\nGitHub permalink roots: head=https://github.com/${c.repository}/blob/${manifest.head}/; base=https://github.com/${c.repository}/blob/${manifest.mergeBase}/.\nSnapshot incomplete: ${manifest.incomplete}. The full inventory and omission details are in manifest.json; consult it when needed. ${manifest.incomplete ? 'Report incomplete coverage.' : ''}`;
     const executable = options.executable ?? path.join(root, `node_modules/opencode-${process.platform}-${process.arch}/bin/opencode`);
-    let best: ReviewOutput = { result: null, notes: [], failed: true };
     if (c.shareSessions) {
-      shared = await startSharedSession(executable, working, cliEnvironment(working, cfg));
-      if (shared?.url) console.error(`OpenCode review session: ${shared.url}`);
-      else console.error('OpenCode live session link unavailable; review will continue.');
+      shared = await startSession(executable, working, cliEnvironment(working, cfg));
+      if (shared && sessionDirectory) {
+        const snapshot = async (state: 'running' | 'completed' | 'failed') => {
+          try {
+            const data = SessionSnapshotSchema.parse({ version: 1, repository: c.repository, head: manifest.head,
+              updatedAt: new Date().toISOString(), state, ...await shared!.snapshot(),
+              ...(state !== 'running' && best.result ? { report: renderSessionReview({ repository: c.repository, head: manifest.head, mergeBase: manifest.mergeBase }, best.result, manifest) } : {}) });
+            const body = JSON.stringify(data);
+            if (Buffer.byteLength(body) > 20_000_000) throw new Error('Session export exceeds size limit');
+            await mkdir(sessionDirectory, { recursive: true });
+            await writeFile(path.join(sessionDirectory, 'snapshot.tmp'), body);
+            await rename(path.join(sessionDirectory, 'snapshot.tmp'), path.join(sessionDirectory, 'snapshot.json'));
+          } catch { console.error('Session snapshot unavailable; retaining the last successful export.'); }
+        };
+        await snapshot('running');
+        let capturing = false;
+        captureTimer = setInterval(() => {
+          if (capturing) return;
+          capturing = true;
+          capture = snapshot('running').finally(() => { capturing = false; });
+        }, 15_000);
+        finishCapture = () => snapshot(best.failed ? 'failed' : 'completed');
+        console.error('OpenCode session capture ready.');
+      } else console.error('OpenCode session export unavailable; review will continue.');
     }
     let sessionId: string | undefined = shared?.sessionId;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -189,18 +215,9 @@ export async function review(source: string, c: Config, options: { transport?: t
     if (proxy.finalized && best.result) best.result.coverage = { complete: false,
       notes: [...best.result.coverage.notes, 'Review finalized before the configured call allowance or deadline; some analysis may be unfinished.'] };
     if (Date.now() - started >= c.limits.durationMs) best.notes.push('Reviewer deadline reached.');
-    if (c.shareSessions && sessionId) {
-      if (shared && best.result) {
-        try { await shared.renderResult(renderSessionReview({ repository: c.repository, head: manifest.head, mergeBase: manifest.mergeBase }, best.result, manifest)); }
-        catch { best.notes.push('The shared session final report could not be formatted.'); }
-      }
-      const sharing = shared ? { url: shared.url, synced: Boolean(await shared.waitForSync()) }
-        : await shareSession(executable, working, cliEnvironment(working, cfg), sessionId);
-      if (sharing?.url) {
-        best.sessionUrl = sharing.url;
-        if (!sharing.synced) best.sessionSyncPending = true;
-      }
-    }
     return best;
-  } finally { await shared?.close(); await proxy.close(); await rm(working, { recursive: true, force: true }); }
+  } finally {
+    clearInterval(captureTimer); await capture; await finishCapture?.();
+    await shared?.close(); await proxy.close(); await rm(working, { recursive: true, force: true });
+  }
 }

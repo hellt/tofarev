@@ -8,12 +8,14 @@ import { review } from './opencode.js';
 import { exampleReport } from './preview.js';
 import { consumerWorkflow } from './consumer.js';
 import { evaluate, probe } from './evaluation.js';
+import { publishSession } from './pages.js';
+import { ReviewOutputSchema, SessionUrl } from './types.js';
 
 async function output(key: string, value: string) {
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
 }
 async function main() {
-  const [command, arg, extra] = process.argv.slice(2);
+  const [command, arg, extra, sessionFile] = process.argv.slice(2);
   const c = config(process.env.TOFAREV_CONFIG ? await readJson(process.env.TOFAREV_CONFIG) : {});
   const event = async () => readJson(process.env.GITHUB_EVENT_PATH!);
   const api = () => new GitHub(process.env.TOFAREV_GITHUB_TOKEN ?? '');
@@ -43,6 +45,14 @@ async function main() {
       if (!arg) throw new Error('Preparation directory required');
       let result: unknown = null;
       try { if (extra) result = await readJson(extra, 2_000_000); } catch {}
+      if (sessionFile) {
+        try {
+          const session = await readJson(sessionFile, 1024) as { url?: unknown };
+          const url = SessionUrl.parse(session.url);
+          const parsed = ReviewOutputSchema.safeParse(result);
+          result = { ...(parsed.success ? parsed.data : { result: null, failed: true, notes: ['Reviewer result was unavailable or invalid.'] }), sessionUrl: url };
+        } catch { /* Preserve valid findings if the export was unavailable. */ }
+      }
       const published = await publish(await readJson(path.join(arg, 'prepared.json')), result, c, api(), process.env.TOFAREV_REVIEW_STATUS);
       console.log(JSON.stringify(published));
       if ('state' in published && published.state === 'failed') process.exitCode = 1;
@@ -53,11 +63,18 @@ async function main() {
       console.log(JSON.stringify(await progress(await readJson(path.join(arg, 'prepared.json')), await readJson(extra, 1024), c, api())));
       break;
     }
+    case 'publish-session': {
+      if (!arg) throw new Error('Session snapshot required');
+      const result = await publishSession(await readJson(arg), c, process.env.GITHUB_RUN_ID ?? '',
+        process.env.GITHUB_RUN_ATTEMPT ?? '', process.env.TOFAREV_PAGES_DEPLOY_KEY ?? '');
+      console.log(JSON.stringify(result));
+      break;
+    }
     case 'preview': console.log(exampleReport(arg)); break;
     case 'consumer': process.stdout.write(consumerWorkflow(arg ?? '', extra ?? '')); break;
     case 'probe': console.log(JSON.stringify(await probe(), null, 2)); break;
     case 'evaluate': console.log(JSON.stringify(await evaluate(arg), null, 2)); break;
-    default: throw new Error('Usage: tofarev admit|prepare DIR|review SOURCE|publish PREP RESULT|preview [MODE]|consumer OWNER/REPO SHA|probe|evaluate');
+    default: throw new Error('Usage: tofarev admit|prepare DIR|review SOURCE|publish PREP RESULT [SESSION]|publish-session SNAPSHOT|progress PREP SESSION|preview [MODE]|consumer OWNER/REPO SHA|probe|evaluate');
   }
 }
 main().catch(() => { console.error(process.argv[2] === 'probe' || process.argv[2] === 'evaluate' ? 'Live check failed: require TOFAREV_LIVE=1, TOFAREV_API_KEY, access to zai-org/GLM-5.3-Flash, tool calling and valid structured output.' : 'ToFaRev operation failed. Check configuration, credentials and workflow artifacts; no successful publication is claimed.'); process.exitCode = 1; });

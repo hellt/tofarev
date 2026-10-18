@@ -20,6 +20,9 @@ on:
         required: true
       TOFAREV_APP_PRIVATE_KEY:
         required: true
+      TOFAREV_PAGES_DEPLOY_KEY:
+        description: SSH deploy key with write access to the session Pages repository.
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -93,6 +96,8 @@ jobs:
     if: needs.prepare.outputs.ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      TOFAREV_CONFIG: .work/config.json
     permissions:
       contents: read
     steps:
@@ -105,6 +110,10 @@ jobs:
         with:
           name: tofarev-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: .work/source
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.20.0
+      - run: npm ci --ignore-scripts && npm run build
       - name: Build pinned reviewer
         run: docker build --tag tofarev-reviewer .
       - name: Run isolated reviewer
@@ -114,6 +123,8 @@ jobs:
           TRUSTED_CONFIG: ${{ inputs.trusted_config }}
         run: |
           printf '%s' "$TRUSTED_CONFIG" > .work/config.json
+          mkdir -p .work/session
+          chmod 777 .work/session
           chmod -R a+rX .work/source
           (
             set +e
@@ -121,33 +132,47 @@ jobs:
             --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --tmpfs /home/node:rw,nosuid,nodev,size=256m,uid=1000,gid=1000 \
             --mount type=bind,src="$PWD/.work/source",dst=/source,readonly \
             --mount type=bind,src="$PWD/.work/config.json",dst=/config.json,readonly \
+            --mount type=bind,src="$PWD/.work/session",dst=/session \
+            --env TOFAREV_SESSION_DIR=/session \
             --env TOFAREV_API_KEY --env TOFAREV_CONFIG=/config.json \
               tofarev-reviewer review /source > .work/result.json 2> .work/reviewer.log
             echo "$?" > .work/reviewer.exit
           ) > /dev/null 2>&1 &
           for attempt in $(seq 1 90); do
-            if node -e 'const fs=require("fs"); const s=fs.existsSync(".work/reviewer.log") ? fs.readFileSync(".work/reviewer.log","utf8") : ""; const m=s.match(/^OpenCode review session: (https:\/\/opncd\.ai\/(?:s|share)\/[A-Za-z0-9_-]+)$/m); if(!m)process.exit(1); fs.writeFileSync(".work/session.json",JSON.stringify({url:m[1]}))'; then
+            if test -s .work/session/snapshot.json; then
               echo 'session_ready=true' >> "$GITHUB_OUTPUT"
               break
             fi
             test ! -f .work/reviewer.exit || break
             sleep 1
           done
-      - name: Preserve live session link
+      - name: Publish first session snapshot
         if: steps.start.outputs.session_ready == 'true'
+        id: session
+        continue-on-error: true
+        env:
+          TOFAREV_PAGES_DEPLOY_KEY: ${{ secrets.TOFAREV_PAGES_DEPLOY_KEY }}
+        run: node dist/src/cli.js publish-session .work/session/snapshot.json > .work/session-link.json
+      - name: Preserve live session link
+        if: steps.session.outcome == 'success' && steps.start.outputs.session_ready == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tofarev-session-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .work/session.json
+          path: .work/session-link.json
           retention-days: 1
           if-no-files-found: error
       - name: Wait for isolated reviewer
-        run: |
-          tail -n +1 -F .work/reviewer.log &
-          log_pid=$!
-          trap 'kill "$log_pid" 2>/dev/null || true' EXIT
-          while test ! -f .work/reviewer.exit; do sleep 1; done
-          exit "$(cat .work/reviewer.exit)"
+        env:
+          TOFAREV_PAGES_DEPLOY_KEY: ${{ secrets.TOFAREV_PAGES_DEPLOY_KEY }}
+        run: bash scripts/watch-review.sh
+      - name: Preserve session snapshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tofarev-transcript-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/session/snapshot.json
+          retention-days: 7
+          if-no-files-found: warn
       - name: Preserve bounded result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -160,7 +185,7 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.ready == 'true' && fromJSON(inputs.trusted_config).shareSessions == true
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     continue-on-error: true
     permissions:
       contents: read
@@ -190,7 +215,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 60); do
             artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq ".artifacts[] | select(.name == \"tofarev-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT\") | .id")
             if test -n "$artifact_id"; then
               echo 'ready=true' >> "$GITHUB_OUTPUT"
@@ -217,7 +242,7 @@ jobs:
         if: steps.session.outputs.ready == 'true'
         env:
           TOFAREV_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
-        run: node dist/src/cli.js progress .work/prepared .work/session/session.json
+        run: node dist/src/cli.js progress .work/prepared .work/session/session-link.json
   publish:
     needs: [prepare, review, progress]
     if: always() && needs.prepare.outputs.ready == 'true'
@@ -249,6 +274,18 @@ jobs:
         with:
           name: tofarev-result-${{ github.run_id }}-${{ github.run_attempt }}
           path: .work/result
+      - name: Download session snapshot when available
+        continue-on-error: true
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: tofarev-transcript-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/session
+      - name: Publish final session snapshot
+        if: fromJSON(inputs.trusted_config).shareSessions == true
+        continue-on-error: true
+        env:
+          TOFAREV_PAGES_DEPLOY_KEY: ${{ secrets.TOFAREV_PAGES_DEPLOY_KEY }}
+        run: node dist/src/cli.js publish-session .work/session/snapshot.json > .work/session-link.json
       - name: Create finalization App token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -263,4 +300,4 @@ jobs:
         env:
           TOFAREV_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           TOFAREV_REVIEW_STATUS: ${{ needs.review.result }}
-        run: node dist/src/cli.js publish .work/prepared .work/result/result.json
+        run: node dist/src/cli.js publish .work/prepared .work/result/result.json .work/session-link.json

@@ -15,5 +15,5 @@ export function exampleReport(mode = 'findings') {
   }));
   const result: Result = { version: 1, findings: mode === 'empty' ? [] : findings, coverage: { complete: mode !== 'partial', notes: mode === 'partial' ? ['Some changed files were omitted.'] : [] } };
   return renderReport(request, mode === 'failed' ? null : result, manifest, { currentHead: mode === 'stale' ? 'c'.repeat(40) : head,
-    ...(mode === 'shared' ? { sessionUrl: 'https://opncd.ai/share/example' } : {}) }).body;
+    ...(mode === 'shared' ? { sessionUrl: 'https://hellt.github.io/tofarev/sessions/290960521/1-1/' } : {}) }).body;
 }

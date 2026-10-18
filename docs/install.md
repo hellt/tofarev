@@ -87,9 +87,22 @@ To add the private key, open [Containerlab Actions secrets](https://github.com/s
 
 For a sandbox, use the same settings pages under your sandbox repository instead. Keep the downloaded private key outside the source repository; it belongs in the Actions secret, not a committed file.
 
-The existing Containerlab repository secret **`TOFAREV_API_KEY`** is the inference credential. Keep that name. For the sandbox, add the same-named secret there independently. No PAT is required. The preparation/finalization jobs mint short-lived App installation tokens scoped to the current repository and revoke them at job completion. The inference job receives only the Token Factory secret; it does not receive the App key or installation token.
+The existing Containerlab repository secret **`TOFAREV_API_KEY`** is the inference credential. Keep that name. For the sandbox, add the same-named secret there independently. No PAT is required. Session exports use a separate SSH deploy key as described below. The preparation/finalization jobs mint short-lived App installation tokens scoped to the current repository and revoke them at job completion. The inference job receives only the Token Factory secret; it does not receive the App key or installation token.
 
 The internal CLI environment variable for an installation token is `TOFAREV_GITHUB_TOKEN`. This is set by the workflow action output, not a repository secret you must create.
+
+### Configure session Pages
+
+The hosted installation uses [hellt/tofarev](https://github.com/hellt/tofarev/tree/gh-pages) and [hellt.github.io/tofarev](https://hellt.github.io/tofarev/). The dedicated Pages deploy key is stored as `TOFAREV_PAGES_DEPLOY_KEY` in Containerlab and forwarded by its caller. No App permission expansion is needed.
+
+For another installation:
+
+1. Create an orphan `gh-pages` branch in the public Pages repository, containing an `index.html`, an empty `index.json` (`[]`), `.nojekyll`, and a copy of this repository's `.github/workflows/pages.yml`.
+2. Under Settings → Pages, select **GitHub Actions**. Permit `gh-pages` in the `github-pages` environment's deployment branch rules.
+3. Generate an SSH Ed25519 key pair. Add its public key under the Pages repository's Settings → Deploy keys with **Allow write access**. Store its private key as `TOFAREV_PAGES_DEPLOY_KEY` in the repository running reviews; forward that secret explicitly to the reusable workflow.
+4. Set `sessionPages.repository` in trusted configuration if it differs from `hellt/tofarev`. Keep `shareSessions: true` to enable exports. The optional `sessionPages.intervalSeconds` setting controls live publication.
+
+The Pages workflow must be present on `gh-pages`, because a push workflow is loaded from the pushed branch. Keeping the same file on `main` also allows manual dispatch. The publisher preserves the branch's deployment workflow and existing sessions. Anyone can read the resulting public transcripts, including inspected source excerpts. Exports persist independently of Actions artifacts.
 
 ## 4. Verify the model and generate the consumer workflow
 
@@ -124,7 +137,7 @@ Reusable inputs:
 | `app_client_id` | App Client ID from `vars.TOFAREV_APP_CLIENT_ID` |
 | `trusted_config` | Optional JSON matching [configuration.md](configuration.md); default `{}` selects Containerlab |
 
-Explicit secrets: `TOFAREV_API_KEY` and `TOFAREV_APP_PRIVATE_KEY`. Do not use `secrets: inherit`.
+Explicit secrets: `TOFAREV_API_KEY`, `TOFAREV_APP_PRIVATE_KEY`, and `TOFAREV_PAGES_DEPLOY_KEY` when session export is enabled. Do not use `secrets: inherit`.
 
 ## 5. Operate and roll back
 

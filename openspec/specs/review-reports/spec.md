@@ -25,22 +25,30 @@ A report containing findings SHALL begin its findings section with a Markdown su
 - **THEN** the report states that no actionable findings were found and omits empty tables and finding blocks
 
 ### Requirement: Shared review session and collapsed details
-When trusted configuration enables session sharing, the runner SHALL use OpenCode's native sharing API and check synchronization before final publication. Running and final comments SHALL contain the known session link immediately before the workflow run link. The final report SHALL retain collapsed finding blocks when that link is available. Model output SHALL NOT supply this URL. Shared transcripts are public and include the investigation and structured result; credentials SHALL remain outside the session.
+When trusted configuration enables session sharing, the runner SHALL capture the local OpenCode session API without depending on native sharing endpoints. It SHALL export prompts, assistant messages, reasoning, tool inputs and outputs, and the validated final review as self-contained HTML plus downloadable JSON on a dedicated GitHub Pages branch. Running and final comments SHALL contain the known session link immediately before the workflow run link. Model output SHALL NOT choose this URL. Public transcripts SHALL exclude publisher and inference credentials.
 
 #### Scenario: Review is still running
-- **WHEN** session sharing is enabled and the native sharing service is available
-- **THEN** the runner creates and shares the session before inference, prints its validated URL in Actions logs, updates the running comment through a separate status publisher, and keeps native synchronization active throughout review
+- **WHEN** session exports are enabled and publication is available
+- **THEN** the runner publishes an initial snapshot, updates the same run-specific URL at the configured interval, and updates the running comment through a separate status publisher
+
+#### Scenario: Review finishes or fails
+- **WHEN** reviewer execution ends
+- **THEN** a final snapshot of the available session is captured before local session cleanup and publication is attempted even for failed reviews
+
+#### Scenario: Simultaneous reviews publish
+- **WHEN** multiple reviews push exports to the Pages branch
+- **THEN** their run-specific paths remain separate and push retries preserve other sessions without force-pushing
 
 Each summary row SHALL have a corresponding default-collapsed HTML `details` block below the table, regardless of session sharing status. Its `summary` SHALL repeat the finding's priority and title. The block SHALL include source links, problem and triggering conditions, impact, and suggested correction from the validated OpenCode result. Sharing failure SHALL NOT discard valid findings or turn complete analysis into partial coverage.
 
 The report SHALL place an H2 heading `Detailed findings:` between the summary table and individual finding blocks. Review scope and coverage notes SHALL appear in a default-collapsed block titled `review conditions` after all individual findings. Failed, partial, and stale status notices SHALL remain visible above the table.
 
-#### Scenario: Native sharing succeeds
-- **WHEN** the runner verifies all recorded parts are available in the shared session
+#### Scenario: Session export succeeds
+- **WHEN** the runner publishes the captured session snapshot to the Pages branch
 - **THEN** the report contains its summary table, matching collapsed finding blocks, clickable file references, full-session link, and branded footer
 
 #### Scenario: Sharing service fails
-- **WHEN** a valid review cannot confirm session synchronization within the sharing deadline
+- **WHEN** a valid review cannot publish its final session export
 - **THEN** its findings are published with collapsed details, any known session link, and an upload status notice
 
 #### Scenario: Reader expands a finding

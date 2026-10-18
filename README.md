@@ -15,7 +15,7 @@ npm run test:container
 npm run preview
 ```
 
-Requires Node.js 24.20.0. Docker is used for the production reviewer. No server or always-on OpenCode process is needed.
+Requires Node.js 24.20.0. Docker is used for the production reviewer. No server or always-on OpenCode process is needed. With `shareSessions: true`, session transcripts are exported to [GitHub Pages](https://hellt.github.io/tofarev/) during the run and at completion. See [session configuration](docs/configuration.md) for the deploy key and update interval.
 
 - [Installation and rollback](docs/install.md)
 - [Interactive operation guide](docs/how-it-works.html)

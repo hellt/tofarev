@@ -46,6 +46,7 @@ jobs:
       trusted_config: '{"shareSessions":true}'
     secrets:
       TOFAREV_API_KEY: ${{ secrets.TOFAREV_API_KEY }}
+      TOFAREV_PAGES_DEPLOY_KEY: ${{ secrets.TOFAREV_PAGES_DEPLOY_KEY }}
       TOFAREV_APP_PRIVATE_KEY: ${{ secrets.TOFAREV_APP_PRIVATE_KEY }}
 """
 

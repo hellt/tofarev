@@ -1,7 +1,7 @@
 <!-- tofarev:v1:eyJ2ZXJzaW9uIjoxLCJrZXkiOiIyOTA5NjA1MjE6MSIsInJlcG9zaXRvcnkiOiJzcmwtbGFicy9jb250YWluZXJsYWIiLCJyZXBvc2l0b3J5SWQiOjI5MDk2MDUyMSwicHIiOjEsInRyaWdnZXJJZCI6MSwiaGVhZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJiYXNlIjoiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiIsIm1lcmdlQmFzZSI6ImJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmIiLCJwb2xpY3kiOiJkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkIiwicnVuVXJsIjoiaHR0cHM6Ly9naXRodWIuY29tL3NybC1sYWJzL2NvbnRhaW5lcmxhYi9hY3Rpb25zL3J1bnMvMSIsInN0YXRlIjoiY29tcGxldGVkIn0= -->
 ## ToFaRev review — completed
 
-Reviewed [aaaaaaaaaaaa](https://github.com/srl-labs/containerlab/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · [Live OpenCode session](https://opncd.ai/share/example) · [Workflow run](https://github.com/srl-labs/containerlab/actions/runs/1)
+Reviewed [aaaaaaaaaaaa](https://github.com/srl-labs/containerlab/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) · [Session log](https://hellt.github.io/tofarev/sessions/290960521/1-1/) · [Workflow run](https://github.com/srl-labs/containerlab/actions/runs/1)
 
 | Finding | Location |
 | --- | --- |

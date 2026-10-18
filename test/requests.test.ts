@@ -78,8 +78,9 @@ test('recovery preserves source revision, paginates comments, and closed PRs fai
   }
 });
 
-test('published session links accept only the fixed status label and OpenCode domain', () => {
+test('published session links accept known labels and validated hosting URL forms', () => {
   assert.equal(publishedSessionUrl('[Live OpenCode session](https://opncd.ai/share/test1234)'), 'https://opncd.ai/share/test1234');
   assert.equal(publishedSessionUrl('[Live OpenCode session](https://evil.example/session)'), undefined);
+  assert.equal(publishedSessionUrl('[Session log](https://hellt.github.io/tofarev/sessions/290960521/123-1/)'), 'https://hellt.github.io/tofarev/sessions/290960521/123-1/');
   assert.equal(publishedSessionUrl('[Other session](https://opncd.ai/share/test1234)'), undefined);
 });

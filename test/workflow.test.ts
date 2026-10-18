@@ -25,6 +25,9 @@ test('workflow pins dependencies and confines credentials to their jobs and step
   }
   const review = JSON.stringify(workflow.jobs.review);
   for (const flag of ['--read-only', '--cap-drop ALL', 'no-new-privileges', 'dst=/source,readonly', '/home/node:rw']) assert.ok(review.includes(flag));
+  const isolated = workflow.jobs.review.steps.find((s: any) => s.name === 'Run isolated reviewer');
+  assert.ok(!JSON.stringify(isolated).includes('TOFAREV_PAGES_DEPLOY_KEY'));
+  assert.ok(!JSON.stringify(isolated).includes('TOFAREV_APP_PRIVATE_KEY'));
   assert.ok(!review.includes('TOFAREV_GITHUB_TOKEN')); assert.ok(!review.includes('docker.sock'));
   assert.match(workflow.jobs.publish.if, /always\(\)/);
   assert.deepEqual(workflow.jobs.publish.needs, ['prepare', 'review', 'progress']);
@@ -50,14 +53,14 @@ test('review workflow exposes the live link before completion and preserves the 
   const work = await mkdtemp(path.join(os.tmpdir(), 'tofarev-background-test-'));
   try {
     await mkdir(path.join(work, '.work/source'), { recursive: true });
-    await writeFile(path.join(work, 'docker'), '#!/bin/sh\necho "OpenCode review session: https://opncd.ai/share/test1234" >&2\nsleep 3\necho "{}"\nexit 7\n', { mode: 0o755 });
+    await writeFile(path.join(work, 'docker'), '#!/bin/sh\necho "{}" > .work/session/snapshot.json\necho "OpenCode session capture ready." >&2\nsleep 3\necho "{}"\nexit 7\n', { mode: 0o755 });
     const env = { ...process.env, PATH: `${work}:${process.env.PATH}`, TRUSTED_CONFIG: '{}', GITHUB_OUTPUT: path.join(work, 'outputs') };
     const run = promisify(execFile);
     const step = (name: string) => workflow.jobs.review.steps.find((s: any) => s.name === name).run;
     await run('/bin/bash', ['-e', '-c', step('Run isolated reviewer')], { cwd: work, env });
-    assert.deepEqual(JSON.parse(await readFile(path.join(work, '.work/session.json'), 'utf8')), { url: 'https://opncd.ai/share/test1234' });
+    assert.equal((await readFile(path.join(work, 'outputs'), 'utf8')).trim(), 'session_ready=true');
     await assert.rejects(access(path.join(work, '.work/reviewer.exit')));
-    await assert.rejects(run('/bin/bash', ['-e', '-c', step('Wait for isolated reviewer')], { cwd: work, env }), (e: any) => e.code === 7 && e.stdout.includes('OpenCode review session:'));
+    await assert.rejects(run('/bin/bash', ['-e', '-c', await readFile('scripts/watch-review.sh', 'utf8')], { cwd: work, env }), (e: any) => e.code === 7 && e.stdout.includes('OpenCode session capture ready.'));
     assert.equal((await readFile(path.join(work, '.work/reviewer.exit'), 'utf8')).trim(), '7');
   } finally { await rm(work, { recursive: true, force: true }); }
 });

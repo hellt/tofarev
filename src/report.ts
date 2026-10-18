@@ -88,7 +88,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     r.state = !checked ? 'failed' : (!checked.coverage.complete || manifest?.incomplete || options.notes?.length || omitted) ? 'partial' : 'completed';
     let body = `${marker(r)}\n## ToFaRev review — ${r.state}\n\n`;
     if (r.head) body += `Reviewed [${r.head.slice(0, 12)}](https://github.com/${r.repository}/commit/${r.head}) · `;
-    if (options.sessionUrl) body += `[Live OpenCode session](${options.sessionUrl}) · `;
+    if (options.sessionUrl) body += `[Session log](${options.sessionUrl}) · `;
     body += `[Workflow run](${r.runUrl})\n\n`;
     if (options.sessionUrl && options.sessionSyncPending) body += 'The live session link is retained. Final report synchronization could not be confirmed; finding details are included below.\n\n';
     if (options.currentHead && options.currentHead !== r.head) body += '**Newer commits are present; they were not reviewed.**\n\n';

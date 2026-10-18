@@ -36,7 +36,7 @@ export async function findRequest(api: GitHub, c: Config, a: Admission) {
 }
 // Read only the known status-link label, after verifying bot/request identity.
 export function publishedSessionUrl(body: string): string | undefined {
-  const candidate = body.match(/\[Live OpenCode session\]\(([^)\s]+)\)/)?.[1];
+  const candidate = body.match(/\[(?:Session log|Live OpenCode session)\]\(([^)\s]+)\)/)?.[1];
   const parsed = SessionUrl.safeParse(candidate);
   return parsed.success ? parsed.data : undefined;
 }
@@ -44,7 +44,7 @@ const BRAND_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/11341daf30
 export const FOOTER = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>`;
 export function statusBody(r: Request, message: string, sessionUrl?: string) {
   if (sessionUrl) SessionUrl.parse(sessionUrl);
-  return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Live OpenCode session](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;
+  return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Session log](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;
 }
 export async function beginRequest(api: GitHub, c: Config, a: Admission, policy: string, runUrl: string) {
   const trigger = await api.comment(a.repository, a.triggerId);

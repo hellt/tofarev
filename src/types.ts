@@ -40,7 +40,7 @@ export const ManifestSchema = z.strictObject({
   notes: z.array(z.string()), incomplete: z.boolean(),
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
-export const SessionUrl = z.string().max(200).regex(/^https:\/\/opncd\.ai\/(?:s|share)\/[A-Za-z0-9_-]+$/);
+export const SessionUrl = z.string().max(512).regex(/^https:\/\/(?:opncd\.ai\/(?:s|share)\/[A-Za-z0-9_-]+|[a-zA-Z0-9-]+\.github\.io\/[\w.-]+\/sessions\/\d+\/\d+-\d+\/)$/);
 export const ReviewOutputSchema = z.strictObject({ result: ResultSchema.nullable(), notes: z.array(z.string().max(2000)).max(100), failed: z.boolean(), sessionUrl: SessionUrl.optional(), sessionSyncPending: z.boolean().optional() });
 export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 
