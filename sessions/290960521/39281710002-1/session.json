@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "a32f140536ec70978a895ebd56c68567032abb7f",
-  "updatedAt": "2026-10-19T16:02:36.521Z",
+  "updatedAt": "2026-10-19T16:04:36.524Z",
   "state": "running",
   "info": {
     "id": "ses_eab1b4d8effe6wulJuPZzNQ565",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 217227,
-      "output": 981,
-      "reasoning": 8398,
+      "input": 514219,
+      "output": 1454,
+      "reasoning": 18482,
       "cache": {
-        "read": 1043968,
+        "read": 1650432,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792425636465,
-      "updated": 1792425751225
+      "updated": 1792425864713
     }
   },
   "messages": [
@@ -3047,7 +3047,8 @@
         "id": "msg_154e672b5001zoW3GayDZTMWGd",
         "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
         "time": {
-          "created": 1792425751221
+          "created": 1792425751221,
+          "completed": 1792425770353
         },
         "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -3058,6 +3059,1336 @@
           "cwd": "/tmp/tofarev-review-3WIwsd",
           "root": "/"
         },
+        "cost": 0,
+        "tokens": {
+          "total": 67142,
+          "input": 64896,
+          "output": 29,
+          "reasoning": 2217,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e6831b001JKCD7YSMAf7EUh",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e672b5001zoW3GayDZTMWGd"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e6831e001YC3TXos5rVUa2r",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e672b5001zoW3GayDZTMWGd",
+          "text": "Interesting: `applyParkingLinkNode` creates a FRESH `NewParkingNode` for reconcile. So during reconcile/apply, the parked endpoints get fresh runtime endpoint objects, not the retained ones. That's fine for reconcile (it deals with actual interfaces).\n\nNow let me examine the actual defect candidates more carefully.\n\n**Candidate 1: `ParkEndpoints` reuse leaves the stale `nspath`/fresh-ns mismatch harmless** — verified same path string. OK.\n\n**Candidate 2: In `ParkEndpoints` reuse path, `CaptureFrom` may partially fail after previously parked endpoints are already in the reused parking node.** When reused, if CaptureFrom fails partway, `CaptureFrom` itself rolls back moved endpoints to src (d). The previously-parked endpoints in p remain parked. But cleanup of the ns is skipped — correct, else we'd destroy parked ifaces. But then the error propagates up and Stop fails. State: partially parked. Retry of Stop: ParkEndpoints again → reuse → CaptureFrom retries. OK — this is exactly what the fix is for.\n\nBut wait: there's an inconsistency in the reuse path. If reused, `parkPath` variable is computed but unused when `reused` is true (used only in `NewParkingNode` call). Actually `parkPath` is only used at line 1178 inside `if !reused`. Fine, no unused var error since it's used conditionally... Actually `parkPath` is used in line 1178 which is compiled regardless. OK.\n\n**Candidate 3: The `d.parkingNode` reset in `RestoreEndpoints` \"no parking netns\" branch.** Consider: `d.parkingNode` is non-nil (failed restore retained), then the user manually deletes the ns (or sros cleanup). Next `RestoreEndpoints` → no parkPath → set nil → return nil. That's cleanup, good. But consider the flip: `RestoreEndpoints` → no parking netns → sets `d.parkingNode = nil` and returns nil — even though `d.parkingNode` non-nil had endpoint objects adopted to it that are now released to a dead ns. `d.Endpoints` doesn't include them (park released them). So the topology endpoint objects are orphaned with `GetNode() == p`. Does anything later break? After a failed lab start, `clab inspect`? The endpoints' owner is the parking node; the topology reconcile (`topology_reconcile.go`) uses `c.Nodes[nodeName]` and `applyParkingLinkNode` creating fresh parking nodes — so reconcile is not affected by `d.parkingNode`. Hmm.\n\n**Candidate 4: Double-adopt / ownership error on repark.** Repark with reused P: `CaptureFrom` → `captureCandidates`: for iface present in live ns and tracked in d.Endpoints → endpoints list. `moveEndpoint(ctx, ep, p)`: dst p — check `for _, owned := range dst.GetEndpoints()`: if P already tracks an endpoint with the same iface name (from the previous park), this errors \"node already tracks interface\". When could P still track an endpoint with the same name while the iface is also in the live ns? After a failed restore with rollback, the endpoints are back in P and in P's ns — not in live ns. So `captureCandidates` wouldn't find them in live ns. Unless: the iface was moved back to the live ns by something else (e.g., a partial restore where only SOME endpoints failed — no, rollback moves all moved ones back; endpoints after the failing one were never moved).\n\nHmm, what about `DiscoverOwnedEndpoints` during failed restore: for each ep in p.GetEndpoints() not discovered in p's ns → release from p, re-adopt to original (d). This is the path where an endpoint that FAILED to restore (still in live ns? no...). Wait: if moveEndpoint(ep, dst) failed, the iface is still in p's ns → discovered → stays with p. If the iface was successfully moved to dst but Activate failed → rollback moves back to p. So after failed RestoreTo, everything is in p's ns, consistent.\n\nBut consider the scenario in the test \"repark after failed restore\" combined with a partially-successful restore: not covered, but by construction rollback keeps consistency.\n\n**Candidate 5: `ParkEndpoints` reuse when `d.parkingNode` non-nil but the node has been recreated/re-deployed with a different topology** — e.g., `ApplyDiff` Recreate path: `d.Delete(ctx)` then what? Let me check what happens after Recreate — does it deploy the same node object? If the node object is reused after Delete, `d.parkingNode` may be stale but CaptureFrom/DiscoverOwnedEndpoints reconcile by listing actual interfaces. Probably fine.\n\n**Candidate 6: Test quality issues.** The new test:\n- Uses real netns creation, requires root (skip if not root). Uses `clabutils.CreateNamedNetNS(nsName)` — creates the \"live\" ns at `/run/netns/<longName>-live`. Then mock runtime returns that path for `GetNSPath`.\n- `d := &DefaultNode{Cfg: ..., Runtime: rt}`, `d.OverwriteNode = d`. Then `d.AdoptEndpoint(ep)` — does DefaultNode.AdoptEndpoint require more fields (state mutex etc.)? Test works presumably.\n- `d.ExecFunction` for DefaultNode — uses `d.GetNSPath`? DefaultNode.ExecFunction probably calls `d.Runtime.GetNSPath(ctx, containerName)`. The mock returns nsPath. OK.\n- Cleanup: `netns.DeleteNamed(clabutils.ParkingNetnsName(longName))`, `os.Remove(filepath.Join(\"/run/netns\", longName))` — removes the symlink created by RepointSymlink (`LinkContainerNS(p.nspath, containerName)` creates `/run/netns/<longName>` → parking ns path). Good. `netns.DeleteNamed(nsName)` deletes the live ns.\n\nTest correctness detail: `failRestore` toggling — mock `GetNSPath` returns error when failRestore. In the repark case: cycle park#1 → fail restore #1 → repark → restore. In repark, `ParkEndpoints` reuses `d.parkingNode` (set by failed restore's... wait, no!). Hmm: in `RestoreEndpoints`, on `RestoreTo` error, `d.parkingNode` is NOT set (it's only set in `ParkEndpoints` line 1200 or reused). In the test: cycle 0: ParkEndpoints → d.parkingNode = P (set). Then restore fails → d.parkingNode still P. Then repark → reuses P. Good.\n\nFor the \"fresh node\" case: after park, `d, ep = newNode()` → new DefaultNode with `parkingNode` nil → RestoreEndpoints creates a fresh ParkingNode P2. Then RestoreTo: DiscoverOwnedEndpoints with original d (fresh). P2 has empty list → creates runtime endpoints → restore → d.Endpoints gets RUNTIME endpoints, not `ep`! Then the test asserts `ep.GetNode() != d` → would FAIL... wait, the test asserts that after restore the topology endpoint belongs to d:\n\n```go\nif ep.GetNode() != d {\n    t.Fatalf(\"topology endpoint still belongs to %T after restore\", ep.GetNode())\n}\n```\n\nWith a fresh node (parkingNode nil), RestoreEndpoints creates a fresh ParkingNode whose endpoint list is empty → DiscoverOwnedEndpoints creates RuntimeEndpoints → the original `ep` (EndpointVeth) is NOT restored to d; instead a runtime endpoint is. So `ep.GetNode()` would still be the OLD parking node P (from the first ParkEndpoints). The test would fail?! Unless... hmm wait. Let me re-check. In the \"fresh node\" case, after park, `d, ep = newNode()` — new d2, new ep2 (fresh endpoint adopted to d2). The `ep` variable is rebound. Then restore uses d2 and ep2. Assertions: `ep.GetNode() != d` — with d = d2 and ep = ep2. After restore with fresh parking node, `d2.Endpoints` contains runtime endpoints, and `ep2.GetNode()` is... `ep2` was adopted by `d2.AdoptEndpoint(ep2)`. Its GetNode() is d2 (SetNode in AdoptEndpoint?). Let me check AdoptEndpoint in default_node.go:1056.\n\nHmm wait — does `AdoptEndpoint` set the node? `ep := clablinks.NewEndpointVeth(clablinks.NewEndpointGeneric(d, \"eth1\", nil))` — the generic endpoint is created with node d. So GetNode() == d2 already. After park (d2 parks its endpoint) → ep2 belongs to P2' (parking node of d2's park). Then restore with fresh parking node: DiscoverOwnedEndpoints on fresh P3: `known` map built from `original.GetEndpoints()` (d2.Endpoints — after park, is ep2 still in d2.Endpoints? Park's moveEndpoint released it from d2) and P3.GetEndpoints() (empty). So `known` misses ep2's iface → creates RuntimeEndpoint. The original ep2 remains owned by the parking node P2' (which is not referenced by d2 since d2.parkingNode is nil — GC'd object but ep2.GetNode() == P2'). After restore, ep2.GetNode() != d2 → test would fail for the \"fresh node\" case!\n\nUnless... wait. Maybe the test passes because the restore actually succeeds in restoring `ep2`? Let me re-read DiscoverOwnedEndpoints:\n\n```go\nknown := make(map[string]Endpoint, len(original.GetEndpoints())+len(p.GetEndpoints()))\nfor _, ep := range append([]Endpoint(nil), original.GetEndpoints()...) {\n    known[ep.GetIfaceName()] = ep\n}\n```\n\n`original.GetEndpoints()` for d2 after park: empty (ep2 released). So `known` misses \"eth1\" → RuntimeEndpoint created. So restore moves the iface into d2's ns and adopts the runtime endpoint. ep2 is orphaned. The test asserts `ep.GetNode() != d` fails → `t.Fatalf`. So the \"fresh node\" case would fail?!\n\nHmm wait, maybe not. Let me re-check what happens during park with `d.Endpoints`. Let me look at DefaultNode.AdoptEndpoint/ReleaseEndpoint (lines 1056-1115) to understand how endpoints are tracked.",
+          "time": {
+            "start": 1792425755422,
+            "end": 1792425770329
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e6bd5d001ZsJM1v2YBHuydM",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e672b5001zoW3GayDZTMWGd",
+          "callID": "call_8453a592eb2b409cbf80a736",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node.go",
+              "limit": 80,
+              "offset": 1040
+            },
+            "output": "<path>/source/head/nodes/default_node.go</path>\n<type>file</type>\n<content>\n1040: \t\t\t\"Interface Mapping: Mapping interface %q (ifAlias) to %q (ifName)\",\n1041: \t\t\tendpointName,\n1042: \t\t\tmappedName,\n1043: \t\t)\n1044: \t\te.SetIfaceName(mappedName)\n1045: \t\te.SetIfaceAlias(endpointName)\n1046: \t}\n1047: \n1048: \tif e.GetNode() == nil {\n1049: \t\te.SetNode(d)\n1050: \t}\n1051: \n1052: \td.Endpoints = append(d.Endpoints, e)\n1053: \treturn nil\n1054: }\n1055: \n1056: func (d *DefaultNode) AdoptEndpoint(e clablinks.Endpoint) error {\n1057: \tif e == nil {\n1058: \t\treturn fmt.Errorf(\"node %q cannot adopt a nil endpoint\", d.Cfg.ShortName)\n1059: \t}\n1060: \n1061: \towner := e.GetNode()\n1062: \tif owner == nil {\n1063: \t\treturn fmt.Errorf(\n1064: \t\t\t\"node %q cannot adopt endpoint %q without an owner\",\n1065: \t\t\td.Cfg.ShortName,\n1066: \t\t\te.GetIfaceName(),\n1067: \t\t)\n1068: \t}\n1069: \n1070: \tif owner.GetShortName() != d.Cfg.ShortName {\n1071: \t\treturn fmt.Errorf(\n1072: \t\t\t\"node %q cannot adopt endpoint %q owned by %q\",\n1073: \t\t\td.Cfg.ShortName,\n1074: \t\t\te.GetIfaceName(),\n1075: \t\t\towner.GetShortName(),\n1076: \t\t)\n1077: \t}\n1078: \n1079: \tfor _, owned := range d.Endpoints {\n1080: \t\tif owned == e {\n1081: \t\t\treturn nil\n1082: \t\t}\n1083: \t\tif owned.GetIfaceName() == e.GetIfaceName() {\n1084: \t\t\treturn fmt.Errorf(\n1085: \t\t\t\t\"node %q already tracks interface %q\",\n1086: \t\t\t\td.Cfg.ShortName,\n1087: \t\t\t\te.GetIfaceName(),\n1088: \t\t\t)\n1089: \t\t}\n1090: \t}\n1091: \n1092: \td.Endpoints = append(d.Endpoints, e)\n1093: \n1094: \treturn nil\n1095: }\n1096: \n1097: func (d *DefaultNode) ReleaseEndpoint(e clablinks.Endpoint) error {\n1098: \tfor i, ep := range d.Endpoints {\n1099: \t\tif ep != e {\n1100: \t\t\tcontinue\n1101: \t\t}\n1102: \n1103: \t\td.Endpoints = append(d.Endpoints[:i], d.Endpoints[i+1:]...)\n1104: \t\treturn nil\n1105: \t}\n1106: \n1107: \treturn fmt.Errorf(\"node %q does not own endpoint %q\", d.Cfg.ShortName, e.GetIfaceName())\n1108: }\n1109: \n1110: func (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n1111: \treturn d.Endpoints\n1112: }\n1113: \n1114: // GetLinkEndpointType returns a veth link endpoint type for default nodes.\n1115: // The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\n1116: func (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n1117: \treturn clablinks.LinkEndpointTypeVeth\n1118: }\n1119: \n\n(Showing lines 1040-1119 of 1329. Use offset=1120 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node.go",
+            "metadata": {
+              "preview": "\t\t\t\"Interface Mapping: Mapping interface %q (ifAlias) to %q (ifName)\",\n\t\t\tendpointName,\n\t\t\tmappedName,\n\t\t)\n\t\te.SetIfaceName(mappedName)\n\t\te.SetIfaceAlias(endpointName)\n\t}\n\n\tif e.GetNode() == nil {\n\t\te.SetNode(d)\n\t}\n\n\td.Endpoints = append(d.Endpoints, e)\n\treturn nil\n}\n\nfunc (d *DefaultNode) AdoptEndpoint(e clablinks.Endpoint) error {\n\tif e == nil {\n\t\treturn fmt.Errorf(\"node %q cannot adopt a nil endpoint\", d.Cfg.ShortName)\n\t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node.go",
+                "text": "\t\t\t\"Interface Mapping: Mapping interface %q (ifAlias) to %q (ifName)\",\n\t\t\tendpointName,\n\t\t\tmappedName,\n\t\t)\n\t\te.SetIfaceName(mappedName)\n\t\te.SetIfaceAlias(endpointName)\n\t}\n\n\tif e.GetNode() == nil {\n\t\te.SetNode(d)\n\t}\n\n\td.Endpoints = append(d.Endpoints, e)\n\treturn nil\n}\n\nfunc (d *DefaultNode) AdoptEndpoint(e clablinks.Endpoint) error {\n\tif e == nil {\n\t\treturn fmt.Errorf(\"node %q cannot adopt a nil endpoint\", d.Cfg.ShortName)\n\t}\n\n\towner := e.GetNode()\n\tif owner == nil {\n\t\treturn fmt.Errorf(\n\t\t\t\"node %q cannot adopt endpoint %q without an owner\",\n\t\t\td.Cfg.ShortName,\n\t\t\te.GetIfaceName(),\n\t\t)\n\t}\n\n\tif owner.GetShortName() != d.Cfg.ShortName {\n\t\treturn fmt.Errorf(\n\t\t\t\"node %q cannot adopt endpoint %q owned by %q\",\n\t\t\td.Cfg.ShortName,\n\t\t\te.GetIfaceName(),\n\t\t\towner.GetShortName(),\n\t\t)\n\t}\n\n\tfor _, owned := range d.Endpoints {\n\t\tif owned == e {\n\t\t\treturn nil\n\t\t}\n\t\tif owned.GetIfaceName() == e.GetIfaceName() {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q already tracks interface %q\",\n\t\t\t\td.Cfg.ShortName,\n\t\t\t\te.GetIfaceName(),\n\t\t\t)\n\t\t}\n\t}\n\n\td.Endpoints = append(d.Endpoints, e)\n\n\treturn nil\n}\n\nfunc (d *DefaultNode) ReleaseEndpoint(e clablinks.Endpoint) error {\n\tfor i, ep := range d.Endpoints {\n\t\tif ep != e {\n\t\t\tcontinue\n\t\t}\n\n\t\td.Endpoints = append(d.Endpoints[:i], d.Endpoints[i+1:]...)\n\t\treturn nil\n\t}\n\n\treturn fmt.Errorf(\"node %q does not own endpoint %q\", d.Cfg.ShortName, e.GetIfaceName())\n}\n\nfunc (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n\treturn d.Endpoints\n}\n\n// GetLinkEndpointType returns a veth link endpoint type for default nodes.\n// The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\nfunc (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n\treturn clablinks.LinkEndpointTypeVeth\n}\n",
+                "lineStart": 1040,
+                "lineEnd": 1119,
+                "totalLines": 1329,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425770338,
+              "end": 1792425770347
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e6bd6e001UsLMs1K1qNEk6s",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e672b5001zoW3GayDZTMWGd",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 67142,
+            "input": 64896,
+            "output": 29,
+            "reasoning": 2217,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e6bd77001Q47vlWjNkZBKJ4",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425770359,
+          "completed": 1792425779712
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69198,
+          "input": 905,
+          "output": 72,
+          "reasoning": 1149,
+          "cache": {
+            "read": 67072,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e6c514001lUc8CWDcF6lk3c",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6bd77001Q47vlWjNkZBKJ4"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e6c516001n71D49PjyN4ViW",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6bd77001Q47vlWjNkZBKJ4",
+          "text": "OK so park → moveEndpoint: `src.ReleaseEndpoint(e)` removes ep from `d.Endpoints`; `e.SetNode(dst)` (parking node); `dst.AdoptEndpoint(e)` appends to p's list.\n\nSo for the \"fresh node\" test case:\n1. d1 created, ep adopted (ep.GetNode() == d1, in d1.Endpoints).\n2. ParkEndpoints(d1) → P1 created; CaptureFrom: iface eth1 exists in live ns → tracked (ep) → moveEndpoint(ep, P1): ep released from d1.Endpoints, SetNode(P1), P1 adopts. d1.parkingNode = P1.\n3. `d, ep = newNode()` → now d=d2, ep=ep2 (new). The old d1/ep1 are gone (but the parking netns P and iface parked remain).\n4. RestoreEndpoints(d2): parkPath exists → d2.parkingNode == nil → fresh P3 over same parkPath. RestoreTo: DiscoverOwnedEndpoints(P3, d2): p.GetEndpoints() empty; listOwnedInterfaceNames in P's ns → [\"eth1\"]. First loop: p's endpoints none. known: d2.Endpoints — d2.Endpoints contains ep2 (adopted in newNode). Wait — d2's endpoint ep2's iface name is also \"eth1\"! `NewEndpointGeneric(d, \"eth1\", nil)`. So known[\"eth1\"] = ep2 (owned by d2). Second loop: ifaceName \"eth1\" → `ep, ok := known[\"eth1\"]` → ok → `ep.GetNode() == Node(p)`? ep2.GetNode() == d2 ≠ p → so: `ep.GetNode().ReleaseEndpoint(ep)` → d2 releases ep2; `ep.SetNode(p)`; `p.AdoptEndpoint(ep)` — P3 adopts ep2! Then RestoreTo moves ep2 from P3 to d2, adopting back to d2. So `ep.GetNode() == d` ✓. Interesting — the fresh node case works because the fresh node's topology endpoint has the same iface name and gets re-associated via DiscoverOwnedEndpoints.\n\nWait, but that means the \"fresh node\" case does NOT depend on the reuse fix — the reconciliation in DiscoverOwnedEndpoints handles re-association by iface name. Hmm, so what does the reuse fix actually fix? The case where the original node object is reused (same node across stop/restart in one process) — \"same node\" case:\n\n1. d, ep (ep.GetNode()==d).\n2. Park → ep belongs to P, d.Endpoints empty. d.parkingNode = P.\n3. Restore fails (GetNSPath fails) → ep still belongs to P; iface in parking ns.\n4. (retry restore / repark). Restore with reuse: P reused; DiscoverOwnedEndpoints(P, d): known: d.Endpoints (empty) + P.Endpoints (ep). iface eth1 → known[ep] → ep.GetNode()==p → continue. RestoreTo moves ep back to d. ✓. In base code, a fresh P4 would be created: known misses (d.Endpoints empty, P4.Endpoints empty) → RuntimeEndpoint created → the topology ep stays owned by P (stale object), d.Endpoints gets runtime endpoint. Test assertion `ep.GetNode() != d` fails in base. ✓ So the fix is for the same-node retry case.\n\nOK so the test makes sense. Let me now verify the test compiles/passes semantically. Check `TestDefaultNodeRestoreEndpointsOwnership` details:\n\n- `d := &DefaultNode{Cfg: ..., Runtime: rt}` — `d.OverwriteNode = d`. ExecFunction on DefaultNode → let me check DefaultNode.ExecFunction.\n- `ep := clablinks.NewEndpointVeth(clablinks.NewEndpointGeneric(d, \"eth1\", nil))` — check NewEndpointVeth signature.\n- `d.AdoptEndpoint(ep)`.\n- `d.ExecFunction(ctx, func(ns.NetNS) error { netlink.LinkAdd(&netlink.Dummy{...Name: \"eth1\"}) })` — creates a dummy iface in the live ns.\n- Park: `CreateOrGetNamedNetNS` creates the real parking ns. CaptureFrom: listOwnedInterfaceNames in live ns → [\"eth1\"] (dummy, known via tracked). moveEndpoint(ep, p): ensureOwnershipAltName (adds altname to the dummy link — real kernel op, fine), moveLink: LinkSetDown + dst.AddLinkToContainer → LinkSetNsFd into parking ns. OK.\n- RepointSymlink: creates /run/netns/<longName> symlink → parking ns path. Test cleanup removes it.\n- Stop is not called; the test calls ParkEndpoints directly. GetContainerStatus mock: Running. Fine (not used by Park).\n- Restore fail: GetNSPath returns restoreErr. In RestoreTo → moveEndpoint(ep, d) → moveLink(ctx, src=p, ...) — src.ExecFunction in parking ns — then `dst.AddLinkToContainer(ctx, link, ...)` → `ns.GetNS(g.nspath)` — d.nspath — how does DefaultNode implement AddLinkToContainer? Probably via d.Runtime.GetNSPath(ctx, containerName) then ns.GetNS. That's where GetNSPath mock fails. ✓.\n\nLet me check DefaultNode's AddLinkToContainer / ExecFunction / GetNSPath to be sure the mock is exercised.",
+          "time": {
+            "start": 1792425772310,
+            "end": 1792425779619
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e6e1a5001aIjR797NlM6Bhc",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6bd77001Q47vlWjNkZBKJ4",
+          "callID": "call_327668aa489e4c55bf276319",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/nodes/default_node.go",
+              "pattern": "func \\(d \\*DefaultNode\\) (ExecFunction|AddLinkToContainer|GetNSPath)"
+            },
+            "output": "Found 3 matches\n/source/head/nodes/default_node.go:\n  Line 214: func (d *DefaultNode) GetNSPath(ctx context.Context) (string, error) {\n\n  Line 941: func (d *DefaultNode) AddLinkToContainer(\n\n  Line 983: func (d *DefaultNode) ExecFunction(ctx context.Context, f func(ns.NetNS) error) error {\n",
+            "title": "func \\(d \\*DefaultNode\\) (ExecFunction|AddLinkToContainer|GetNSPath)",
+            "metadata": {
+              "matches": 3,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792425779625,
+              "end": 1792425779641
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e6e1ee001ZddciN9uXYH6sk",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6bd77001Q47vlWjNkZBKJ4",
+          "callID": "call_c7cd7c6a0b144e9bbe6ba3b6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/endpoint_veth.go",
+              "limit": 60
+            },
+            "output": "<path>/source/head/links/endpoint_veth.go</path>\n<type>file</type>\n<content>\n1: package links\n2: \n3: import \"context\"\n4: \n5: type EndpointVeth struct {\n6: \tEndpointGeneric\n7: }\n8: \n9: func NewEndpointVeth(eg *EndpointGeneric) *EndpointVeth {\n10: \treturn &EndpointVeth{\n11: \t\tEndpointGeneric: *eg,\n12: \t}\n13: }\n14: \n15: // Verify verifies the veth based deployment pre-conditions.\n16: func (e *EndpointVeth) Verify(_ context.Context, _ *VerifyLinkParams) error {\n17: \treturn CheckEndpointUniqueness(e)\n18: }\n19: \n20: func (e *EndpointVeth) Deploy(ctx context.Context) error {\n21: \treturn e.GetLink().Deploy(ctx, e)\n22: }\n23: \n24: func (e *EndpointVeth) IsNodeless() bool {\n25: \treturn false\n26: }\n\n(End of file - total 26 lines)\n</content>",
+            "title": "source/head/links/endpoint_veth.go",
+            "metadata": {
+              "preview": "package links\n\nimport \"context\"\n\ntype EndpointVeth struct {\n\tEndpointGeneric\n}\n\nfunc NewEndpointVeth(eg *EndpointGeneric) *EndpointVeth {\n\treturn &EndpointVeth{\n\t\tEndpointGeneric: *eg,\n\t}\n}\n\n// Verify verifies the veth based deployment pre-conditions.\nfunc (e *EndpointVeth) Verify(_ context.Context, _ *VerifyLinkParams) error {\n\treturn CheckEndpointUniqueness(e)\n}\n\nfunc (e *EndpointVeth) Deploy(ctx context.Context) error {",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/endpoint_veth.go",
+                "text": "package links\n\nimport \"context\"\n\ntype EndpointVeth struct {\n\tEndpointGeneric\n}\n\nfunc NewEndpointVeth(eg *EndpointGeneric) *EndpointVeth {\n\treturn &EndpointVeth{\n\t\tEndpointGeneric: *eg,\n\t}\n}\n\n// Verify verifies the veth based deployment pre-conditions.\nfunc (e *EndpointVeth) Verify(_ context.Context, _ *VerifyLinkParams) error {\n\treturn CheckEndpointUniqueness(e)\n}\n\nfunc (e *EndpointVeth) Deploy(ctx context.Context) error {\n\treturn e.GetLink().Deploy(ctx, e)\n}\n\nfunc (e *EndpointVeth) IsNodeless() bool {\n\treturn false\n}",
+                "lineStart": 1,
+                "lineEnd": 26,
+                "totalLines": 26,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792425779700,
+              "end": 1792425779706
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e6e1fc001qrpBsg4MsKWYpW",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6bd77001Q47vlWjNkZBKJ4",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69198,
+            "input": 905,
+            "output": 72,
+            "reasoning": 1149,
+            "cache": {
+              "read": 67072,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e6e207001OHWuHOQdeT57zi",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425779719,
+          "completed": 1792425784363
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69584,
+          "input": 69527,
+          "output": 56,
+          "reasoning": 1,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e6f397001fVHDteoo1nkODP",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6e207001OHWuHOQdeT57zi"
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e6f3ce001TZNLSQPM1EQjoW",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6e207001OHWuHOQdeT57zi",
+          "callID": "call_109194d7143d4f4c963f4b7d",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node.go",
+              "limit": 40,
+              "offset": 200
+            },
+            "output": "<path>/source/head/nodes/default_node.go</path>\n<type>file</type>\n<content>\n200: \n201: \t// start the container\n202: \t_, err = d.Runtime.StartContainer(ctx, cID, d)\n203: \tif err != nil {\n204: \t\treturn err\n205: \t}\n206: \n207: \t// Update the nodes state\n208: \td.SetState(clabnodesstate.Deployed)\n209: \n210: \treturn nil\n211: }\n212: \n213: // GetNSPath retrieves the nodes nspath.\n214: func (d *DefaultNode) GetNSPath(ctx context.Context) (string, error) {\n215: \tvar err error\n216: \tnsp := \"\"\n217: \n218: \tif d.Cfg.IsRootNamespaceBased {\n219: \t\tnetns, err := ns.GetCurrentNS()\n220: \t\tif err != nil {\n221: \t\t\treturn \"\", err\n222: \t\t}\n223: \t\tnsp = netns.Path()\n224: \t}\n225: \tif nsp == \"\" {\n226: \t\tnsp, err = d.Runtime.GetNSPath(ctx, d.OverwriteNode.GetContainerName())\n227: \t\tif err != nil {\n228: \t\t\tlog.Errorf(\"Unable to determine NetNS Path for node %s: %v\", d.Cfg.ShortName, err)\n229: \t\t\treturn \"\", err\n230: \t\t}\n231: \t}\n232: \n233: \treturn nsp, err\n234: }\n235: \n236: // ShouldSkipLifecycle reports whether lifecycle operations should no-op for this node.\n237: func (d *DefaultNode) ShouldSkipLifecycle() bool {\n238: \treturn d.Cfg.IsRootNamespaceBased || d.Cfg.AutoRemove\n239: }\n\n(Showing lines 200-239 of 1329. Use offset=240 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node.go",
+            "metadata": {
+              "preview": "\n\t// start the container\n\t_, err = d.Runtime.StartContainer(ctx, cID, d)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Update the nodes state\n\td.SetState(clabnodesstate.Deployed)\n\n\treturn nil\n}\n\n// GetNSPath retrieves the nodes nspath.\nfunc (d *DefaultNode) GetNSPath(ctx context.Context) (string, error) {\n\tvar err error\n\tnsp := \"\"\n\n\tif d.Cfg.IsRootNamespaceBased {\n\t\tnetns, err := ns.GetCurrentNS()",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node.go",
+                "text": "\n\t// start the container\n\t_, err = d.Runtime.StartContainer(ctx, cID, d)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Update the nodes state\n\td.SetState(clabnodesstate.Deployed)\n\n\treturn nil\n}\n\n// GetNSPath retrieves the nodes nspath.\nfunc (d *DefaultNode) GetNSPath(ctx context.Context) (string, error) {\n\tvar err error\n\tnsp := \"\"\n\n\tif d.Cfg.IsRootNamespaceBased {\n\t\tnetns, err := ns.GetCurrentNS()\n\t\tif err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\t\tnsp = netns.Path()\n\t}\n\tif nsp == \"\" {\n\t\tnsp, err = d.Runtime.GetNSPath(ctx, d.OverwriteNode.GetContainerName())\n\t\tif err != nil {\n\t\t\tlog.Errorf(\"Unable to determine NetNS Path for node %s: %v\", d.Cfg.ShortName, err)\n\t\t\treturn \"\", err\n\t\t}\n\t}\n\n\treturn nsp, err\n}\n\n// ShouldSkipLifecycle reports whether lifecycle operations should no-op for this node.\nfunc (d *DefaultNode) ShouldSkipLifecycle() bool {\n\treturn d.Cfg.IsRootNamespaceBased || d.Cfg.AutoRemove\n}",
+                "lineStart": 200,
+                "lineEnd": 239,
+                "totalLines": 1329,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425784274,
+              "end": 1792425784283
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e6f417001Z00HMFxdbLfGh9",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6e207001OHWuHOQdeT57zi",
+          "callID": "call_3bc85b8fc3fa4771bc2ddbd6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node.go",
+              "limit": 70,
+              "offset": 935
+            },
+            "output": "<path>/source/head/nodes/default_node.go</path>\n<type>file</type>\n<content>\n935: \t\t\t).SetDescription(fmt.Sprintf(\"Kind: %s\", d.Cfg.Kind)).SetContainerID(containers[idx].ID))\n936: \t\t}\n937: \t}\n938: \treturn result, nil\n939: }\n940: \n941: func (d *DefaultNode) AddLinkToContainer(\n942: \tctx context.Context,\n943: \tlink netlink.Link,\n944: \tf func(ns.NetNS) error,\n945: ) error {\n946: \tif !d.Cfg.IsRootNamespaceBased {\n947: \t\tst := d.OverwriteNode.GetContainerStatus(ctx)\n948: \t\tif !clabruntime.ContainerHasJoinableNetns(st) {\n949: \t\t\tif st == clabruntime.Stopped {\n950: \t\t\t\tcontainerName := d.OverwriteNode.GetContainerName()\n951: \t\t\t\td.GetRuntime().LogNonRunningContainerOutput(ctx, containerName)\n952: \t\t\t}\n953: \t\t\treturn fmt.Errorf(\n954: \t\t\t\t\"node %q: cannot attach link, container network namespace is not available (status=%s)\",\n955: \t\t\t\td.Cfg.ShortName,\n956: \t\t\t\tst,\n957: \t\t\t)\n958: \t\t}\n959: \t}\n960: \t// retrieve nodes nspath\n961: \tnsp, err := d.OverwriteNode.GetNSPath(ctx)\n962: \tif err != nil {\n963: \t\treturn err\n964: \t}\n965: \t// retrieve the namespace handle\n966: \tnetns, err := ns.GetNS(nsp)\n967: \tif err != nil {\n968: \t\treturn err\n969: \t}\n970: \t// move veth endpoint to namespace\n971: \tif err := netlink.LinkSetNsFd(link, int(netns.Fd())); err != nil {\n972: \t\treturn err\n973: \t}\n974: \t// execute the given function\n975: \terr = netns.Do(f)\n976: \tif err != nil {\n977: \t\treturn err\n978: \t}\n979: \treturn nil\n980: }\n981: \n982: // ExecFunction executes the given function in the nodes network namespace.\n983: func (d *DefaultNode) ExecFunction(ctx context.Context, f func(ns.NetNS) error) error {\n984: \tif !d.Cfg.IsRootNamespaceBased {\n985: \t\tst := d.OverwriteNode.GetContainerStatus(ctx)\n986: \t\tif !clabruntime.ContainerHasJoinableNetns(st) {\n987: \t\t\tif st == clabruntime.Stopped {\n988: \t\t\t\tcontainerName := d.OverwriteNode.GetContainerName()\n989: \t\t\t\td.GetRuntime().LogNonRunningContainerOutput(ctx, containerName)\n990: \t\t\t}\n991: \t\t\treturn fmt.Errorf(\n992: \t\t\t\t\"node %q: cannot exec a command, container network namespace is not available (status=%s)\",\n993: \t\t\t\td.Cfg.ShortName,\n994: \t\t\t\tst,\n995: \t\t\t)\n996: \t\t}\n997: \t}\n998: \t// retrieve nodes nspath\n999: \tnspath, err := d.OverwriteNode.GetNSPath(ctx)\n1000: \tif err != nil {\n1001: \t\treturn err\n1002: \t}\n1003: \n1004: \tif d.Cfg.IsRootNamespaceBased {\n\n(Showing lines 935-1004 of 1329. Use offset=1005 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node.go",
+            "metadata": {
+              "preview": "\t\t\t).SetDescription(fmt.Sprintf(\"Kind: %s\", d.Cfg.Kind)).SetContainerID(containers[idx].ID))\n\t\t}\n\t}\n\treturn result, nil\n}\n\nfunc (d *DefaultNode) AddLinkToContainer(\n\tctx context.Context,\n\tlink netlink.Link,\n\tf func(ns.NetNS) error,\n) error {\n\tif !d.Cfg.IsRootNamespaceBased {\n\t\tst := d.OverwriteNode.GetContainerStatus(ctx)\n\t\tif !clabruntime.ContainerHasJoinableNetns(st) {\n\t\t\tif st == clabruntime.Stopped {\n\t\t\t\tcontainerName := d.OverwriteNode.GetContainerName()\n\t\t\t\td.GetRuntime().LogNonRunningContainerOutput(ctx, containerName)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q: cannot attach link, container network namespace is not available (status=%s)\",",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node.go",
+                "text": "\t\t\t).SetDescription(fmt.Sprintf(\"Kind: %s\", d.Cfg.Kind)).SetContainerID(containers[idx].ID))\n\t\t}\n\t}\n\treturn result, nil\n}\n\nfunc (d *DefaultNode) AddLinkToContainer(\n\tctx context.Context,\n\tlink netlink.Link,\n\tf func(ns.NetNS) error,\n) error {\n\tif !d.Cfg.IsRootNamespaceBased {\n\t\tst := d.OverwriteNode.GetContainerStatus(ctx)\n\t\tif !clabruntime.ContainerHasJoinableNetns(st) {\n\t\t\tif st == clabruntime.Stopped {\n\t\t\t\tcontainerName := d.OverwriteNode.GetContainerName()\n\t\t\t\td.GetRuntime().LogNonRunningContainerOutput(ctx, containerName)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q: cannot attach link, container network namespace is not available (status=%s)\",\n\t\t\t\td.Cfg.ShortName,\n\t\t\t\tst,\n\t\t\t)\n\t\t}\n\t}\n\t// retrieve nodes nspath\n\tnsp, err := d.OverwriteNode.GetNSPath(ctx)\n\tif err != nil {\n\t\treturn err\n\t}\n\t// retrieve the namespace handle\n\tnetns, err := ns.GetNS(nsp)\n\tif err != nil {\n\t\treturn err\n\t}\n\t// move veth endpoint to namespace\n\tif err := netlink.LinkSetNsFd(link, int(netns.Fd())); err != nil {\n\t\treturn err\n\t}\n\t// execute the given function\n\terr = netns.Do(f)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}\n\n// ExecFunction executes the given function in the nodes network namespace.\nfunc (d *DefaultNode) ExecFunction(ctx context.Context, f func(ns.NetNS) error) error {\n\tif !d.Cfg.IsRootNamespaceBased {\n\t\tst := d.OverwriteNode.GetContainerStatus(ctx)\n\t\tif !clabruntime.ContainerHasJoinableNetns(st) {\n\t\t\tif st == clabruntime.Stopped {\n\t\t\t\tcontainerName := d.OverwriteNode.GetContainerName()\n\t\t\t\td.GetRuntime().LogNonRunningContainerOutput(ctx, containerName)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q: cannot exec a command, container network namespace is not available (status=%s)\",\n\t\t\t\td.Cfg.ShortName,\n\t\t\t\tst,\n\t\t\t)\n\t\t}\n\t}\n\t// retrieve nodes nspath\n\tnspath, err := d.OverwriteNode.GetNSPath(ctx)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif d.Cfg.IsRootNamespaceBased {",
+                "lineStart": 935,
+                "lineEnd": 1004,
+                "totalLines": 1329,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425784348,
+              "end": 1792425784357
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e6f427001ph9LHmfSs4wD6q",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6e207001OHWuHOQdeT57zi",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69584,
+            "input": 69527,
+            "output": 56,
+            "reasoning": 1,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e6f431001bHBo8OQ1AeAc3J",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425784369,
+          "completed": 1792425805515
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 73331,
+          "input": 41122,
+          "output": 34,
+          "reasoning": 2479,
+          "cache": {
+            "read": 29696,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e701120019N2FRodbuod3c9",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6f431001bHBo8OQ1AeAc3J"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e70114001vFg6BdTibbEcF3",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6f431001bHBo8OQ1AeAc3J",
+          "text": "The test's mock `GetContainerStatus` returns `Running` always (so `ContainerHasJoinableNetns(Running)` presumably true), and `GetNSPath` fails when failRestore. This makes `AddLinkToContainer` fail during restore. ✓.\n\nNow check the test's node config: `Cfg: &clabtypes.NodeConfig{ShortName: \"node1\", LongName: longName}` — `IsRootNamespaceBased` false. `parkingNetNSName()` uses `d.Cfg.LongName` ✓. Mock GetNSPath returns nsPath of the live ns.\n\nNow — the base test file: are the earlier tests (TestDefaultNodeEndpointOwnership, TestDefaultNodeRestoreEndpointsMissingParkingNetNSError) intact? The diff shows only additions. The `TestDefaultNodeRestoreEndpointsMissingParkingNetNSError` test at line 360: check whether the new `d.parkingNode = nil` side effect matters there — it constructs a `DefaultNode` without endpoints; fine.\n\nNow let me look at the full head test file for the new test (lines 381-500) to check details like `d.GetEndpoints()` etc. Also check for the `t.Cleanup` ordering: cleanup removes `/run/netns/<longName>` (the symlink created by RepointSymlink) — good.\n\nPotential issue: `netns.DeleteNamed(nsName)` in cleanup — `nsName = longName + \"-live\"`. Also parking ns deletion. Order: parking ns delete, symlink remove, live ns delete. Fine.\n\nOne concern in the test: `for cycle := range 2` loop runs the whole park/restore cycle twice with the same `d` (same node object, since freshNode rebinds at the start of cycle 1 for the fresh case only). For the \"same node\" case: cycle 0: park (parkingNode=P), restore succeeds (reuse P; P reused → RestoreTo → DiscoverOwnedEndpoints: P.Endpoints has ep; known → ep.GetNode()==p → continue; moveEndpoint back to d; d.parkingNode = nil after cleanup). Cycle 1: park again → d.parkingNode nil → fresh P; CaptureFrom: iface eth1 in live ns → tracked ep (still in d.Endpoints after restore since reuse restored the original) → move to new P; etc. Then restore. Final assertions. Then after loop: check iface is up in live ns; `ep.Remove(ctx)` → removes the dummy link in live ns. But wait — after the last restore, the iface is in the live ns and ep belongs to d. `ep.Remove` → `EndpointGeneric.Remove` → `e.GetNode().ExecFunction` → d's ns → LinkDel. ✓. But `ep` is an EndpointVeth wrapping a Dummy — LinkDel works on any link. ✓.\n\nFor \"retry restore\" case: cycle: park → failRestore=true → restore fails → ep stays with P; then restore again → succeeds (reuse). Second cycle: park again... d.parkingNode is nil after successful restore. Fresh park. OK.\n\nNow — one more check on the head change for a scenario NOT covered by the test: `ParkEndpoints` reuse after a failed restore, where `CaptureFrom` is called with the reused parking node. In the repark test path: after failed restore, `d.ParkEndpoints(ctx)` with reuse: `CaptureFrom(ctx, d)` — `captureCandidates`: listOwnedInterfaceNames(ctx, d, trackedIfaceNames(d.Endpoints)) — runs in LIVE ns. The parked iface is NOT in live ns → not found → endpoints empty. So CaptureFrom is a no-op. Then RepointSymlink — repoints symlink to parking ns (already pointed). Fine.\n\nBut hold on — during the failed restore, `DiscoverOwnedEndpoints` may have re-adopted endpoints from P to `d` in the failure path... no wait, in the failure path, `RestoreTo` calls `DiscoverOwnedEndpoints(ctx, dst)` FIRST. Let's trace: P.Endpoints = [ep] (from park). RestoreTo: DiscoverOwnedEndpoints(P, d): listOwnedInterfaceNames(ctx, P, tracked(d.Endpoints, P.Endpoints)) — runs in PARKING ns → finds eth1 → discovered={eth1}. First loop over P.Endpoints=[ep]: discovered → continue (stays with P). known: d.Endpoints (empty) + P.Endpoints (ep) → known[\"eth1\"]=ep → ep.GetNode()==p → continue. So DiscoverOwnedEndpoints makes no changes. Then RestoreTo: moveEndpoint(ep, d) → moveLink fails (GetNSPath fails) → error; rollback loop over moved (empty) → return error. So P.Endpoints intact. ✓. Then `RestoreEndpoints` returns err; `d.parkingNode` unchanged (P).\n\nRepark: reuse P → CaptureFrom no-op → RepointSymlink ok → d.parkingNode = P (re-set). Then restore: reuse P → succeeds. ✓ matches test.\n\nNow what about the test's use of `t.Cleanup` deleting namespaces — fine.\n\nNow let me consider **the new field and `DefaultNode` copies**. Some kinds embed DefaultNode by value (sros). Is `DefaultNode` ever copied? Probably not.\n\n**Candidate: `d.parkingNode` set only after successful park; but in the reuse path, the retained P from a FAILED restore had endpoints; if ParkEndpoints reuse succeeds, fine.**\n\nNow, a real potential issue: **`RestoreEndpoints` reuse when the retained parking node was created against a DIFFERENT parkPath generation** — i.e., `parkingNetNSName()` is deterministic per LongName, so path is stable. OK.\n\n**Candidate: leaked `parkPath` unused?** No.\n\n**Candidate: `d.parkingNode` not thread-safe** — Stop/Start per node are sequential in all flows found (stop.go, start.go, restart.go sequential; deploy workers each handle distinct nodes; restart.go: Stop then Start sequentially). Note: in `Stop`, if `StopContainer` fails with status Stopped, it returns nil WITHOUT restoring — the endpoints stay parked (intended, since container is stopped). Then `Start` → RestoreEndpoints. OK.\n\nHmm, wait — one flow: `deploy.go` line 668 workers call `c.Nodes[nodeName].Start(ctx)` concurrently for DIFFERENT nodes. But `lifecycleNodes`... and `applyDiff`? Also `core/lifecycle.go:88-91`: `node.Stop(ctx)` then `node.Start(ctx)` sequentially. Fine.\n\nBut: **`StopNodes` and `StartNodes` in different CLI invocations** are separate processes — no in-memory state. The `d.parkingNode` reuse only matters within one process (restart: stop→start; stop-with-failure→retry). Across processes, `RestoreEndpoints` creates a fresh parking node and DiscoverOwnedEndpoints re-associates by iface name (fresh node case). OK.\n\nNow — is there any path where `ParkEndpoints` is called while `d.parkingNode` is non-nil AND the interfaces were already restored (i.e., in live ns)? That's the case after failed cleanup in RestoreEndpoints (rare) — handled: CaptureFrom finds ifaces in live ns, tracked in d.Endpoints, moves to P. But: P.Endpoints is empty (they were released during the successful RestoreTo) — wait, was the rollback... RestoreTo succeeded: for each ep: moveEndpoint(ep, dst) → `src.ReleaseEndpoint(e)` — P's list empties. So P.Endpoints empty. Then moveLink moves iface to live ns, Activate. So P.Endpoints empty, ifaces in live ns. Repark with reused P: CaptureFrom: captureCandidates: tracked = d.Endpoints (has ep); present in live ns → endpoints=[ep]; moveEndpoint(ep, P) → dst P.Endpoints empty → no conflict → adopt. Works. ✓.\n\nAnd if the reused P still had ep in its list while the iface is in live ns? Could happen if RestoreTo's Activate failed for the LAST endpoint after moving it: rollback: `_ = moveEndpoint(ctx, ep, p)` — moves back to P and re-adopts. So P.Endpoints has it, iface in P's ns. Consistent.\n\nWhat about moveEndpoint's failure mode \"moved but destination ownership update failed\"? `e.SetNode(dst); dst.AdoptEndpoint(e)` fails → `e.SetNode(src); _ = src.AdoptEndpoint(e)`. If src.AdoptEndpoint fails (error ignored!), the endpoint's ownership is inconsistent: e.g., if dst.AdoptEndpoint failed because dst already tracks same iface name... then SetNode(src) + src.AdoptEndpoint — src previously released it, so re-adopt should succeed. Edge-case only.\n\nNow let me examine one more head-side risk: **`ParkEndpoints` reuse path skips cleanup of the parking ns on `CaptureFrom` failure, but ALSO skips it in the failure branch only; if `RepointSymlink` fails, cleanup happens unconditionally (line 1190) even when reused!** Line 1188-1198: if RepointSymlink fails → `parkingNode.RestoreTo(ctx, d)` (restore the endpoints back to d) → `d.cleanupParkingNetNS()` → delete the ns. With a reused P holding parked endpoints: RestoreTo attempts to restore them to d (live ns — GetNSPath works if container still running) → endpoints moved back to d. Then cleanup deletes ns. Then d.parkingNode is NOT reset (still P)! Next ParkEndpoints → reuse stale P (empty endpoints after successful RestoreTo) with fresh ns. CaptureFrom: ifaces in live ns → tracked → move to P. Fine as analyzed. But subtle: `d.parkingNode` remains non-nil pointing to a P whose endpoints were restored — subsequent RestoreEndpoints before any repark would reuse P: parkPath exists? After cleanup, ns deleted → `parkingNetNSPath()` fails → `d.parkingNode = nil` → return nil. OK.\n\nBut wait, in the RepointSymlink-failure-with-reuse path: RestoreTo may FAIL (e.g., container stopped — GetContainerStatus... in ParkEndpoints the container is still running since Stop calls Park before stopping). Hmm, when is RepointSymlink failing realistic? LinkContainerNS: os.Symlink failure if... it removes existing first. Rare.\n\nNow the deeper question: is there a scenario where reuse **breaks** correct behavior that the base handled? Consider: restore FAILED, endpoints parked. Now the user runs `clab redeploy` or the node gets recreated: same process? `applyDiff` Recreate: `d.Delete(ctx)` — d.Endpoints empty (parked) → doesn't remove the parked veth! Then deploy creates a NEW node object? In `applyConfig`, nodes are created fresh from topology parsing at startup of the command. Within one process (e.g., `clab deploy --reconfigure`), nodes are rebuilt. So `d.parkingNode` doesn't survive process boundaries. Within one process, node objects persist only for the lifecycle commands in that process (stop/start/restart/apply-diff on existing lab?). `clab restart` in one process: load topology → build node objects → Stop (park) → Start (restore). Same objects. ✓.\n\nNow, what about `c.ResolveLinks()` in stop/start — it re-adopts endpoints? Let me check ResolveLinks: it might rebuild `d.Endpoints` from the topology + runtime discovery. If ResolveLinks re-adopts the topology endpoint to `d` while the iface is actually parked in the parking ns, then `d.Endpoints` contains ep again while P also... Let me check. Actually `ResolveLinks` — grep.",
+          "time": {
+            "start": 1792425787668,
+            "end": 1792425805486
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e746b1001XRzP6Nvjh7NbZE",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6f431001bHBo8OQ1AeAc3J",
+          "callID": "call_c42d8eff031147d5aedc3496",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/core",
+              "pattern": "func \\(c \\*CLab\\) ResolveLinks"
+            },
+            "output": "Found 1 matches\n/source/head/core/clab.go:\n  Line 898: func (c *CLab) ResolveLinks() error {\n",
+            "title": "func \\(c \\*CLab\\) ResolveLinks",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792425805496,
+              "end": 1792425805509
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e746c80010Slw369E05CTvl",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e6f431001bHBo8OQ1AeAc3J",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 73331,
+            "input": 41122,
+            "output": 34,
+            "reasoning": 2479,
+            "cache": {
+              "read": 29696,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e746d2001osSneNsMPDRNMF",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425805522,
+          "completed": 1792425807503
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 73394,
+          "input": 149,
+          "output": 28,
+          "reasoning": 1,
+          "cache": {
+            "read": 73216,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e74e27001yQ6pdL4BrbQH6R",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e746d2001osSneNsMPDRNMF"
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e74e7c001wATSzG5HoVYhnl",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e746d2001osSneNsMPDRNMF",
+          "callID": "call_247decedc81141a78ccd1cac",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/clab.go",
+              "limit": 70,
+              "offset": 890
+            },
+            "output": "<path>/source/head/core/clab.go</path>\n<type>file</type>\n<content>\n890: \t\t\"host\":     clablinks.GetHostLinkNode(),\n891: \t\t\"mgmt-net\": clablinks.GetMgmtBrLinkNode(),\n892: \t}\n893: \n894: \treturn specialNodes\n895: }\n896: \n897: // ResolveLinks resolves raw links to the actual link types and stores them in the CLab.Links map.\n898: func (c *CLab) ResolveLinks() error {\n899: \tc.resetResolvedLinks()\n900: \n901: \tresolveParams := &clablinks.ResolveParams{\n902: \t\tNodes:          c.getLinkNodes(),\n903: \t\tMgmtBridgeName: c.Config.Mgmt.Bridge,\n904: \t\tNodesFilter:    c.nodeFilter,\n905: \t\tLabName:        c.Config.Name,\n906: \t}\n907: \n908: \tfor i, l := range c.Config.Topology.Links {\n909: \t\tl, err := l.Link.Resolve(resolveParams)\n910: \t\tif err != nil {\n911: \t\t\treturn err\n912: \t\t}\n913: \n914: \t\t// if the link is nil, it means that it was filtered out\n915: \t\tif l == nil {\n916: \t\t\tcontinue\n917: \t\t}\n918: \n919: \t\tc.Endpoints = append(c.Endpoints, l.GetEndpoints()...)\n920: \t\tc.Links[i] = l\n921: \t}\n922: \n923: \treturn nil\n924: }\n925: \n926: func (c *CLab) resetResolvedLinks() {\n927: \tfor _, ep := range c.Endpoints {\n928: \t\tif ep == nil || ep.GetNode() == nil {\n929: \t\t\tcontinue\n930: \t\t}\n931: \t\t_ = ep.GetNode().ReleaseEndpoint(ep)\n932: \t}\n933: \n934: \tc.Endpoints = nil\n935: \tc.Links = make(map[int]clablinks.Link)\n936: }\n937: \n938: // extractDNSServers extracts DNS servers from the resolv.conf files\n939: // and populates the Nodes DNS Config with these if not specifically provided.\n940: func (c *CLab) extractDNSServers(filesys fs.FS) error {\n941: \t// extract DNS servers from the relevant resolv.conf files\n942: \tDNSServers, err := clabutils.ExtractDNSServersFromResolvConf(filesys,\n943: \t\t[]string{\"etc/resolv.conf\", \"run/systemd/resolve/resolv.conf\"})\n944: \tif err != nil {\n945: \t\treturn err\n946: \t}\n947: \n948: \t// no DNS Servers found, return\n949: \tif len(DNSServers) == 0 {\n950: \t\treturn nil\n951: \t}\n952: \n953: \t// if no dns servers are explicitly configured,\n954: \t// we set the DNS servers that we've extracted.\n955: \tfor _, n := range c.Nodes {\n956: \t\tconfig := n.Config()\n957: \t\t// skip nodes in container network mode since docker doesn't allow\n958: \t\t// setting dns config for them\n959: \t\tif strings.HasPrefix(config.NetworkMode, \"container\") {\n\n(Showing lines 890-959 of 991. Use offset=960 to continue.)\n</content>",
+            "title": "source/head/core/clab.go",
+            "metadata": {
+              "preview": "\t\t\"host\":     clablinks.GetHostLinkNode(),\n\t\t\"mgmt-net\": clablinks.GetMgmtBrLinkNode(),\n\t}\n\n\treturn specialNodes\n}\n\n// ResolveLinks resolves raw links to the actual link types and stores them in the CLab.Links map.\nfunc (c *CLab) ResolveLinks() error {\n\tc.resetResolvedLinks()\n\n\tresolveParams := &clablinks.ResolveParams{\n\t\tNodes:          c.getLinkNodes(),\n\t\tMgmtBridgeName: c.Config.Mgmt.Bridge,\n\t\tNodesFilter:    c.nodeFilter,\n\t\tLabName:        c.Config.Name,\n\t}\n\n\tfor i, l := range c.Config.Topology.Links {\n\t\tl, err := l.Link.Resolve(resolveParams)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/clab.go",
+                "text": "\t\t\"host\":     clablinks.GetHostLinkNode(),\n\t\t\"mgmt-net\": clablinks.GetMgmtBrLinkNode(),\n\t}\n\n\treturn specialNodes\n}\n\n// ResolveLinks resolves raw links to the actual link types and stores them in the CLab.Links map.\nfunc (c *CLab) ResolveLinks() error {\n\tc.resetResolvedLinks()\n\n\tresolveParams := &clablinks.ResolveParams{\n\t\tNodes:          c.getLinkNodes(),\n\t\tMgmtBridgeName: c.Config.Mgmt.Bridge,\n\t\tNodesFilter:    c.nodeFilter,\n\t\tLabName:        c.Config.Name,\n\t}\n\n\tfor i, l := range c.Config.Topology.Links {\n\t\tl, err := l.Link.Resolve(resolveParams)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// if the link is nil, it means that it was filtered out\n\t\tif l == nil {\n\t\t\tcontinue\n\t\t}\n\n\t\tc.Endpoints = append(c.Endpoints, l.GetEndpoints()...)\n\t\tc.Links[i] = l\n\t}\n\n\treturn nil\n}\n\nfunc (c *CLab) resetResolvedLinks() {\n\tfor _, ep := range c.Endpoints {\n\t\tif ep == nil || ep.GetNode() == nil {\n\t\t\tcontinue\n\t\t}\n\t\t_ = ep.GetNode().ReleaseEndpoint(ep)\n\t}\n\n\tc.Endpoints = nil\n\tc.Links = make(map[int]clablinks.Link)\n}\n\n// extractDNSServers extracts DNS servers from the resolv.conf files\n// and populates the Nodes DNS Config with these if not specifically provided.\nfunc (c *CLab) extractDNSServers(filesys fs.FS) error {\n\t// extract DNS servers from the relevant resolv.conf files\n\tDNSServers, err := clabutils.ExtractDNSServersFromResolvConf(filesys,\n\t\t[]string{\"etc/resolv.conf\", \"run/systemd/resolve/resolv.conf\"})\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// no DNS Servers found, return\n\tif len(DNSServers) == 0 {\n\t\treturn nil\n\t}\n\n\t// if no dns servers are explicitly configured,\n\t// we set the DNS servers that we've extracted.\n\tfor _, n := range c.Nodes {\n\t\tconfig := n.Config()\n\t\t// skip nodes in container network mode since docker doesn't allow\n\t\t// setting dns config for them\n\t\tif strings.HasPrefix(config.NetworkMode, \"container\") {",
+                "lineStart": 890,
+                "lineEnd": 959,
+                "totalLines": 991,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425807489,
+              "end": 1792425807497
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e74e8b0016yZPMVTvph7E0x",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e746d2001osSneNsMPDRNMF",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 73394,
+            "input": 149,
+            "output": 28,
+            "reasoning": 1,
+            "cache": {
+              "read": 73216,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e74e94001yru7R2T82Jj7r8",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425807508,
+          "completed": 1792425818326
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 75063,
+          "input": 984,
+          "output": 29,
+          "reasoning": 834,
+          "cache": {
+            "read": 73216,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e75bb2001PCn65UlbD3sgs7",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e74e94001yru7R2T82Jj7r8"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e75bb4001V7semp4UXVHDcJ",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e74e94001yru7R2T82Jj7r8",
+          "text": "`ResolveLinks` re-resolves topology links → creates fresh endpoints adopted to `d` (in stop/start flow, `ResolveLinks` is called before lifecycle ops). Wait — in `StopNodes`: `c.ResolveLinks()` then `n.Stop(ctx)`. ResolveLinks creates NEW endpoint objects from the topology (rebuilding them) and adopts them into node's Endpoints. So on a fresh `clab stop` invocation, `d.Endpoints` is populated with fresh topology endpoints (iface names matching deployed ifaces), and ParkEndpoints's CaptureFrom tracks them.\n\nHmm — interesting: in StopNodes, ResolveLinks is called BEFORE Stop → fresh endpoints in d.Endpoints. Then Park: CaptureFrom: tracked = fresh endpoints; iface found in live ns; moveEndpoint(freshEp, P) → adopts freshEp to P. `d.parkingNode = P`.\n\nThen in the same process, `clab restart`: Stop → Start. RestoreEndpoints: reuse P. DiscoverOwnedEndpoints: known: d.Endpoints (empty after park) + P.Endpoints (freshEps) → ok. Restore moves freshEps back. ✓.\n\nBut — in `StartNodes` flow: `ResolveLinks()` is called first! So a NEW set of endpoint objects is created and adopted into `d.Endpoints` — while `d.parkingNode` P still holds the OLD endpoints (from the earlier Stop in the same process)! Then RestoreEndpoints: reuse P → DiscoverOwnedEndpoints(P, d): `listOwnedInterfaceNames(ctx, P, tracked(d.Endpoints, P.Endpoints))` — P's ns has the ifaces. First loop: P.Endpoints = old eps, all discovered → continue. known: d.Endpoints (NEW eps, owned by d) + P.Endpoints (old eps). Second loop: ifaceName → known[iface] = NEW ep (map overwritten: original endpoints iterate first, then P's endpoints overwrite: `for _, ep := range p.GetEndpoints() { known[...] = ep }` — P's endpoints overwrite, so known[iface] = OLD ep). OLD ep.GetNode() == P → `continue`. So the NEW endpoint in d.Endpoints stays with d, and restore moves the OLD ep back to d — adopting the OLD ep into d.Endpoints while the NEW ep (same iface name) is ALSO in d.Endpoints! → `d.Endpoints` now has TWO endpoints with iface name \"eth1\" (the new one and the restored old one). Then `moveEndpoint(ep_old, d)`: dst d.GetEndpoints() — contains newEp with same iface name → `fmt.Errorf(\"node %q already tracks interface %q\", ...)` → RESTORE FAILS!\n\nHmm wait, is that right? In StartNodes: ResolveLinks → c.resetResolvedLinks() first: `for _, ep := range c.Endpoints { ep.GetNode().ReleaseEndpoint(ep) }` — releases previously resolved endpoints. But the parked endpoints belong to P (parking node), and `c.Endpoints`... After Stop's ResolveLinks, `c.Endpoints` contains the fresh endpoints (later adopted to P during park — moveEndpoint calls src.ReleaseEndpoint but c.Endpoints still holds references). So at Start: resetResolvedLinks releases each ep from its current owner: the old fresh eps are owned by P → ReleaseEndpoint removes them from P's list. Then re-resolve → new eps adopted to d.Endpoints.\n\nThen Start → RestoreEndpoints → reuse P (P.Endpoints now EMPTY — they were released by resetResolvedLinks!). So reuse is harmless: P empty, DiscoverOwnedEndpoints creates runtime endpoints or re-adopts the NEW eps by iface name (known[iface] = new ep owned by d → releases from d, adopts to P, then RestoreTo moves back and re-adopts to d). So actually works.\n\nHmm OK. So in the restart-within-one-process flow (core/lifecycle.go RestartNodes: Stop then Start — does it call ResolveLinks between? Let me check lifecycle.go and restart.go).",
+          "time": {
+            "start": 1792425810868,
+            "end": 1792425818260
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e77897001jDGz43I7pBux93",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e74e94001yru7R2T82Jj7r8",
+          "callID": "call_c4201eac07a54263a9b367de",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/lifecycle.go"
+            },
+            "output": "<path>/source/head/core/lifecycle.go</path>\n<type>file</type>\n<content>\n1: package core\n2: \n3: import (\n4: \t\"context\"\n5: \t\"fmt\"\n6: \t\"strings\"\n7: \t\"time\"\n8: \n9: \t\"github.com/charmbracelet/log\"\n10: \tclaberrors \"github.com/srl-labs/containerlab/errors\"\n11: \tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n12: \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n13: )\n14: \n15: // lifecycleNodes resolves the requested node names without applying lifecycle policy.\n16: func (c *CLab) lifecycleNodes(nodeNames []string) ([]clabnodes.Node, error) {\n17: \tvar nodes []clabnodes.Node\n18: \n19: \tif len(nodeNames) > 0 {\n20: \t\tfor _, name := range nodeNames {\n21: \t\t\tn, ok := c.Nodes[name]\n22: \t\t\tif !ok {\n23: \t\t\t\t// node filter case, where referenced node in filter is not in topo file\n24: \t\t\t\treturn nil, fmt.Errorf(\n25: \t\t\t\t\t\"%w: node %q is not present in the topology\",\n26: \t\t\t\t\tclaberrors.ErrIncorrectInput,\n27: \t\t\t\t\tname,\n28: \t\t\t\t)\n29: \t\t\t}\n30: \n31: \t\t\tnodes = append(nodes, n)\n32: \t\t}\n33: \t} else {\n34: \t\tfor _, n := range c.Nodes {\n35: \t\t\tnodes = append(nodes, n)\n36: \t\t}\n37: \t}\n38: \n39: \treturn nodes, nil\n40: }\n41: \n42: func (c *CLab) parkRecreatedNodes(ctx context.Context, plan *applyPlan) error {\n43: \tfor _, nodeName := range sortedStringSet(plan.parkedNodeSet) {\n44: \t\tnode, exists := c.Nodes[nodeName]\n45: \t\tif !exists {\n46: \t\t\tcontinue\n47: \t\t}\n48: \t\tlog.Info(\"Parking links for recreate\", \"node\", nodeName)\n49: \t\tif err := node.ParkEndpoints(ctx); err != nil {\n50: \t\t\treturn fmt.Errorf(\"failed parking endpoints for node %q: %w\", nodeName, err)\n51: \t\t}\n52: \t}\n53: \n54: \treturn nil\n55: }\n56: \n57: func (c *CLab) restoreRecreatedNodes(ctx context.Context, plan *applyPlan) error {\n58: \tfor _, nodeName := range sortedStringSet(plan.parkedNodeSet) {\n59: \t\tnode, exists := c.Nodes[nodeName]\n60: \t\tif !exists {\n61: \t\t\tcontinue\n62: \t\t}\n63: \t\tlog.Info(\"Restoring links after recreate\", \"node\", nodeName)\n64: \t\tif err := node.RestoreEndpoints(ctx); err != nil {\n65: \t\t\treturn fmt.Errorf(\"failed restoring endpoints for node %q: %w\", nodeName, err)\n66: \t\t}\n67: \t}\n68: \n69: \treturn nil\n70: }\n71: \n72: func (c *CLab) restartApplyNodes(\n73: \tctx context.Context,\n74: \tnodeSet map[string]struct{},\n75: ) error {\n76: \tnodeNames, err := c.networkModeNodeOrder(sortedStringSet(nodeSet))\n77: \tif err != nil {\n78: \t\treturn err\n79: \t}\n80: \n81: \tfor _, nodeName := range nodeNames {\n82: \t\tnode := c.Nodes[nodeName]\n83: \t\tif node == nil {\n84: \t\t\tcontinue\n85: \t\t}\n86: \n87: \t\tlog.Info(\"Restarting node after link apply\", \"node\", nodeName)\n88: \t\tif err := node.Stop(ctx); err != nil {\n89: \t\t\treturn err\n90: \t\t}\n91: \t\tif err := node.Start(ctx); err != nil {\n92: \t\t\treturn err\n93: \t\t}\n94: \t\tif err := c.waitNodeRunning(ctx, node); err != nil {\n95: \t\t\treturn err\n96: \t\t}\n97: \t\tif err := c.waitNodeHealthyIfAvailable(ctx, node); err != nil {\n98: \t\t\treturn err\n99: \t\t}\n100: \t}\n101: \n102: \treturn nil\n103: }\n104: \n105: func (c *CLab) waitNodeRunning(ctx context.Context, node clabnodes.Node) error {\n106: \tdeadline := time.Now().Add(c.timeout)\n107: \n108: \tfor {\n109: \t\tstatus := node.GetContainerStatus(ctx)\n110: \t\tif clabruntime.ContainerHasJoinableNetns(status) {\n111: \t\t\treturn nil\n112: \t\t}\n113: \n114: \t\tif time.Now().After(deadline) {\n115: \t\t\treturn fmt.Errorf(\n116: \t\t\t\t\"node %q did not reach running state, current state %s\",\n117: \t\t\t\tnode.GetShortName(),\n118: \t\t\t\tstatus,\n119: \t\t\t)\n120: \t\t}\n121: \n122: \t\tselect {\n123: \t\tcase <-ctx.Done():\n124: \t\t\treturn ctx.Err()\n125: \t\tcase <-time.After(time.Second):\n126: \t\t}\n127: \t}\n128: }\n129: \n130: func (c *CLab) waitNodeHealthyIfAvailable(ctx context.Context, node clabnodes.Node) error {\n131: \tif node.Config().Healthcheck == nil {\n132: \t\treturn nil\n133: \t}\n134: \n135: \tdeadline := time.Now().Add(c.timeout)\n136: \n137: \tfor {\n138: \t\thealthy, err := node.IsHealthy(ctx)\n139: \t\tif healthy {\n140: \t\t\treturn nil\n141: \t\t}\n142: \t\tif err != nil && strings.Contains(err.Error(), \"no health information\") {\n143: \t\t\treturn nil\n144: \t\t}\n145: \t\tif err != nil {\n146: \t\t\tlog.Debugf(\"error checking node %q health: %v\", node.GetShortName(), err)\n147: \t\t}\n148: \n149: \t\tif time.Now().After(deadline) {\n150: \t\t\tif err != nil {\n151: \t\t\t\treturn fmt.Errorf(\"node %q did not become healthy: %w\", node.GetShortName(), err)\n152: \t\t\t}\n153: \t\t\treturn fmt.Errorf(\"node %q did not become healthy\", node.GetShortName())\n154: \t\t}\n155: \n156: \t\tselect {\n157: \t\tcase <-ctx.Done():\n158: \t\t\treturn ctx.Err()\n159: \t\tcase <-time.After(time.Second):\n160: \t\t}\n161: \t}\n162: }\n\n(End of file - total 162 lines)\n</content>",
+            "title": "source/head/core/lifecycle.go",
+            "metadata": {
+              "preview": "package core\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\tclaberrors \"github.com/srl-labs/containerlab/errors\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n)\n\n// lifecycleNodes resolves the requested node names without applying lifecycle policy.\nfunc (c *CLab) lifecycleNodes(nodeNames []string) ([]clabnodes.Node, error) {\n\tvar nodes []clabnodes.Node\n\n\tif len(nodeNames) > 0 {\n\t\tfor _, name := range nodeNames {",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/lifecycle.go",
+                "text": "package core\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\tclaberrors \"github.com/srl-labs/containerlab/errors\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n)\n\n// lifecycleNodes resolves the requested node names without applying lifecycle policy.\nfunc (c *CLab) lifecycleNodes(nodeNames []string) ([]clabnodes.Node, error) {\n\tvar nodes []clabnodes.Node\n\n\tif len(nodeNames) > 0 {\n\t\tfor _, name := range nodeNames {\n\t\t\tn, ok := c.Nodes[name]\n\t\t\tif !ok {\n\t\t\t\t// node filter case, where referenced node in filter is not in topo file\n\t\t\t\treturn nil, fmt.Errorf(\n\t\t\t\t\t\"%w: node %q is not present in the topology\",\n\t\t\t\t\tclaberrors.ErrIncorrectInput,\n\t\t\t\t\tname,\n\t\t\t\t)\n\t\t\t}\n\n\t\t\tnodes = append(nodes, n)\n\t\t}\n\t} else {\n\t\tfor _, n := range c.Nodes {\n\t\t\tnodes = append(nodes, n)\n\t\t}\n\t}\n\n\treturn nodes, nil\n}\n\nfunc (c *CLab) parkRecreatedNodes(ctx context.Context, plan *applyPlan) error {\n\tfor _, nodeName := range sortedStringSet(plan.parkedNodeSet) {\n\t\tnode, exists := c.Nodes[nodeName]\n\t\tif !exists {\n\t\t\tcontinue\n\t\t}\n\t\tlog.Info(\"Parking links for recreate\", \"node\", nodeName)\n\t\tif err := node.ParkEndpoints(ctx); err != nil {\n\t\t\treturn fmt.Errorf(\"failed parking endpoints for node %q: %w\", nodeName, err)\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc (c *CLab) restoreRecreatedNodes(ctx context.Context, plan *applyPlan) error {\n\tfor _, nodeName := range sortedStringSet(plan.parkedNodeSet) {\n\t\tnode, exists := c.Nodes[nodeName]\n\t\tif !exists {\n\t\t\tcontinue\n\t\t}\n\t\tlog.Info(\"Restoring links after recreate\", \"node\", nodeName)\n\t\tif err := node.RestoreEndpoints(ctx); err != nil {\n\t\t\treturn fmt.Errorf(\"failed restoring endpoints for node %q: %w\", nodeName, err)\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc (c *CLab) restartApplyNodes(\n\tctx context.Context,\n\tnodeSet map[string]struct{},\n) error {\n\tnodeNames, err := c.networkModeNodeOrder(sortedStringSet(nodeSet))\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tfor _, nodeName := range nodeNames {\n\t\tnode := c.Nodes[nodeName]\n\t\tif node == nil {\n\t\t\tcontinue\n\t\t}\n\n\t\tlog.Info(\"Restarting node after link apply\", \"node\", nodeName)\n\t\tif err := node.Stop(ctx); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := node.Start(ctx); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := c.waitNodeRunning(ctx, node); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := c.waitNodeHealthyIfAvailable(ctx, node); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc (c *CLab) waitNodeRunning(ctx context.Context, node clabnodes.Node) error {\n\tdeadline := time.Now().Add(c.timeout)\n\n\tfor {\n\t\tstatus := node.GetContainerStatus(ctx)\n\t\tif clabruntime.ContainerHasJoinableNetns(status) {\n\t\t\treturn nil\n\t\t}\n\n\t\tif time.Now().After(deadline) {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q did not reach running state, current state %s\",\n\t\t\t\tnode.GetShortName(),\n\t\t\t\tstatus,\n\t\t\t)\n\t\t}\n\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\tcase <-time.After(time.Second):\n\t\t}\n\t}\n}\n\nfunc (c *CLab) waitNodeHealthyIfAvailable(ctx context.Context, node clabnodes.Node) error {\n\tif node.Config().Healthcheck == nil {\n\t\treturn nil\n\t}\n\n\tdeadline := time.Now().Add(c.timeout)\n\n\tfor {\n\t\thealthy, err := node.IsHealthy(ctx)\n\t\tif healthy {\n\t\t\treturn nil\n\t\t}\n\t\tif err != nil && strings.Contains(err.Error(), \"no health information\") {\n\t\t\treturn nil\n\t\t}\n\t\tif err != nil {\n\t\t\tlog.Debugf(\"error checking node %q health: %v\", node.GetShortName(), err)\n\t\t}\n\n\t\tif time.Now().After(deadline) {\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"node %q did not become healthy: %w\", node.GetShortName(), err)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\"node %q did not become healthy\", node.GetShortName())\n\t\t}\n\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\tcase <-time.After(time.Second):\n\t\t}\n\t}\n}",
+                "lineStart": 1,
+                "lineEnd": 162,
+                "totalLines": 162,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792425818267,
+              "end": 1792425818279
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e778c40012OQ51hCupXNqVL",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e74e94001yru7R2T82Jj7r8",
+          "callID": "call_be0ffd6795094fc6b3d39122",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/restart.go"
+            },
+            "output": "<path>/source/head/core/restart.go</path>\n<type>file</type>\n<content>\n1: package core\n2: \n3: import (\n4: \t\"context\"\n5: )\n6: \n7: // RestartNodes performs stop+start for each node, restoring parked interfaces.\n8: func (c *CLab) RestartNodes(ctx context.Context, nodeNames []string) error {\n9: \tif c.LabRuntime != nil {\n10: \t\treturn c.restartNodesWithLabRuntime(ctx, nodeNames)\n11: \t}\n12: \n13: \tif err := c.ResolveLinks(); err != nil {\n14: \t\treturn err\n15: \t}\n16: \n17: \tnodes, err := c.lifecycleNodes(nodeNames)\n18: \tif err != nil {\n19: \t\treturn err\n20: \t}\n21: \n22: \tfor _, n := range nodes {\n23: \t\tif err := n.Stop(ctx); err != nil {\n24: \t\t\treturn err\n25: \t\t}\n26: \n27: \t\tif err := n.Start(ctx); err != nil {\n28: \t\t\treturn err\n29: \t\t}\n30: \t}\n31: \n32: \treturn nil\n33: }\n\n(End of file - total 33 lines)\n</content>",
+            "title": "source/head/core/restart.go",
+            "metadata": {
+              "preview": "package core\n\nimport (\n\t\"context\"\n)\n\n// RestartNodes performs stop+start for each node, restoring parked interfaces.\nfunc (c *CLab) RestartNodes(ctx context.Context, nodeNames []string) error {\n\tif c.LabRuntime != nil {\n\t\treturn c.restartNodesWithLabRuntime(ctx, nodeNames)\n\t}\n\n\tif err := c.ResolveLinks(); err != nil {\n\t\treturn err\n\t}\n\n\tnodes, err := c.lifecycleNodes(nodeNames)\n\tif err != nil {\n\t\treturn err\n\t}",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/restart.go",
+                "text": "package core\n\nimport (\n\t\"context\"\n)\n\n// RestartNodes performs stop+start for each node, restoring parked interfaces.\nfunc (c *CLab) RestartNodes(ctx context.Context, nodeNames []string) error {\n\tif c.LabRuntime != nil {\n\t\treturn c.restartNodesWithLabRuntime(ctx, nodeNames)\n\t}\n\n\tif err := c.ResolveLinks(); err != nil {\n\t\treturn err\n\t}\n\n\tnodes, err := c.lifecycleNodes(nodeNames)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tfor _, n := range nodes {\n\t\tif err := n.Stop(ctx); err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tif err := n.Start(ctx); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn nil\n}",
+                "lineStart": 1,
+                "lineEnd": 33,
+                "totalLines": 33,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792425818313,
+              "end": 1792425818318
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e778d1001tkO1GD3KlU58xT",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e74e94001yru7R2T82Jj7r8",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 75063,
+            "input": 984,
+            "output": 29,
+            "reasoning": 834,
+            "cache": {
+              "read": 73216,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e778dc001kVkj8q8kSmJE3L",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425818332,
+          "completed": 1792425829522
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 78171,
+          "input": 14061,
+          "output": 41,
+          "reasoning": 1349,
+          "cache": {
+            "read": 62720,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e78189001XhYoTtkwb4cfHl",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e778dc001kVkj8q8kSmJE3L"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e7818b001fXHafjNbob2Yx3",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e778dc001kVkj8q8kSmJE3L",
+          "text": "Restart: ResolveLinks once, then per-node Stop→Start. Same endpoint objects flow through park and restore. ✓.\n\nNow, one more critical check for `RestartNodes`: `Stop` parks and calls `StopContainer`; if the container was ALREADY stopped (`case clabruntime.Stopped: return nil` — no park), then `Start`: status Stopped → `StartContainer` → `RestoreEndpoints`: parkPath exists (from a previous process's park — but in this process, `d.parkingNode` is nil since park never ran in this process) → fresh parking node → DiscoverOwnedEndpoints reconciles by iface name. OK.\n\nNow — `parkRecreatedNodes` (redeploy flow): parks before recreate; then `restoreRecreatedNodes` after. Between park and restore, the node is recreated — same node object? In `parkRecreatedNodes`, `c.Nodes[nodeName]` — the OLD node object. Then recreate — does `c.Nodes[nodeName]` get replaced with a NEW object? If yes, the new object's `parkingNode` is nil → RestoreEndpoints creates a fresh parking node → DiscoverOwnedEndpoints re-adopts the NEW topology endpoints by iface name. That's the \"fresh node\" case — works via reconciliation (as analyzed). So the fix's value is mainly the same-object retry case (Stop failing → retry Stop → repark).\n\nNow let me double-check the reconcile/apply flow interplay: `applyParkingLinkNode` creates fresh parking nodes for link application — meaning during `apply` while a node is parked, link operations use a fresh ParkingNode whose endpoint tracking is empty — fine, since it discovers owned interfaces at runtime.\n\nHmm, wait — actually there's a subtle interplay: during apply, if the node is parked and the parking node P (fresh, empty) is used by reconcile, then reconcile may ADOPT topology endpoints into the fresh parking node (via DiscoverOwnedEndpoints in... no, that's only in RestoreTo). Reconcile's `applyEndpointDiscoveryNodes` maps `c.Nodes[nodeName]` to the live node (not the parking node) — endpoints adopted to the live node even though ifaces are in the parking ns. `ValidateOwnedInterfaceFor` with ownerName=key.node validates ownership altname which is the original node's name. Fine.\n\nOK. Now let me review the **test file details** for correctness issues:\n\n1. `rt.EXPECT().GetContainerStatus(gomock.Any(), longName).Return(clabruntime.Running).AnyTimes()` — the DefaultNode calls `d.OverwriteNode.GetContainerStatus(ctx)` (OverwriteNode = d → DefaultNode.GetContainerStatus → `d.Runtime.GetContainerStatus(ctx, d.OverwriteNode.GetContainerName())` — GetContainerName returns `d.Cfg.LongName`? For DefaultNode, GetContainerName returns LongName. The mock matches longName. ✓.\n\n2. `rt.EXPECT().GetNSPath(...).DoAndReturn(...)` — mock matches longName. ✓. But note in the fresh-node case, the new node uses the same mock (rt closure) — fine.\n\n3. The mock runtime interface — does MockContainerRuntime require other expectations? Calls used: GetContainerStatus, GetNSPath. Any others? `DefaultNode.ExecFunction` → GetNSPath + GetContainerStatus. `AddLinkToContainer` → GetContainerStatus + GetNSPath. That's it. But wait — mockruntime.NewMockContainerRuntime with gomock.NewController(t) — if any unmocked method is called, the test fails. ParkEndpoints/RestoreEndpoints only use those. ✓.\n\n4. The test asserts `if _, err := d.parkingNetNSPath(); err == nil` after restore — parking ns deleted. ✓ (in the fresh-node case, the ns is deleted by RestoreEndpoints cleanup — but the ns was created by CreateOrGetNamedNetNS in park. ✓).\n\n5. `ep.Remove(ctx)` at the end — ExecFunction on d → live ns → LinkByName(\"eth1\") → LinkDel. ✓.\n\n6. Node reuse across cycles: for non-fresh cases, `d` is the same object across both cycles. Cycle 1 (second iteration): `d.ParkEndpoints(ctx)` — d.parkingNode nil (cleared after successful restore) → fresh. ✓.\n\n7. In the repark case: after the failed restore and repark, `d.RestoreEndpoints(ctx)` — reuses P. ✓.\n\nNow, is there any issue with the test leaving `/run/netns/<longName>` symlink removal: RepointSymlink creates it in every park; cleanup removes it once — but multiple parks create it repeatedly (idempotent, removes existing first). ✓.\n\nNow — check `clabutils.CreateNamedNetNS(nsName)`: `netns.NewNamed(nsName)`. Cleanup: `netns.DeleteNamed(nsName)`. ✓.\n\nNow the remaining question about **the head fix's skipped cleanup on CaptureFrom failure when reused**: consider reuse where the parking ns exists but the LIVE ns path resolution fails during CaptureFrom (`listOwnedInterfaceNames` → `node.ExecFunction(ctx, ...)` → d.ExecFunction → GetNSPath fails) → CaptureFrom returns error → since reused, NO cleanup → the ns stays. Retry: same failure until the container runs again. Good — prevents destroying parked ifaces. ✓ (this is the core fix intent).\n\nBase behavior bug: on repark with CaptureFrom failure (live ns temporarily unavailable), base would `_ = d.cleanupParkingNetNS()` — DESTROYING the parked interfaces! That's the bug fixed. Good.\n\nNow let me check `NewParkingNode(d.Cfg.LongName, parkPath)` — the parking node's shortname is `ParkingNetnsName(longName)` = \"clab-park-<longname>\". In DiscoverOwnedEndpoints... fine.\n\nNow, **the `d.parkingNode` field is unexported on an exported struct with no mutex**. Node objects are accessed concurrently across different goroutines for different nodes; for the SAME node, only one lifecycle op at a time. I'll note as a P4/coverage note at most. Actually, is there any concurrent access to the same node's Stop and Start? `deploy.go` workers each handle a distinct node. `deleteNodes` distinct. `stopNodesWithLabRuntime`/`startNodesWithLabRuntime` — LabRuntime path; check quickly whether those run concurrently per node.",
+          "time": {
+            "start": 1792425820555,
+            "end": 1792425829483
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e7a46f001Z7qqydHRZ6GzJt",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e778dc001kVkj8q8kSmJE3L",
+          "callID": "call_dfaa7e093fa345cc89337fdc",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/core",
+              "pattern": "stopNodesWithLabRuntime|startNodesWithLabRuntime|restartNodesWithLabRuntime"
+            },
+            "output": "Found 6 matches\n/source/head/core/stop.go:\n  Line 11: \t\treturn c.stopNodesWithLabRuntime(ctx, nodeNames)\n\n\n/source/head/core/labruntime.go:\n  Line 346: func (c *CLab) startNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n\n  Line 354: func (c *CLab) stopNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n\n  Line 362: func (c *CLab) restartNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n\n\n/source/head/core/start.go:\n  Line 11: \t\treturn c.startNodesWithLabRuntime(ctx, nodeNames)\n\n\n/source/head/core/restart.go:\n  Line 10: \t\treturn c.restartNodesWithLabRuntime(ctx, nodeNames)\n",
+            "title": "stopNodesWithLabRuntime|startNodesWithLabRuntime|restartNodesWithLabRuntime",
+            "metadata": {
+              "matches": 6,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792425829494,
+              "end": 1792425829515
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e7a48d001vbbOx4QrGYnKPf",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e778dc001kVkj8q8kSmJE3L",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 78171,
+            "input": 14061,
+            "output": 41,
+            "reasoning": 1349,
+            "cache": {
+              "read": 62720,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e7a49b001q5xq8nxFo4GYoD",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425829531,
+          "completed": 1792425832899
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 78376,
+          "input": 268,
+          "output": 27,
+          "reasoning": 1,
+          "cache": {
+            "read": 78080,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e7b149001Ibn7VtsRsNIHLq",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7a49b001q5xq8nxFo4GYoD"
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e7b1b0001YE2FgArGq0C8Jj",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7a49b001q5xq8nxFo4GYoD",
+          "callID": "call_39dcc35a05da4ded83820958",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/labruntime.go",
+              "limit": 60,
+              "offset": 320
+            },
+            "output": "<path>/source/head/core/labruntime.go</path>\n<type>file</type>\n<content>\n320: \t\t\t\tName:      labName,\n321: \t\t\t\tNamespace: namespace,\n322: \t\t\t\tNodeName:  nodeName,\n323: \t\t\t\tCommand:   execCmd.GetCmd(),\n324: \t\t\t})\n325: \t\t\tif err != nil {\n326: \t\t\t\tlog.Warnf(\"exec on %s failed: %v\", containers[idx].Names[0], err)\n327: \t\t\t\texecErrors = append(execErrors, fmt.Errorf(\n328: \t\t\t\t\t\"exec on %s failed: %w\", containers[idx].Names[0], err))\n329: \t\t\t\tcontinue\n330: \t\t\t}\n331: \n332: \t\t\tresultCollection.Add(containers[idx].Names[0], result)\n333: \t\t\tif result.GetReturnCode() != 0 {\n334: \t\t\t\texecErrors = append(execErrors, fmt.Errorf(\n335: \t\t\t\t\t\"exec on %s returned exit code %d\",\n336: \t\t\t\t\tcontainers[idx].Names[0],\n337: \t\t\t\t\tresult.GetReturnCode(),\n338: \t\t\t\t))\n339: \t\t\t}\n340: \t\t}\n341: \t}\n342: \n343: \treturn resultCollection, errors.Join(execErrors...)\n344: }\n345: \n346: func (c *CLab) startNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n347: \treturn c.LabRuntime.Start(ctx, clablabruntime.NodeRequest{\n348: \t\tName:    c.Config.Name,\n349: \t\tNodes:   nodeNames,\n350: \t\tTimeout: c.timeout,\n351: \t})\n352: }\n353: \n354: func (c *CLab) stopNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n355: \treturn c.LabRuntime.Stop(ctx, clablabruntime.NodeRequest{\n356: \t\tName:    c.Config.Name,\n357: \t\tNodes:   nodeNames,\n358: \t\tTimeout: c.timeout,\n359: \t})\n360: }\n361: \n362: func (c *CLab) restartNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n363: \treturn c.LabRuntime.Restart(ctx, clablabruntime.NodeRequest{\n364: \t\tName:    c.Config.Name,\n365: \t\tNodes:   nodeNames,\n366: \t\tTimeout: c.timeout,\n367: \t})\n368: }\n369: \n370: func (c *CLab) saveWithLabRuntime(ctx context.Context, opts *SaveOptions) error {\n371: \tif opts.copyDst != \"\" {\n372: \t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n373: \t\tif err != nil {\n374: \t\t\treturn err\n375: \t\t}\n376: \t\topts.copyDst = resolvedDst\n377: \t}\n378: \n379: \tresult, err := c.LabRuntime.Save(ctx, clablabruntime.SaveRequest{\n\n(Showing lines 320-379 of 717. Use offset=380 to continue.)\n</content>",
+            "title": "source/head/core/labruntime.go",
+            "metadata": {
+              "preview": "\t\t\t\tName:      labName,\n\t\t\t\tNamespace: namespace,\n\t\t\t\tNodeName:  nodeName,\n\t\t\t\tCommand:   execCmd.GetCmd(),\n\t\t\t})\n\t\t\tif err != nil {\n\t\t\t\tlog.Warnf(\"exec on %s failed: %v\", containers[idx].Names[0], err)\n\t\t\t\texecErrors = append(execErrors, fmt.Errorf(\n\t\t\t\t\t\"exec on %s failed: %w\", containers[idx].Names[0], err))\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tresultCollection.Add(containers[idx].Names[0], result)\n\t\t\tif result.GetReturnCode() != 0 {\n\t\t\t\texecErrors = append(execErrors, fmt.Errorf(\n\t\t\t\t\t\"exec on %s returned exit code %d\",\n\t\t\t\t\tcontainers[idx].Names[0],\n\t\t\t\t\tresult.GetReturnCode(),\n\t\t\t\t))\n\t\t\t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/labruntime.go",
+                "text": "\t\t\t\tName:      labName,\n\t\t\t\tNamespace: namespace,\n\t\t\t\tNodeName:  nodeName,\n\t\t\t\tCommand:   execCmd.GetCmd(),\n\t\t\t})\n\t\t\tif err != nil {\n\t\t\t\tlog.Warnf(\"exec on %s failed: %v\", containers[idx].Names[0], err)\n\t\t\t\texecErrors = append(execErrors, fmt.Errorf(\n\t\t\t\t\t\"exec on %s failed: %w\", containers[idx].Names[0], err))\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tresultCollection.Add(containers[idx].Names[0], result)\n\t\t\tif result.GetReturnCode() != 0 {\n\t\t\t\texecErrors = append(execErrors, fmt.Errorf(\n\t\t\t\t\t\"exec on %s returned exit code %d\",\n\t\t\t\t\tcontainers[idx].Names[0],\n\t\t\t\t\tresult.GetReturnCode(),\n\t\t\t\t))\n\t\t\t}\n\t\t}\n\t}\n\n\treturn resultCollection, errors.Join(execErrors...)\n}\n\nfunc (c *CLab) startNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n\treturn c.LabRuntime.Start(ctx, clablabruntime.NodeRequest{\n\t\tName:    c.Config.Name,\n\t\tNodes:   nodeNames,\n\t\tTimeout: c.timeout,\n\t})\n}\n\nfunc (c *CLab) stopNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n\treturn c.LabRuntime.Stop(ctx, clablabruntime.NodeRequest{\n\t\tName:    c.Config.Name,\n\t\tNodes:   nodeNames,\n\t\tTimeout: c.timeout,\n\t})\n}\n\nfunc (c *CLab) restartNodesWithLabRuntime(ctx context.Context, nodeNames []string) error {\n\treturn c.LabRuntime.Restart(ctx, clablabruntime.NodeRequest{\n\t\tName:    c.Config.Name,\n\t\tNodes:   nodeNames,\n\t\tTimeout: c.timeout,\n\t})\n}\n\nfunc (c *CLab) saveWithLabRuntime(ctx context.Context, opts *SaveOptions) error {\n\tif opts.copyDst != \"\" {\n\t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\topts.copyDst = resolvedDst\n\t}\n\n\tresult, err := c.LabRuntime.Save(ctx, clablabruntime.SaveRequest{",
+                "lineStart": 320,
+                "lineEnd": 379,
+                "totalLines": 717,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425832885,
+              "end": 1792425832893
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e7b1bf001itDeQ7PVyuu47Y",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7a49b001q5xq8nxFo4GYoD",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 78376,
+            "input": 268,
+            "output": 27,
+            "reasoning": 1,
+            "cache": {
+              "read": 78080,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e7b1c80014ayARTQNxJ64ib",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425832904,
+          "completed": 1792425835816
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 79246,
+          "input": 740,
+          "output": 29,
+          "reasoning": 141,
+          "cache": {
+            "read": 78336,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e7b9050014Aae8TFEcYFi5r",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7b1c80014ayARTQNxJ64ib"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e7b908001XarOYAzWC8JVV4",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7b1c80014ayARTQNxJ64ib",
+          "text": "The LabRuntime path delegates to clabernetes (an external implementation) — it doesn't call node.Stop/Start. So per-node lifecycle ops are sequential within a process. Concurrency on `d.parkingNode` isn't a practical issue; skip or note.\n\nNow let me verify the full head test file around the new test and the base version to check nothing else changed (the diff shows only the new test added). Also check imports: `net` used for `net.FlagUp`. `netlink`, `netns`, `clabutils`, `ns` — all used.\n\nLet me view the head test file lines 1-30 and 370-500 to verify.",
+          "time": {
+            "start": 1792425834760,
+            "end": 1792425835797
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e7bd17001i2Mgiv59Vsqq2h",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7b1c80014ayARTQNxJ64ib",
+          "callID": "call_c015fa7977504b3da54a3bc6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node_test.go",
+              "limit": 140,
+              "offset": 360
+            },
+            "output": "<path>/source/head/nodes/default_node_test.go</path>\n<type>file</type>\n<content>\n360: func TestDefaultNodeRestoreEndpointsMissingParkingNetNSError(t *testing.T) {\n361: \tlongName := fmt.Sprintf(\n362: \t\t\"clab-%s-%d\",\n363: \t\tstrings.ReplaceAll(strings.ToLower(t.Name()), \"/\", \"-\"),\n364: \t\tos.Getpid(),\n365: \t)\n366: \n367: \td := &DefaultNode{\n368: \t\tCfg: &clabtypes.NodeConfig{\n369: \t\t\tShortName: \"node1\",\n370: \t\t\tLongName:  longName,\n371: \t\t},\n372: \t}\n373: \n374: \t// A node stopped outside of containerlab (or with no dataplane links) has no\n375: \t// parking netns; restoring should be a no-op rather than an error.\n376: \tif err := d.RestoreEndpoints(context.Background()); err != nil {\n377: \t\tt.Fatalf(\"expected no error when parking netns is missing, got %v\", err)\n378: \t}\n379: }\n380: \n381: func TestDefaultNodeRestoreEndpointsOwnership(t *testing.T) {\n382: \tif os.Geteuid() != 0 {\n383: \t\tt.Skip(\"requires root to create network namespaces\")\n384: \t}\n385: \n386: \tfor index, tt := range []struct {\n387: \t\tname         string\n388: \t\tfreshNode    bool\n389: \t\tretryRestore bool\n390: \t\trepark       bool\n391: \t}{\n392: \t\t{name: \"same node\"},\n393: \t\t{name: \"fresh node\", freshNode: true},\n394: \t\t{name: \"retry restore\", retryRestore: true},\n395: \t\t{name: \"repark after failed restore\", retryRestore: true, repark: true},\n396: \t} {\n397: \t\tt.Run(tt.name, func(t *testing.T) {\n398: \t\t\tctx := context.Background()\n399: \t\t\tlongName := fmt.Sprintf(\"clab-parking-test-%d-%d\", os.Getpid(), index)\n400: \t\t\tnsName := longName + \"-live\"\n401: \t\t\tnsPath, err := clabutils.CreateNamedNetNS(nsName)\n402: \t\t\tif err != nil {\n403: \t\t\t\tt.Fatalf(\"create live namespace: %v\", err)\n404: \t\t\t}\n405: \t\t\tt.Cleanup(func() {\n406: \t\t\t\t_ = netns.DeleteNamed(clabutils.ParkingNetnsName(longName))\n407: \t\t\t\t_ = os.Remove(filepath.Join(\"/run/netns\", longName))\n408: \t\t\t\t_ = netns.DeleteNamed(nsName)\n409: \t\t\t})\n410: \n411: \t\t\trestoreErr := errors.New(\"live namespace temporarily unavailable\")\n412: \t\t\tfailRestore := false\n413: \t\t\trt := mockruntime.NewMockContainerRuntime(gomock.NewController(t))\n414: \t\t\trt.EXPECT().GetContainerStatus(gomock.Any(), longName).\n415: \t\t\t\tReturn(clabruntime.Running).AnyTimes()\n416: \t\t\trt.EXPECT().GetNSPath(gomock.Any(), longName).\n417: \t\t\t\tDoAndReturn(func(context.Context, string) (string, error) {\n418: \t\t\t\t\tif failRestore {\n419: \t\t\t\t\t\treturn \"\", restoreErr\n420: \t\t\t\t\t}\n421: \t\t\t\t\treturn nsPath, nil\n422: \t\t\t\t}).AnyTimes()\n423: \t\t\tnewNode := func() (*DefaultNode, clablinks.Endpoint) {\n424: \t\t\t\td := &DefaultNode{\n425: \t\t\t\t\tCfg:     &clabtypes.NodeConfig{ShortName: \"node1\", LongName: longName},\n426: \t\t\t\t\tRuntime: rt,\n427: \t\t\t\t}\n428: \t\t\t\td.OverwriteNode = d\n429: \t\t\t\tep := clablinks.NewEndpointVeth(clablinks.NewEndpointGeneric(d, \"eth1\", nil))\n430: \t\t\t\tif err := d.AdoptEndpoint(ep); err != nil {\n431: \t\t\t\t\tt.Fatalf(\"adopt topology endpoint: %v\", err)\n432: \t\t\t\t}\n433: \t\t\t\treturn d, ep\n434: \t\t\t}\n435: \t\t\td, ep := newNode()\n436: \t\t\tif err := d.ExecFunction(ctx, func(ns.NetNS) error {\n437: \t\t\t\treturn netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: \"eth1\"}})\n438: \t\t\t}); err != nil {\n439: \t\t\t\tt.Fatalf(\"create interface: %v\", err)\n440: \t\t\t}\n441: \n442: \t\t\tfor cycle := range 2 {\n443: \t\t\t\tif err := d.ParkEndpoints(ctx); err != nil {\n444: \t\t\t\t\tt.Fatalf(\"cycle %d park: %v\", cycle, err)\n445: \t\t\t\t}\n446: \t\t\t\tif tt.freshNode {\n447: \t\t\t\t\t// A separate CLI invocation rebuilds the topology endpoint objects.\n448: \t\t\t\t\td, ep = newNode()\n449: \t\t\t\t}\n450: \t\t\t\tif tt.retryRestore {\n451: \t\t\t\t\tfailRestore = true\n452: \t\t\t\t\tif err := d.RestoreEndpoints(ctx); !errors.Is(err, restoreErr) {\n453: \t\t\t\t\t\tt.Fatalf(\"restore error = %v, want %v\", err, restoreErr)\n454: \t\t\t\t\t}\n455: \t\t\t\t\tfailRestore = false\n456: \t\t\t\t\tif tt.repark {\n457: \t\t\t\t\t\t// A retried stop parks again before the endpoints are restored.\n458: \t\t\t\t\t\tif err := d.ParkEndpoints(ctx); err != nil {\n459: \t\t\t\t\t\t\tt.Fatalf(\"cycle %d repark: %v\", cycle, err)\n460: \t\t\t\t\t\t}\n461: \t\t\t\t\t}\n462: \t\t\t\t}\n463: \t\t\t\tif err := d.RestoreEndpoints(ctx); err != nil {\n464: \t\t\t\t\tt.Fatalf(\"cycle %d restore: %v\", cycle, err)\n465: \t\t\t\t}\n466: \t\t\t\tif ep.GetNode() != d {\n467: \t\t\t\t\tt.Fatalf(\"topology endpoint still belongs to %T after restore\", ep.GetNode())\n468: \t\t\t\t}\n469: \t\t\t\tif got := d.GetEndpoints(); len(got) != 1 || got[0] != ep {\n470: \t\t\t\t\tt.Fatalf(\"restored endpoint replaced the topology endpoint: %v\", got)\n471: \t\t\t\t}\n472: \t\t\t\tif _, err := d.parkingNetNSPath(); err == nil {\n473: \t\t\t\t\tt.Fatal(\"parking namespace still exists after restore\")\n474: \t\t\t\t}\n475: \t\t\t}\n476: \n477: \t\t\tif err := d.ExecFunction(ctx, func(ns.NetNS) error {\n478: \t\t\t\tlink, err := netlink.LinkByName(\"eth1\")\n479: \t\t\t\tif err != nil {\n480: \t\t\t\t\treturn err\n481: \t\t\t\t}\n482: \t\t\t\tif link.Attrs().Flags&net.FlagUp == 0 {\n483: \t\t\t\t\treturn errors.New(\"restored interface is down\")\n484: \t\t\t\t}\n485: \t\t\t\treturn nil\n486: \t\t\t}); err != nil {\n487: \t\t\t\tt.Fatalf(\"restored interface: %v\", err)\n488: \t\t\t}\n489: \t\t\t// Link reconciliation must use the live namespace, not the deleted parking one.\n490: \t\t\tif err := ep.Remove(ctx); err != nil {\n491: \t\t\t\tt.Fatalf(\"remove restored topology endpoint: %v\", err)\n492: \t\t\t}\n493: \t\t})\n494: \t}\n495: }\n496: \n497: func TestGenerateConfigs(t *testing.T) {\n498: \tdefCfg := \"default config\"\n499: \toldCfg := \"old config\"\n\n(Showing lines 360-499 of 966. Use offset=500 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node_test.go",
+            "metadata": {
+              "preview": "func TestDefaultNodeRestoreEndpointsMissingParkingNetNSError(t *testing.T) {\n\tlongName := fmt.Sprintf(\n\t\t\"clab-%s-%d\",\n\t\tstrings.ReplaceAll(strings.ToLower(t.Name()), \"/\", \"-\"),\n\t\tos.Getpid(),\n\t)\n\n\td := &DefaultNode{\n\t\tCfg: &clabtypes.NodeConfig{\n\t\t\tShortName: \"node1\",\n\t\t\tLongName:  longName,\n\t\t},\n\t}\n\n\t// A node stopped outside of containerlab (or with no dataplane links) has no\n\t// parking netns; restoring should be a no-op rather than an error.\n\tif err := d.RestoreEndpoints(context.Background()); err != nil {\n\t\tt.Fatalf(\"expected no error when parking netns is missing, got %v\", err)\n\t}\n}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node_test.go",
+                "text": "func TestDefaultNodeRestoreEndpointsMissingParkingNetNSError(t *testing.T) {\n\tlongName := fmt.Sprintf(\n\t\t\"clab-%s-%d\",\n\t\tstrings.ReplaceAll(strings.ToLower(t.Name()), \"/\", \"-\"),\n\t\tos.Getpid(),\n\t)\n\n\td := &DefaultNode{\n\t\tCfg: &clabtypes.NodeConfig{\n\t\t\tShortName: \"node1\",\n\t\t\tLongName:  longName,\n\t\t},\n\t}\n\n\t// A node stopped outside of containerlab (or with no dataplane links) has no\n\t// parking netns; restoring should be a no-op rather than an error.\n\tif err := d.RestoreEndpoints(context.Background()); err != nil {\n\t\tt.Fatalf(\"expected no error when parking netns is missing, got %v\", err)\n\t}\n}\n\nfunc TestDefaultNodeRestoreEndpointsOwnership(t *testing.T) {\n\tif os.Geteuid() != 0 {\n\t\tt.Skip(\"requires root to create network namespaces\")\n\t}\n\n\tfor index, tt := range []struct {\n\t\tname         string\n\t\tfreshNode    bool\n\t\tretryRestore bool\n\t\trepark       bool\n\t}{\n\t\t{name: \"same node\"},\n\t\t{name: \"fresh node\", freshNode: true},\n\t\t{name: \"retry restore\", retryRestore: true},\n\t\t{name: \"repark after failed restore\", retryRestore: true, repark: true},\n\t} {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\tctx := context.Background()\n\t\t\tlongName := fmt.Sprintf(\"clab-parking-test-%d-%d\", os.Getpid(), index)\n\t\t\tnsName := longName + \"-live\"\n\t\t\tnsPath, err := clabutils.CreateNamedNetNS(nsName)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatalf(\"create live namespace: %v\", err)\n\t\t\t}\n\t\t\tt.Cleanup(func() {\n\t\t\t\t_ = netns.DeleteNamed(clabutils.ParkingNetnsName(longName))\n\t\t\t\t_ = os.Remove(filepath.Join(\"/run/netns\", longName))\n\t\t\t\t_ = netns.DeleteNamed(nsName)\n\t\t\t})\n\n\t\t\trestoreErr := errors.New(\"live namespace temporarily unavailable\")\n\t\t\tfailRestore := false\n\t\t\trt := mockruntime.NewMockContainerRuntime(gomock.NewController(t))\n\t\t\trt.EXPECT().GetContainerStatus(gomock.Any(), longName).\n\t\t\t\tReturn(clabruntime.Running).AnyTimes()\n\t\t\trt.EXPECT().GetNSPath(gomock.Any(), longName).\n\t\t\t\tDoAndReturn(func(context.Context, string) (string, error) {\n\t\t\t\t\tif failRestore {\n\t\t\t\t\t\treturn \"\", restoreErr\n\t\t\t\t\t}\n\t\t\t\t\treturn nsPath, nil\n\t\t\t\t}).AnyTimes()\n\t\t\tnewNode := func() (*DefaultNode, clablinks.Endpoint) {\n\t\t\t\td := &DefaultNode{\n\t\t\t\t\tCfg:     &clabtypes.NodeConfig{ShortName: \"node1\", LongName: longName},\n\t\t\t\t\tRuntime: rt,\n\t\t\t\t}\n\t\t\t\td.OverwriteNode = d\n\t\t\t\tep := clablinks.NewEndpointVeth(clablinks.NewEndpointGeneric(d, \"eth1\", nil))\n\t\t\t\tif err := d.AdoptEndpoint(ep); err != nil {\n\t\t\t\t\tt.Fatalf(\"adopt topology endpoint: %v\", err)\n\t\t\t\t}\n\t\t\t\treturn d, ep\n\t\t\t}\n\t\t\td, ep := newNode()\n\t\t\tif err := d.ExecFunction(ctx, func(ns.NetNS) error {\n\t\t\t\treturn netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: \"eth1\"}})\n\t\t\t}); err != nil {\n\t\t\t\tt.Fatalf(\"create interface: %v\", err)\n\t\t\t}\n\n\t\t\tfor cycle := range 2 {\n\t\t\t\tif err := d.ParkEndpoints(ctx); err != nil {\n\t\t\t\t\tt.Fatalf(\"cycle %d park: %v\", cycle, err)\n\t\t\t\t}\n\t\t\t\tif tt.freshNode {\n\t\t\t\t\t// A separate CLI invocation rebuilds the topology endpoint objects.\n\t\t\t\t\td, ep = newNode()\n\t\t\t\t}\n\t\t\t\tif tt.retryRestore {\n\t\t\t\t\tfailRestore = true\n\t\t\t\t\tif err := d.RestoreEndpoints(ctx); !errors.Is(err, restoreErr) {\n\t\t\t\t\t\tt.Fatalf(\"restore error = %v, want %v\", err, restoreErr)\n\t\t\t\t\t}\n\t\t\t\t\tfailRestore = false\n\t\t\t\t\tif tt.repark {\n\t\t\t\t\t\t// A retried stop parks again before the endpoints are restored.\n\t\t\t\t\t\tif err := d.ParkEndpoints(ctx); err != nil {\n\t\t\t\t\t\t\tt.Fatalf(\"cycle %d repark: %v\", cycle, err)\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tif err := d.RestoreEndpoints(ctx); err != nil {\n\t\t\t\t\tt.Fatalf(\"cycle %d restore: %v\", cycle, err)\n\t\t\t\t}\n\t\t\t\tif ep.GetNode() != d {\n\t\t\t\t\tt.Fatalf(\"topology endpoint still belongs to %T after restore\", ep.GetNode())\n\t\t\t\t}\n\t\t\t\tif got := d.GetEndpoints(); len(got) != 1 || got[0] != ep {\n\t\t\t\t\tt.Fatalf(\"restored endpoint replaced the topology endpoint: %v\", got)\n\t\t\t\t}\n\t\t\t\tif _, err := d.parkingNetNSPath(); err == nil {\n\t\t\t\t\tt.Fatal(\"parking namespace still exists after restore\")\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tif err := d.ExecFunction(ctx, func(ns.NetNS) error {\n\t\t\t\tlink, err := netlink.LinkByName(\"eth1\")\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn err\n\t\t\t\t}\n\t\t\t\tif link.Attrs().Flags&net.FlagUp == 0 {\n\t\t\t\t\treturn errors.New(\"restored interface is down\")\n\t\t\t\t}\n\t\t\t\treturn nil\n\t\t\t}); err != nil {\n\t\t\t\tt.Fatalf(\"restored interface: %v\", err)\n\t\t\t}\n\t\t\t// Link reconciliation must use the live namespace, not the deleted parking one.\n\t\t\tif err := ep.Remove(ctx); err != nil {\n\t\t\t\tt.Fatalf(\"remove restored topology endpoint: %v\", err)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestGenerateConfigs(t *testing.T) {\n\tdefCfg := \"default config\"\n\toldCfg := \"old config\"",
+                "lineStart": 360,
+                "lineEnd": 499,
+                "totalLines": 966,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425835804,
+              "end": 1792425835811
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e7bd25001lWvC6u1bPlwXds",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7b1c80014ayARTQNxJ64ib",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 79246,
+            "input": 740,
+            "output": 29,
+            "reasoning": 141,
+            "cache": {
+              "read": 78336,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e7bd2d001hF6vSySSQ0NI6z",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425835821,
+          "completed": 1792425855448
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 82856,
+          "input": 5990,
+          "output": 35,
+          "reasoning": 1823,
+          "cache": {
+            "read": 75008,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e7c732001FRRWjWoXDdcMIn",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7bd2d001hF6vSySSQ0NI6z"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e7c734001y1qfm4KLtCiqNq",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7bd2d001hF6vSySSQ0NI6z",
+          "text": "Now, a few careful checks on the test and the code:\n\n**Test: \"repark after failed restore\" — but wait, in the repark case, when `ParkEndpoints` is called the second time with `d.parkingNode` set... in the test, after the failed restore, does `d.parkingNode` remain set? In `RestoreEndpoints`, on `RestoreTo` error, return err — `d.parkingNode` untouched (P set from park). ✓. Then repark reuses. ✓.\n\nBut hold on — in the repark path, `CaptureFrom` is a no-op (ifaces in parking ns, not live). But what about `ensureOwnershipAltName`? Not called since no endpoints to move. ✓.\n\n**Test: \"retry restore\" without repark:** park → failed restore → retry restore (reuse P) → succeeds. In base, retry restore would create a fresh P4 → runtime endpoint replacement → test would catch the bug (`ep.GetNode() != d`? Actually in base with fresh parking node: DiscoverOwnedEndpoints: known: d.Endpoints (empty — ep was released at park... wait, but during the FAILED restore, DiscoverOwnedEndpoints(P2, d) ran: known misses (d.Endpoints empty) → creates RuntimeEndpoint(p2) for eth1 → P2.Endpoints=[runtimeEp]. Then moveEndpoint(runtimeEp, d) fails (GetNSPath) → rollback → runtimeEp stays with P2. Second RestoreEndpoints (base): fresh P3 → DiscoverOwnedEndpoints: listOwnedInterfaceNames in P's ns finds eth1; known: d.Endpoints (empty) + P3.Endpoints (empty) → miss → new RuntimeEndpoint(p3) adopted. RestoreTo: moveEndpoint(runtimeEp3, d) → succeeds → d.Endpoints = [runtimeEp3]. The ORIGINAL topology ep still belongs to P2 (stale). So test's `ep.GetNode() != d` → FAIL in base. ✓ confirms the fix.\n\n**Now the fresh-node test case in head:** After park, `d, ep = newNode()`. Then restore: `d.parkingNode` nil (new node) → fresh P3 → DiscoverOwnedEndpoints: known: d.Endpoints (the new ep, owned by d) + P3.Endpoints (empty) → known[\"eth1\"] = newEp. Second loop: iface eth1 → known → ep.GetNode() == d ≠ p → `ep.GetNode().ReleaseEndpoint(ep)` → d releases newEp; `ep.SetNode(p)`; `p.AdoptEndpoint(ep)`. Then RestoreTo: moveEndpoint(ep, d) → moves iface back, adopts to d. ✓. So `ep.GetNode() == d` ✓. So the fresh-node case passes in both base and head (this exercises the reconcile-by-name path). Good — the test covers both mechanisms.\n\nHmm wait, one thing about the fresh-node case in HEAD: after restore succeeds, `d.parkingNode = nil`. ✓.\n\n**Now potential real issue #1: `ParkEndpoints` reuse + `CaptureFrom` adopts new runtime endpoints into the reused P.** Consider: failed restore leaves endpoints parked. Now the topology is modified and `apply` runs: `parkRecreatedNodes` → ParkEndpoints reuse. Fine.\n\n**Potential real issue #2: `d.parkingNode` retention across `DefaultNode.Delete`.** After `Delete(ctx)` (recreate flow), `parkingNode` remains set. If the recreate flow parks again on the same object — CaptureFrom on reused P. But after Delete, the veth interfaces may have been removed (`Delete` removes endpoints in `d.Endpoints` — parked ones aren't in d.Endpoints, so they're NOT removed — but `CleanupFilteredLinks` removes links... hmm, actually for recreate, the parked endpoints are what make recreate preserve links — `parkRecreatedNodes` parks, recreate deletes the container, then restoreRecreatedNodes restores. The same node object must be used. Since `parkRecreatedNodes` uses `c.Nodes[nodeName]` and `restoreRecreatedNodes` too, and recreate replaces the container but reuses the node object (I believe `applyConfig` recreates the node in place — let me check whether the node object is replaced on recreate). If the node object is REPLACED between park and restore, then the new object's `parkingNode` is nil → fresh parking node → DiscoverOwnedEndpoints re-adopts new topology endpoints by iface name → works anyway. So OK.\n\n**Potential real issue #3: `ParkEndpoints` reuse path and stale `nspath` after ns deletion by sros cleanup.** For sros: `sros.DeleteNetnsSymlink` → `n.cleanupParkingNetNS()` deletes the ns WITHOUT resetting `n.DefaultNode.parkingNode`. Trigger: destroy of a parked sros node... but during destroy, node objects are discarded after. Within one process, after destroy, nothing else touches the node. Hmm, but `redeploy`? Redeploy = destroy + deploy in one process? Let me check cmd/redeploy.go — if redeploy destroys then deploys with the SAME node objects, a stale `d.parkingNode` could be reused with a fresh empty ns, and CaptureFrom would find ifaces in the live ns and move them to the reused P — the reused P's endpoint list might still hold stale endpoint objects from the previous park whose SetNode is P but which were... Actually if the ns was deleted, the parked ifaces are gone; the stale endpoints in P's list would remain in P's list (nothing reconciles P's list until RestoreTo). Then restore (new node object after redeploy? deploy creates new node objects) — new node → fresh P → reconcile by name. The stale P is garbage. So mostly harmless.\n\nBut there IS a scenario where the stale `d.parkingNode` on the SAME object causes a real problem: `ParkEndpoints` reuse where the reused P holds endpoints that were PARKED, but the interfaces have since been restored to the live ns by ANOTHER actor (e.g., reconcile/apply using `applyParkingLinkNode` fresh parking node, or an external `ip netns exec` moving the ifaces back). Then repark: CaptureFrom finds the iface in the live ns AND P already tracks an endpoint with the same name → `moveEndpoint` errors \"node %q already tracks interface %q\" → park fails. In base, a fresh P had an empty list → no conflict; the base would move the endpoint object (released from d, adopted to fresh P) — the stale object remained in the old P (garbage). So the base was more robust against external mutation; head introduces a failure mode when the parking ns content is mutated out-of-band while `d.parkingNode` is retained.\n\nIs that reachable in practice? The parking ns exists only while endpoints are parked; who else moves interfaces out of the parking ns? `RestoreTo` via a fresh parking node — e.g., `restoreRecreatedNodes` when the node object was replaced between park and restore (same process). In that case: old object's `parkingNode` is garbage (the old object is discarded). Hmm.\n\nWhat about `topology_reconcile.go`'s apply flow calling `restartApplyNodes` → `node.Stop` → park (P set) → `node.Start` → restore. Same object. Fine.\n\nOK, I think the stale-tracking conflict is fairly theoretical. Let me weigh: is there any flow where the SAME DefaultNode object's endpoints are restored via a fresh parking node while `d.parkingNode` is retained? That would leave P.Endpoints containing endpoint objects whose GetNode() == P while the ifaces are in d's live ns → then `d.Endpoints` (after DiscoverOwnedEndpoints re-adoption... wait, DiscoverOwnedEndpoints with the FRESH parking node P2 and original d: for the fresh P2, endpoints adopted to P2 are runtime ones; the original ep objects are re-associated via `known` (built from d.Endpoints + P2.Endpoints). The OLD P's stale endpoints are NOT in `known` — the stale ep objects in old P's list are simply never reconciled. They retain `SetNode(oldP)`. But `d.Endpoints` doesn't contain them (they were released at park). So after restore, d.Endpoints has runtime/... hmm.\n\nConcrete reachable flow: `clab redeploy` — does it destroy and deploy using new node objects? Let me check cmd/redeploy.go quickly. Actually, within one process, node objects are built once per `CLab` instance. Redeploy creates a new CLab? Let me check.",
+          "time": {
+            "start": 1792425838388,
+            "end": 1792425855411
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e809b6001oWiIRWRee9e6Au",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7bd2d001hF6vSySSQ0NI6z",
+          "callID": "call_2c24031d12364bd3994b1d4b",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/cmd",
+              "pattern": "redeploy|RestartNodes|StopNodes|StartNodes"
+            },
+            "output": "Found 29 matches\n/source/head/cmd/redeploy.go:\n  Line 8: func redeployCmd(o *Options) (*cobra.Command, error) { //nolint: funlen\n\n  Line 10: \t\tUse:   \"redeploy\",\n\n  Line 11: \t\tShort: \"destroy and redeploy a lab\",\n\n  Line 13: \t\t\t\"reference: https://containerlab.dev/cmd/redeploy/\",\n\n  Line 24: \t\t\treturn redeployFn(cobraCmd, o)\n\n  Line 149: func redeployFn(cobraCmd *cobra.Command, o *Options) error {\n\n\n/source/head/cmd/stop.go:\n  Line 49: \treturn c.StopNodes(cmd.Context(), o.NodeLifecycle.Nodes)\n\n\n/source/head/cmd/deploy_emit_test.go:\n  Line 34: \t// redeploy always destroys and recreates the lab, so it has no manifest-only mode.\n\n  Line 35: \tredeploy := findCommand(cmd, \"redeploy\")\n\n  Line 36: \tif redeploy == nil {\n\n  Line 37: \t\tt.Fatal(\"redeploy command is not registered\")\n\n  Line 39: \tif redeploy.Flags().Lookup(\"emit-crs\") != nil {\n\n  Line 40: \t\tt.Fatal(\"redeploy command must not expose the emit-crs flag\")\n\n\n/source/head/cmd/deploy_test.go:\n  Line 58: \tfor _, commandName := range []string{\"deploy\", \"redeploy\"} {\n\n  Line 98: \tredeploy := findCommand(cmd, \"redeploy\")\n\n  Line 99: \tif redeploy == nil {\n\n  Line 100: \t\tt.Fatal(\"redeploy command is not registered\")\n\n  Line 102: \tif redeploy.Flags().Lookup(\"image-pull-secret\") == nil {\n\n  Line 103: \t\tt.Fatal(\"redeploy command missing image-pull-secret flag\")\n\n\n/source/head/cmd/redeploy_test.go:\n  Line 24: \t\t\terr := redeployFn(&cobra.Command{}, o)\n\n  Line 26: \t\t\t\tt.Fatalf(\"redeploy validation error = %v\", err)\n\n\n/source/head/cmd/root.go:\n  Line 39: \t\tredeployCmd,\n\n  Line 231: \t\"redeploy\": {\n\n  Line 307: \t\tcobraCmd.Name() != \"redeploy\" &&\n\n\n/source/head/cmd/deploy.go:\n  Line 338: // validateDeployFlags runs before either deploy or redeploy can change lab resources.\n\n  Line 343: \t\t\t\t\"reconfigure always destroys and redeploys the full lab\",\n\n  Line 413: \t\t\t\t\"reconfigure always destroys and redeploys the full lab\",\n\n\n/source/head/cmd/start.go:\n  Line 49: \treturn c.StartNodes(cmd.Context(), o.NodeLifecycle.Nodes)\n\n\n/source/head/cmd/restart.go:\n  Line 49: \treturn c.RestartNodes(cmd.Context(), o.NodeLifecycle.Nodes)\n",
+            "title": "redeploy|RestartNodes|StopNodes|StartNodes",
+            "metadata": {
+              "matches": 29,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792425855420,
+              "end": 1792425855441
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e809d4001xp6WRCWmAjFZ28",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e7bd2d001hF6vSySSQ0NI6z",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 82856,
+            "input": 5990,
+            "output": 35,
+            "reasoning": 1823,
+            "cache": {
+              "read": 75008,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e809df0016rsOhGbxtqdz8L",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425855455,
+          "completed": 1792425859596
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 83588,
+          "input": 14343,
+          "output": 37,
+          "reasoning": 88,
+          "cache": {
+            "read": 69120,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e812ba001A8T4Do2kq2dVBx",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e809df0016rsOhGbxtqdz8L"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_154e812bc001bqsH0BcrkKx2EM",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e809df0016rsOhGbxtqdz8L",
+          "text": "Redeploy does destroy then deploy — separate CLab instances presumably, so node objects are fresh. Fine.\n\nNow let me also check `parkRecreatedNodes` / `restoreRecreatedNodes` callers — this is the redeploy-within-apply flow (\"apply plan parkedNodeSet\"). In that flow, does the node object persist across park and restore? Let's look at topology_reconcile around parkedNodeSet usage.",
+          "time": {
+            "start": 1792425857724,
+            "end": 1792425859567
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e819f1001oyVQDsuwlJF4bm",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e809df0016rsOhGbxtqdz8L",
+          "callID": "call_c0b88376dedd45e0a0e0aa39",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "parkRecreatedNodes|restoreRecreatedNodes|parkedNodeSet"
+            },
+            "output": "Found 17 matches\n/source/head/core/apply_test.go:\n  Line 372: \t\t\t\tplan.parkedNodeSet = tt.parkedNode\n\n\n/source/head/core/topology_reconcile.go:\n  Line 51: \tparkedNodeSet      map[string]struct{}\n\n  Line 75: \t\tparkedNodeSet:      map[string]struct{}{},\n\n  Line 322: \t\tif _, parked := plan.parkedNodeSet[nodeName]; parked {\n\n  Line 330: \t\t\tplan.parkedNodeSet[nodeName] = struct{}{}\n\n  Line 372: \t\tif _, parked := plan.parkedNodeSet[nodeName]; parked {\n\n  Line 499: \t\t\tif _, parked := plan.parkedNodeSet[nodeName]; !parked {\n\n  Line 504: \t\t\tif _, parked := plan.parkedNodeSet[nodeName]; !parked {\n\n  Line 863: \t\t// delete the container before parkRecreatedNodes can capture its\n\n  Line 892: \t\tif _, parked := p.parkedNodeSet[key.node]; !parked {\n\n\n/source/head/core/apply.go:\n  Line 207: \tif err := c.parkRecreatedNodes(ctx, plan); err != nil {\n\n  Line 219: \tif err := c.restoreRecreatedNodes(ctx, plan); err != nil {\n\n\n/source/head/core/lifecycle.go:\n  Line 42: func (c *CLab) parkRecreatedNodes(ctx context.Context, plan *applyPlan) error {\n\n  Line 43: \tfor _, nodeName := range sortedStringSet(plan.parkedNodeSet) {\n\n  Line 57: func (c *CLab) restoreRecreatedNodes(ctx context.Context, plan *applyPlan) error {\n\n  Line 58: \tfor _, nodeName := range sortedStringSet(plan.parkedNodeSet) {\n\n\n/source/head/core/network_mode_test.go:\n  Line 209: \t\t\t\tif _, parked := plan.parkedNodeSet[name]; parked != wantParked {\n",
+            "title": "parkRecreatedNodes|restoreRecreatedNodes|parkedNodeSet",
+            "metadata": {
+              "matches": 17,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792425859573,
+              "end": 1792425859590
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e81a08001vNu6eGQcKYqKcc",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e809df0016rsOhGbxtqdz8L",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 83588,
+            "input": 14343,
+            "output": 37,
+            "reasoning": 88,
+            "cache": {
+              "read": 69120,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e81a12001Xke736Vdqzeg5f",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425859602,
+          "completed": 1792425864668
+        },
+        "parentID": "msg_154e4b92b0018QxuFs0ljKqG32",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 84064,
+          "input": 84007,
+          "output": 56,
+          "reasoning": 1,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_154e82ce4001P4C43FD4ML4tpp",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e81a12001Xke736Vdqzeg5f"
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e82d61001Ej90rhsiOgXWxQ",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e81a12001Xke736Vdqzeg5f",
+          "callID": "call_47ffe2ff616c4e0c82cda86b",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/apply.go",
+              "limit": 60,
+              "offset": 185
+            },
+            "output": "<path>/source/head/core/apply.go</path>\n<type>file</type>\n<content>\n185: \t\t\t\treturn nil, err\n186: \t\t\t}\n187: \t\t} else {\n188: \t\t\tc.writeState()\n189: \t\t}\n190: \t\treturn applyResultFromPlan(plan), nil\n191: \t}\n192: \n193: \tdeployNodeNames := plan.deployNodeNames()\n194: \tif err := c.prepareApply(\n195: \t\tctx,\n196: \t\tdeployNodeNames,\n197: \t\toptions.skipLabDirFileACLs,\n198: \t\tcurrentNodes,\n199: \t); err != nil {\n200: \t\treturn nil, err\n201: \t}\n202: \n203: \tif err := c.deleteApplyEndpoints(ctx, plan.staleEndpoints); err != nil {\n204: \t\treturn nil, err\n205: \t}\n206: \n207: \tif err := c.parkRecreatedNodes(ctx, plan); err != nil {\n208: \t\treturn nil, err\n209: \t}\n210: \n211: \tif err := c.deleteApplyNodes(ctx, plan); err != nil {\n212: \t\treturn nil, err\n213: \t}\n214: \n215: \tif err := c.deployApplyNodes(ctx, plan, options.maxWorkers); err != nil {\n216: \t\treturn nil, err\n217: \t}\n218: \n219: \tif err := c.restoreRecreatedNodes(ctx, plan); err != nil {\n220: \t\treturn nil, err\n221: \t}\n222: \n223: \tif err := c.removeApplyLinkEndpoints(ctx, plan.addedLinks); err != nil {\n224: \t\treturn nil, err\n225: \t}\n226: \n227: \tif err := c.deployLinks(ctx, plan.addedLinks, deployNodeNames); err != nil {\n228: \t\treturn nil, err\n229: \t}\n230: \n231: \tif err := c.postDeployApplyNodes(ctx, deployNodeNames, options.skipPostDeploy); err != nil {\n232: \t\treturn nil, err\n233: \t}\n234: \n235: \tif err := c.restartApplyNodes(ctx, plan.linkRestartNodeSet); err != nil {\n236: \t\treturn nil, err\n237: \t}\n238: \n239: \tif err := c.updateRuntimeInfoForExistingNodes(ctx); err != nil {\n240: \t\treturn nil, err\n241: \t}\n242: \tif err := c.syncTailscaleProxy(ctx); err != nil {\n243: \t\treturn nil, err\n244: \t}\n\n(Showing lines 185-244 of 351. Use offset=245 to continue.)\n</content>",
+            "title": "source/head/core/apply.go",
+            "metadata": {
+              "preview": "\t\t\t\treturn nil, err\n\t\t\t}\n\t\t} else {\n\t\t\tc.writeState()\n\t\t}\n\t\treturn applyResultFromPlan(plan), nil\n\t}\n\n\tdeployNodeNames := plan.deployNodeNames()\n\tif err := c.prepareApply(\n\t\tctx,\n\t\tdeployNodeNames,\n\t\toptions.skipLabDirFileACLs,\n\t\tcurrentNodes,\n\t); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.deleteApplyEndpoints(ctx, plan.staleEndpoints); err != nil {\n\t\treturn nil, err",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/apply.go",
+                "text": "\t\t\t\treturn nil, err\n\t\t\t}\n\t\t} else {\n\t\t\tc.writeState()\n\t\t}\n\t\treturn applyResultFromPlan(plan), nil\n\t}\n\n\tdeployNodeNames := plan.deployNodeNames()\n\tif err := c.prepareApply(\n\t\tctx,\n\t\tdeployNodeNames,\n\t\toptions.skipLabDirFileACLs,\n\t\tcurrentNodes,\n\t); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.deleteApplyEndpoints(ctx, plan.staleEndpoints); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.parkRecreatedNodes(ctx, plan); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.deleteApplyNodes(ctx, plan); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.deployApplyNodes(ctx, plan, options.maxWorkers); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.restoreRecreatedNodes(ctx, plan); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.removeApplyLinkEndpoints(ctx, plan.addedLinks); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.deployLinks(ctx, plan.addedLinks, deployNodeNames); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.postDeployApplyNodes(ctx, deployNodeNames, options.skipPostDeploy); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.restartApplyNodes(ctx, plan.linkRestartNodeSet); err != nil {\n\t\treturn nil, err\n\t}\n\n\tif err := c.updateRuntimeInfoForExistingNodes(ctx); err != nil {\n\t\treturn nil, err\n\t}\n\tif err := c.syncTailscaleProxy(ctx); err != nil {\n\t\treturn nil, err\n\t}",
+                "lineStart": 185,
+                "lineEnd": 244,
+                "totalLines": 351,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425864549,
+              "end": 1792425864556
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_154e82dba001CoMLN5RpJ9OT4X",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e81a12001Xke736Vdqzeg5f",
+          "callID": "call_94753ff421044934b9f13747",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/topology_reconcile.go",
+              "limit": 80,
+              "offset": 300
+            },
+            "output": "<path>/source/head/core/topology_reconcile.go</path>\n<type>file</type>\n<content>\n300: \tif err := c.planNetworkModeRestarts(plan); err != nil {\n301: \t\treturn nil, err\n302: \t}\n303: \n304: \treturn plan, nil\n305: }\n306: \n307: func (p *applyPlan) addDeployApplyLink(linkIdx int, link clablinks.Link) {\n308: \tif _, planned := p.plannedLinkSet[linkIdx]; planned {\n309: \t\treturn\n310: \t}\n311: \n312: \tp.plannedLinkSet[linkIdx] = struct{}{}\n313: \tp.addedLinks = append(p.addedLinks, link)\n314: }\n315: \n316: func (c *CLab) planParkedNodes(ctx context.Context, plan *applyPlan) {\n317: \tif plan == nil {\n318: \t\treturn\n319: \t}\n320: \n321: \tfor nodeName := range plan.recreatedNodeSet {\n322: \t\tif _, parked := plan.parkedNodeSet[nodeName]; parked {\n323: \t\t\tcontinue\n324: \t\t}\n325: \t\tnode, exists := c.Nodes[nodeName]\n326: \t\tif !exists {\n327: \t\t\tcontinue\n328: \t\t}\n329: \t\tif clabruntime.ContainerHasJoinableNetns(node.GetContainerStatus(ctx)) {\n330: \t\t\tplan.parkedNodeSet[nodeName] = struct{}{}\n331: \t\t}\n332: \t}\n333: }\n334: \n335: func (c *CLab) planStoppedNodes(ctx context.Context, plan *applyPlan) {\n336: \tif plan == nil {\n337: \t\treturn\n338: \t}\n339: \n340: \tfor nodeName := range plan.currentNodes {\n341: \t\tif plan.isNonContainerNode(nodeName) {\n342: \t\t\tcontinue\n343: \t\t}\n344: \t\tnode, exists := c.Nodes[nodeName]\n345: \t\tif !exists {\n346: \t\t\tcontinue\n347: \t\t}\n348: \t\tif _, deleted := plan.deletedNodeSet[nodeName]; deleted {\n349: \t\t\tcontinue\n350: \t\t}\n351: \t\tif _, added := plan.addedNodeSet[nodeName]; added {\n352: \t\t\tcontinue\n353: \t\t}\n354: \t\tif _, recreated := plan.recreatedNodeSet[nodeName]; recreated {\n355: \t\t\tcontinue\n356: \t\t}\n357: \n358: \t\tswitch node.GetContainerStatus(ctx) {\n359: \t\tcase clabruntime.Stopped, clabruntime.Created:\n360: \t\t\tplan.startNodeSet[nodeName] = struct{}{}\n361: \t\t}\n362: \t}\n363: }\n364: \n365: func (c *CLab) planRecreatedNodeLinks(plan *applyPlan) {\n366: \tif plan == nil || len(plan.recreatedNodeSet) == 0 {\n367: \t\treturn\n368: \t}\n369: \n370: \trebuildSet := make(map[string]struct{}, len(plan.recreatedNodeSet))\n371: \tfor nodeName := range plan.recreatedNodeSet {\n372: \t\tif _, parked := plan.parkedNodeSet[nodeName]; parked {\n373: \t\t\tcontinue\n374: \t\t}\n375: \t\trebuildSet[nodeName] = struct{}{}\n376: \t}\n377: \n378: \tfor _, linkIdx := range sortedLinkIndexes(c.Links) {\n379: \t\tlink := c.Links[linkIdx]\n\n(Showing lines 300-379 of 1090. Use offset=380 to continue.)\n</content>",
+            "title": "source/head/core/topology_reconcile.go",
+            "metadata": {
+              "preview": "\tif err := c.planNetworkModeRestarts(plan); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn plan, nil\n}\n\nfunc (p *applyPlan) addDeployApplyLink(linkIdx int, link clablinks.Link) {\n\tif _, planned := p.plannedLinkSet[linkIdx]; planned {\n\t\treturn\n\t}\n\n\tp.plannedLinkSet[linkIdx] = struct{}{}\n\tp.addedLinks = append(p.addedLinks, link)\n}\n\nfunc (c *CLab) planParkedNodes(ctx context.Context, plan *applyPlan) {\n\tif plan == nil {\n\t\treturn\n\t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/topology_reconcile.go",
+                "text": "\tif err := c.planNetworkModeRestarts(plan); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn plan, nil\n}\n\nfunc (p *applyPlan) addDeployApplyLink(linkIdx int, link clablinks.Link) {\n\tif _, planned := p.plannedLinkSet[linkIdx]; planned {\n\t\treturn\n\t}\n\n\tp.plannedLinkSet[linkIdx] = struct{}{}\n\tp.addedLinks = append(p.addedLinks, link)\n}\n\nfunc (c *CLab) planParkedNodes(ctx context.Context, plan *applyPlan) {\n\tif plan == nil {\n\t\treturn\n\t}\n\n\tfor nodeName := range plan.recreatedNodeSet {\n\t\tif _, parked := plan.parkedNodeSet[nodeName]; parked {\n\t\t\tcontinue\n\t\t}\n\t\tnode, exists := c.Nodes[nodeName]\n\t\tif !exists {\n\t\t\tcontinue\n\t\t}\n\t\tif clabruntime.ContainerHasJoinableNetns(node.GetContainerStatus(ctx)) {\n\t\t\tplan.parkedNodeSet[nodeName] = struct{}{}\n\t\t}\n\t}\n}\n\nfunc (c *CLab) planStoppedNodes(ctx context.Context, plan *applyPlan) {\n\tif plan == nil {\n\t\treturn\n\t}\n\n\tfor nodeName := range plan.currentNodes {\n\t\tif plan.isNonContainerNode(nodeName) {\n\t\t\tcontinue\n\t\t}\n\t\tnode, exists := c.Nodes[nodeName]\n\t\tif !exists {\n\t\t\tcontinue\n\t\t}\n\t\tif _, deleted := plan.deletedNodeSet[nodeName]; deleted {\n\t\t\tcontinue\n\t\t}\n\t\tif _, added := plan.addedNodeSet[nodeName]; added {\n\t\t\tcontinue\n\t\t}\n\t\tif _, recreated := plan.recreatedNodeSet[nodeName]; recreated {\n\t\t\tcontinue\n\t\t}\n\n\t\tswitch node.GetContainerStatus(ctx) {\n\t\tcase clabruntime.Stopped, clabruntime.Created:\n\t\t\tplan.startNodeSet[nodeName] = struct{}{}\n\t\t}\n\t}\n}\n\nfunc (c *CLab) planRecreatedNodeLinks(plan *applyPlan) {\n\tif plan == nil || len(plan.recreatedNodeSet) == 0 {\n\t\treturn\n\t}\n\n\trebuildSet := make(map[string]struct{}, len(plan.recreatedNodeSet))\n\tfor nodeName := range plan.recreatedNodeSet {\n\t\tif _, parked := plan.parkedNodeSet[nodeName]; parked {\n\t\t\tcontinue\n\t\t}\n\t\trebuildSet[nodeName] = struct{}{}\n\t}\n\n\tfor _, linkIdx := range sortedLinkIndexes(c.Links) {\n\t\tlink := c.Links[linkIdx]",
+                "lineStart": 300,
+                "lineEnd": 379,
+                "totalLines": 1090,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792425864638,
+              "end": 1792425864645
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_154e82dd9001hTPS2JHNPMOTmF",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e81a12001Xke736Vdqzeg5f",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 84064,
+            "input": 84007,
+            "output": 56,
+            "reasoning": 1,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_154e82ddd001g5u4A627jtRYNW",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425864669
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_154e82dde001UZncqyLITVBBB6",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e82ddd001g5u4A627jtRYNW",
+          "auto": true,
+          "overflow": false
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_154e82e06001EbTnDqa8C0Or6N",
+        "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+        "time": {
+          "created": 1792425864710
+        },
+        "parentID": "msg_154e82ddd001g5u4A627jtRYNW",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-3WIwsd",
+          "root": "/"
+        },
+        "summary": true,
         "cost": 0,
         "tokens": {
           "input": 0,
@@ -3072,18 +4403,29 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_154e6831b001JKCD7YSMAf7EUh",
+          "id": "prt_154e83853001s5xZR7Xz2K1uur",
           "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
-          "messageID": "msg_154e672b5001zoW3GayDZTMWGd"
+          "messageID": "msg_154e82e06001EbTnDqa8C0Or6N"
         },
         {
           "type": "reasoning",
-          "id": "prt_154e6831e001YC3TXos5rVUa2r",
+          "id": "prt_154e83854001b1zP84ex41xbyj",
           "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
-          "messageID": "msg_154e672b5001zoW3GayDZTMWGd",
+          "messageID": "msg_154e82e06001EbTnDqa8C0Or6N",
+          "text": "Produce the structured summary.",
+          "time": {
+            "start": 1792425867348,
+            "end": 1792425867404
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_154e8388e0015P9lhiHo6hQCSV",
+          "sessionID": "ses_eab1b4d8effe6wulJuPZzNQ565",
+          "messageID": "msg_154e82e06001EbTnDqa8C0Or6N",
           "text": "",
           "time": {
-            "start": 1792425755422
+            "start": 1792425867406
           }
         }
       ]
