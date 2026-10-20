@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "89be6648cb59ec135175fc697aed3b793f17bbfb",
-  "updatedAt": "2026-10-20T20:24:35.087Z",
-  "state": "running",
+  "updatedAt": "2026-10-20T20:25:28.351Z",
+  "state": "completed",
   "info": {
     "id": "ses_ea506eda8ffeX1qwu51yhVOwb2",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 409402,
-      "output": 4008,
-      "reasoning": 12693,
+      "input": 413926,
+      "output": 7083,
+      "reasoning": 16930,
       "cache": {
-        "read": 2406656,
+        "read": 2633216,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792527635031,
-      "updated": 1792527874688
+      "updated": 1792527928294
     }
   },
   "messages": [
@@ -6157,7 +6157,8 @@
         "id": "msg_15afcba7b00116Oa1RAcz6On4i",
         "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
         "time": {
-          "created": 1792527874683
+          "created": 1792527874683,
+          "completed": 1792527881304
         },
         "parentID": "msg_15afbfcc60010w6ll5fIbCmvy8",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -6170,16 +6171,548 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 37074,
+          "input": 2229,
+          "output": 29,
+          "reasoning": 512,
           "cache": {
-            "read": 0,
+            "read": 34304,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
-      "parts": []
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15afcc1ca001WRphp29ReIrJX8",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcba7b00116Oa1RAcz6On4i"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15afcc1cc001r0FXqAtD3KDkvM",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcba7b00116Oa1RAcz6On4i",
+          "text": "This smoke test uses `l1`/`l2` linux nodes and exercises stop/start/restart with dataplane ping checks — it covers the linux `Start` path's functionality (dataplane works) but does not verify the offload state itself. The linux offload workaround's symptom isn't connectivity loss (ping works regardless of offload) — it affects consumers bridging/capturing traffic. So the smoke test wouldn't catch a regression of this fix.\n\nI have all the evidence I need. Let me now write the final review.\n\nFindings summary:\n\n1. P4 — `linux.Start` re-disables TX offload on the host's `eth0` for host-networked linux nodes. Location: nodes/linux/linux.go:102-116 (and 122-127). Trigger: `clab start`/`clab restart` on a linux node with `network-mode: host`. The linux kind doesn't set `IsRootNamespaceBased`, so `ShouldSkipLifecycle()` is false and the ethtool command runs via ExecFunction in the host netns (container netns == host netns), disabling TX checksum offload on the host's `eth0` (or whatever eth0 is). Pre-existing behavior at PostDeploy; the PR extends it to every start. Impact: repeated modification of host interface offload settings for host-networked linux nodes, which can degrade host networking and is a side effect on the host. Correction: skip the offload fix for host network mode (e.g., mirror the `ShouldSkipLifecycle` guard with a `NetworkMode == \"host\"` check), or at minimum document that limitation. Also note the dedicated `host` kind already skips via `ShouldSkipLifecycle`; the linux-with-host-network-mode case is the gap.\n\nActually wait — I should double check the dedicated `host` kind: does it use the linux type? The `host` kind maps to... let me check quickly. In nodes/nodes.go, kinds registry: \"host\" kind → is it a linux node with IsRootNamespaceBased=true? Earlier I noted \"Only host, ovs, bridge kinds set IsRootNamespaceBased=true\". Let me verify how the host kind is registered — if the `host` kind IS a `linux` node with IsRootNamespaceBased set, then host-networked linux via kind `host` skips; only `network-mode: host` on a regular linux node hits this. Let me check nodes.go quickly for the host kind registration.",
+          "time": {
+            "start": 1792527876556,
+            "end": 1792527881266
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15afcd436001hCl3WFQ0E0dxPv",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcba7b00116Oa1RAcz6On4i",
+          "callID": "call_c156c341bc2440f3aadbe140",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/nodes",
+              "pattern": "IsRootNamespaceBased"
+            },
+            "output": "Found 12 matches\n/source/head/nodes/host/host.go:\n  Line 44: \tn.Cfg.IsRootNamespaceBased = true\n\n\n/source/head/nodes/default_node.go:\n  Line 118: \tif d.Cfg.IsRootNamespaceBased || d.Cfg.SkipUniquenessCheck {\n\n  Line 218: \tif d.Cfg.IsRootNamespaceBased {\n\n  Line 238: \treturn d.Cfg.IsRootNamespaceBased || d.Cfg.AutoRemove\n\n  Line 244: \tif d.Cfg != nil && (d.Cfg.IsRootNamespaceBased || d.Cfg.SkipUniquenessCheck) {\n\n  Line 946: \tif !d.Cfg.IsRootNamespaceBased {\n\n  Line 984: \tif !d.Cfg.IsRootNamespaceBased {\n\n  Line 1004: \tif d.Cfg.IsRootNamespaceBased {\n\n\n/source/head/nodes/default_node_test.go:\n  Line 197: \t\t\t\tIsRootNamespaceBased: true,\n\n  Line 230: \t\t\tcfg:  &clabtypes.NodeConfig{IsRootNamespaceBased: true},\n\n\n/source/head/nodes/ovs/ovs.go:\n  Line 46: \tn.Cfg.IsRootNamespaceBased = true\n\n\n/source/head/nodes/bridge/bridge.go:\n  Line 62: \t\ts.Cfg.IsRootNamespaceBased = true\n",
+            "title": "IsRootNamespaceBased",
+            "metadata": {
+              "matches": 12,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792527881275,
+              "end": 1792527881297
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15afcd4540015Nze6eu4MMK15o",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcba7b00116Oa1RAcz6On4i",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 37074,
+            "input": 2229,
+            "output": 29,
+            "reasoning": 512,
+            "cache": {
+              "read": 34304,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15afcd460001vrdChD2j4Vd6C3",
+        "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+        "time": {
+          "created": 1792527881312,
+          "completed": 1792527885922
+        },
+        "parentID": "msg_15afbfcc60010w6ll5fIbCmvy8",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-CQXv6d",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 37695,
+          "input": 497,
+          "output": 28,
+          "reasoning": 306,
+          "cache": {
+            "read": 36864,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15afcdba9001l9vXNF9a5gqO35",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcd460001vrdChD2j4Vd6C3"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15afcdbab0014u52DQS4IzngNn",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcd460001vrdChD2j4Vd6C3",
+          "text": "Confirmed: the dedicated `host` kind (`nodes/host/host.go`) sets `IsRootNamespaceBased = true`, so it's a separate kind from `linux`. A `linux` node with `network-mode: host` (allowed via `kinds: linux: network-mode: host` or node-level `network-mode: host`) does not skip lifecycle. So `linux.Start` will run the ethtool command inside the container, which shares the host netns → disables offload on the host's `eth0`.\n\nAlso check: `ExecFunction` — for host-networked containers, does `n.Runtime.Exec` work? Yes, exec runs in the container's (== host) netns. And `NSEthtoolTXOff` runs `EthtoolTXOff` on eth0 of that netns = host eth0.\n\nWait, actually one more consideration: does `linux.CheckInterfaceName` or topology validation forbid `network-mode: host` for linux nodes? No — `network-mode: host` is a documented feature (docs/network-mode.md). Let me verify quickly that network-mode host is allowed for linux nodes... it is a standard documented feature. OK.\n\nNow — one more check on the linux PostDeploy diff: in base, linux.PostDeploy — what did it do before? Let me check the base version of linux.go to see if PostDeploy previously had the offload logic (i.e., whether the PR's `disableEth0TxOffload` refactor changed anything).",
+          "time": {
+            "start": 1792527883179,
+            "end": 1792527885901
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15afce650001TUkb7SzCt9rLjb",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcd460001vrdChD2j4Vd6C3",
+          "callID": "call_f79691803662436591639aae",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/base/nodes/linux/linux.go",
+              "limit": 40,
+              "offset": 80
+            },
+            "output": "<path>/source/base/nodes/linux/linux.go</path>\n<type>file</type>\n<content>\n80: \tcID, err := n.Runtime.CreateContainer(ctx, n.Cfg)\n81: \tif err != nil {\n82: \t\treturn err\n83: \t}\n84: \t_, err = n.Runtime.StartContainer(ctx, cID, n)\n85: \n86: \tn.SetState(clabnodesstate.Deployed)\n87: \n88: \treturn err\n89: }\n90: \n91: func (n *linux) PostDeploy(ctx context.Context, _ *clabnodes.PostDeployParams) error {\n92: \tlog.Debugf(\"Running postdeploy actions for Linux '%s' node\", n.Cfg.ShortName)\n93: \n94: \terr := n.ExecFunction(ctx, clabutils.NSEthtoolTXOff(n.GetShortName(), \"eth0\"))\n95: \tif err != nil {\n96: \t\tlog.Error(err)\n97: \t}\n98: \n99: \treturn nil\n100: }\n101: \n102: func (n *linux) GetImages(_ context.Context) map[string]string {\n103: \timages := make(map[string]string)\n104: \timages[clabnodes.ImageKey] = n.Cfg.Image\n105: \n106: \treturn images\n107: }\n108: \n109: // CheckInterfaceName allows any interface name for linux nodes, but checks\n110: // if eth0 is only used with network-mode=none.\n111: func (n *linux) CheckInterfaceName() error {\n112: \tnm := strings.ToLower(n.Cfg.NetworkMode)\n113: \tfor _, e := range n.Endpoints {\n114: \t\tif e.GetIfaceName() == \"eth0\" && nm != \"none\" {\n115: \t\t\treturn fmt.Errorf(\n116: \t\t\t\t\"eth0 interface name is not allowed for %s node when network mode is not set to none\",\n117: \t\t\t\tn.Cfg.ShortName,\n118: \t\t\t)\n119: \t\t}\n\n(Showing lines 80-119 of 122. Use offset=120 to continue.)\n</content>",
+            "title": "source/base/nodes/linux/linux.go",
+            "metadata": {
+              "preview": "\tcID, err := n.Runtime.CreateContainer(ctx, n.Cfg)\n\tif err != nil {\n\t\treturn err\n\t}\n\t_, err = n.Runtime.StartContainer(ctx, cID, n)\n\n\tn.SetState(clabnodesstate.Deployed)\n\n\treturn err\n}\n\nfunc (n *linux) PostDeploy(ctx context.Context, _ *clabnodes.PostDeployParams) error {\n\tlog.Debugf(\"Running postdeploy actions for Linux '%s' node\", n.Cfg.ShortName)\n\n\terr := n.ExecFunction(ctx, clabutils.NSEthtoolTXOff(n.GetShortName(), \"eth0\"))\n\tif err != nil {\n\t\tlog.Error(err)\n\t}\n\n\treturn nil",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/base/nodes/linux/linux.go",
+                "text": "\tcID, err := n.Runtime.CreateContainer(ctx, n.Cfg)\n\tif err != nil {\n\t\treturn err\n\t}\n\t_, err = n.Runtime.StartContainer(ctx, cID, n)\n\n\tn.SetState(clabnodesstate.Deployed)\n\n\treturn err\n}\n\nfunc (n *linux) PostDeploy(ctx context.Context, _ *clabnodes.PostDeployParams) error {\n\tlog.Debugf(\"Running postdeploy actions for Linux '%s' node\", n.Cfg.ShortName)\n\n\terr := n.ExecFunction(ctx, clabutils.NSEthtoolTXOff(n.GetShortName(), \"eth0\"))\n\tif err != nil {\n\t\tlog.Error(err)\n\t}\n\n\treturn nil\n}\n\nfunc (n *linux) GetImages(_ context.Context) map[string]string {\n\timages := make(map[string]string)\n\timages[clabnodes.ImageKey] = n.Cfg.Image\n\n\treturn images\n}\n\n// CheckInterfaceName allows any interface name for linux nodes, but checks\n// if eth0 is only used with network-mode=none.\nfunc (n *linux) CheckInterfaceName() error {\n\tnm := strings.ToLower(n.Cfg.NetworkMode)\n\tfor _, e := range n.Endpoints {\n\t\tif e.GetIfaceName() == \"eth0\" && nm != \"none\" {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"eth0 interface name is not allowed for %s node when network mode is not set to none\",\n\t\t\t\tn.Cfg.ShortName,\n\t\t\t)\n\t\t}",
+                "lineStart": 80,
+                "lineEnd": 119,
+                "totalLines": 122,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792527885909,
+              "end": 1792527885916
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15afce65e001nmgWijpprg6lOv",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcd460001vrdChD2j4Vd6C3",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 37695,
+            "input": 497,
+            "output": 28,
+            "reasoning": 306,
+            "cache": {
+              "read": 36864,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15afce66a001MJhyHtdPprSj1x",
+        "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+        "time": {
+          "created": 1792527885930,
+          "completed": 1792527889007
+        },
+        "parentID": "msg_15afbfcc60010w6ll5fIbCmvy8",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-CQXv6d",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 38311,
+          "input": 518,
+          "output": 24,
+          "reasoning": 137,
+          "cache": {
+            "read": 37632,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15afced4d0014qO5nZC8DDF5P0",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afce66a001MJhyHtdPprSj1x"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15afced4f001L9H53uOsK7lR5O",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afce66a001MJhyHtdPprSj1x",
+          "text": "Confirmed: the linux PostDeploy behavior is unchanged (just extracted into `disableEth0TxOffload`); the PR only adds the `Start` override.\n\nNow I have complete coverage. Let me also quickly double-check `Verify IOL SSH Mgmt Addrs` uses `${ipv4_addr.upper()}` — IOS displays interface addresses uppercase, so `.upper()` is correct. Also `Should Contain` with the uppercase address — fine.\n\nOne more doc check: does the linux kind doc (`docs/manual/kinds/linux.md`) mention the TX offload workaround that PostDeploy applies? If yes, it might deserve an update mentioning re-application on start. Let me check.",
+          "time": {
+            "start": 1792527887695,
+            "end": 1792527888980
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15afcf257001ZUQuxqDqufNzLn",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afce66a001MJhyHtdPprSj1x",
+          "callID": "call_de0852d1bdbd4dfa91e96b55",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/manual/kinds",
+              "pattern": "offload|checksum"
+            },
+            "output": "No files found",
+            "title": "offload|checksum",
+            "metadata": {
+              "matches": 0,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792527888988,
+              "end": 1792527889000
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15afcf26b001y26sfHeR9zyK6P",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afce66a001MJhyHtdPprSj1x",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 38311,
+            "input": 518,
+            "output": 24,
+            "reasoning": 137,
+            "cache": {
+              "read": 37632,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15afcf27800150mOHWvn1cv8iU",
+        "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+        "time": {
+          "created": 1792527889016,
+          "completed": 1792527898521
+        },
+        "parentID": "msg_15afbfcc60010w6ll5fIbCmvy8",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-CQXv6d",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 39633,
+          "input": 174,
+          "output": 32,
+          "reasoning": 1283,
+          "cache": {
+            "read": 38144,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15afcf7e7001hObpKgw287wQhq",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcf27800150mOHWvn1cv8iU"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15afcf7e9001xd6jX0DwRcEtVM",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcf27800150mOHWvn1cv8iU",
+          "text": "No kind-level docs mention the offload workaround, so no stale doc to update beyond the RN (which was added).\n\nNow let me finalize. Findings:\n\n1. **P4 — `linux.Start` re-disables TX offload on the host's `eth0` for `network-mode: host` linux nodes** (`nodes/linux/linux.go:102-116`). The dedicated `host` kind skips lifecycle via `IsRootNamespaceBased`, but a regular `linux` node with `network-mode: host` does not, so `ShouldSkipLifecycle()` is false and `disableEth0TxOffload` runs `ethtool` inside a container that shares the host netns, disabling TX checksum offload on the host's `eth0`. This behavior already existed at `PostDeploy`; this PR extends it to every `start`/`restart`/apply-driven restart. Suggested correction: guard against host network mode (e.g., skip when `n.Cfg.NetworkMode == \"host\"`), consistent with how the fix is skipped for macvlan in IOL.\n\n2. **P4 — no runnable check covers the `linux.Start` offload re-application** (`nodes/linux/linux.go:102-116`; compare `tests/10-basic-cisco_iol/01-iol.robot:139-156`). The PR adds a regression test for the IOL path but nothing covers the identical `linux` change; the existing smoke lifecycle suite (`tests/01-smoke/28-node-lifecycle.robot`) exercises stop/start/restart on linux nodes `l1`/`l2` but only checks dataplane ping, which does not regress with offload enabled. Suggested correction: extend the lifecycle smoke test with an `ethtool -k eth0` assertion via `clab exec` after a start cycle (e.g., `tx-checksumming: off`).\n\nShould I also flag the sros/iol duplication? `iol.disableMgmtTxOffload` and `sros.PostDeployEndpoints` are near-identical (~15 lines). The PR didn't introduce the sros copy, but it did extract the iol logic — an opportunity to dedupe. Per ponytail \"reuse suitable existing helpers\", and one finding per root cause, this is an optional P4 maintainability suggestion. However, the review guidance says don't recommend abstraction merely to remove superficially similar code. The logic here is substantively identical (same guard, same calls, only node name and kind differ), and both node types embed `DefaultNode`, so a shared method on `DefaultNode` (or a helper in `clabutils` taking a logger/node name) would be a natural home. It's a fair P4. But is it worth it? Three call sites (iol PostDeploy, iol Start share one; sros has its own). I'll include it as P4 optional, low priority.\n\nActually, let me reconsider: would a shared helper be genuinely better? The iol version logs \"IOL mgmt interface\"; sros logs \"SR-SIM\". A parameterized helper would take the kind label. It's a modest win. I'll mention it as P4 with a light suggestion.\n\nHmm — but the guidance says \"Return only supported, useful findings\" and P4 = \"optional actionable improvement\". Both P4s are fine.\n\nLet me also consider whether the host-networking behavior might deserve P3 instead. Impact: on a host-networked linux node, running `clab restart` re-runs `ethtool -K eth0 tx off` on the host's primary interface — persistent (until reboot) performance degradation of host networking, repeated without user awareness. It's pre-existing at deploy; PR multiplies the trigger. The host-networked linux node use case is real (e.g., running clab on the host netns for tests). I'll keep P4 since it's pre-existing behavior being repeated, not a new failure mode; but it is worth flagging clearly. Actually — hmm. Consider a user with a host-networked linux node who runs `clab restart` in CI repeatedly: each restart disables offload on host eth0 (already disabled from before, so idempotent). The PR makes it re-apply, which is a no-op if already disabled. The only \"new\" impact is when offload was re-enabled on the host between operations (e.g., admin re-enabled it deliberately; clab would silently turn it off again). Marginal. P4 is right.\n\nOne more possible finding: the `iol.Start` and `linux.Start` skip-guard comment says \"DefaultNode.Start no-ops for root-ns and auto-remove nodes\". For auto-remove nodes (`--auto-remove`), containers are removed on stop; start would fail? DefaultNode.Start checks `ShouldSkipLifecycle()` → no-op. OK.\n\nAlso verify there's no issue with the `iol` node being started while the container doesn't exist (start after destroy?) — out of scope.\n\nAlso — the RN text: let me re-read the exact RN entry to confirm it's accurate about `linux` nodes. Let me view the diff hunk for docs/rn/0.81.md to quote it. From the summary: added under `### 0.81.2`, bullet about mgmt connectivity loss for `cisco_iol` and `linux` nodes after stop/start. For `linux` nodes, the symptom of offload-enabled mgmt veth is not \"connectivity loss\" — it's breakage of consumers that bridge/capture traffic (per the code comment: \"break consumers that bridge or capture traffic on that interface\"). TCP/UDP connectivity works fine with offload since the kernel handles checksums on veth paths... actually wait: for veth pairs, does CHECKSUM_PARTIAL break anything? The linux code comment says frames crossing the veth with offloaded checksums break consumers that bridge or capture traffic on that interface. So for linux nodes, connectivity (mgmt SSH) does NOT break — the symptom is packet capture/bridging issues. The RN claiming \"management connectivity loss for linux nodes\" overstates the symptom. Let me re-read the RN diff to be precise.",
+          "time": {
+            "start": 1792527890409,
+            "end": 1792527898495
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_15afd17820012BqQiXflPIom5B",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcf27800150mOHWvn1cv8iU",
+          "callID": "call_58c032fbefd0484abf7c0f5f",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/rn/0.81.md",
+              "pattern": "0.81.2|offload"
+            },
+            "output": "Found 11 matches\n/source/head/docs/rn/0.44.md:\n  Line 41: * fix: TCP sessions on srlinux were not establishing due to missing disabled tx offload #1537\n\n\n/source/head/docs/rn/0.72.md:\n  Line 59: - Disabled TX checksum offload on host-side veth for SR-SIM management interfaces #2932\n\n\n/source/head/docs/rn/0.81.md:\n  Line 100: ### 0.81.2\n\n  Line 102: - Fixed management connectivity loss for `cisco_iol` and `linux` nodes after a `stop`/`start` cycle (`clab start`, `clab restart`, or a restart-driven link apply): the runtime recreates the management veth on start, resetting the TX checksum offload workaround, which is now re-applied when the node is started. #3510\n\n\n/source/head/docs/rn/0.15.md:\n  Line 64: * Fixed disabling tx checksum offload for linux nodes [#543](https://github.com/srl-labs/containerlab/issues/543)\n\n  Line 65: * Fixed `tools disable-tx-offload` command [#543](https://github.com/srl-labs/containerlab/issues/543)\n\n\n/source/head/docs/rn/0.12.0.md:\n  Line 75: 5. If the changes containerlab makes to LLDP/TX-offload on the management bridge fail, they won't prevent the lab from proceed deploying.\n\n\n/source/head/docs/rn/0.74.md:\n  Line 39: ## TX offload on clab network\n\n  Line 41: The long-standing code that disabled TX checksum offload on the Containerlab management bridge has been removed. This code was originally added to work around checksum issues with SR Linux, but since then SR Linux started recomputing checksums and the per-veth offload disable (which remains in place) is the correct fix. The stale bridge-level disable was causing DNS failures for containers running under Orbstack and potentially other hypervisors. #3082\n\n  Line 63: - Fixed distributed SR-SIM nodes becoming unreachable when deployed with `--skip-post-deploy` by moving TX offload disable to `DeployEndpoints()`. Also fixed `PostDeploy` timeout loop that never iterated. Thanks @bayars #3045\n\n  Line 64: - Disabled TX offload on IOL node management interface, fixing SSH connectivity from other devices on the bridge. Thanks @bendergm #3077\n",
+            "title": "0.81.2|offload",
+            "metadata": {
+              "matches": 11,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792527898502,
+              "end": 1792527898514
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15afd1795001Tx2YVHb34ruAjQ",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afcf27800150mOHWvn1cv8iU",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 39633,
+            "input": 174,
+            "output": 32,
+            "reasoning": 1283,
+            "cache": {
+              "read": 38144,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15afd17a0001KCa0k7AUB217Yg",
+        "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+        "time": {
+          "created": 1792527898528,
+          "completed": 1792527900489
+        },
+        "parentID": "msg_15afbfcc60010w6ll5fIbCmvy8",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-CQXv6d",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 40204,
+          "input": 748,
+          "output": 31,
+          "reasoning": 1,
+          "cache": {
+            "read": 39424,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15afd1eb7001Kpvmwn5OTN61JR",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd17a0001KCa0k7AUB217Yg"
+        },
+        {
+          "type": "tool",
+          "id": "prt_15afd1f37001fk3jINfTp2AWUq",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd17a0001KCa0k7AUB217Yg",
+          "callID": "call_836946a985564004b5be7b8c",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/docs/rn/0.81.md",
+              "limit": 15,
+              "offset": 95
+            },
+            "output": "<path>/source/head/docs/rn/0.81.md</path>\n<type>file</type>\n<content>\n95: \n96: - Fixed management network deployments on Docker-selected subnets (`ipv4-subnet: auto` or a reused network with Docker-selected addressing): the generated addresses that containerlab sends as static endpoint requests are rejected by Docker, so the container creation is now retried once with Docker assigning the automatically allocated addresses, while explicit `mgmt-ipv4` and `mgmt-ipv6` requests are preserved. #3481\n97: - The c9s topology compiler is now consumed from the [c9s](https://c9s.run) project as a Go dependency instead of being maintained in the containerlab codebase, so both projects share a single implementation. #3477\n98: - Devcontainer fixes: powerlevel10k was replaced with starship, removing the console output warning during zsh initialization, `zsh-autocomplete` is sourced before oh-my-zsh restoring working tab-completion, and pyenv was replaced with `uv`. #3482\n99: \n100: ### 0.81.2\n101: \n102: - Fixed management connectivity loss for `cisco_iol` and `linux` nodes after a `stop`/`start` cycle (`clab start`, `clab restart`, or a restart-driven link apply): the runtime recreates the management veth on start, resetting the TX checksum offload workaround, which is now re-applied when the node is started. #3510\n\n(End of file - total 102 lines)\n</content>",
+            "title": "source/head/docs/rn/0.81.md",
+            "metadata": {
+              "preview": "\n- Fixed management network deployments on Docker-selected subnets (`ipv4-subnet: auto` or a reused network with Docker-selected addressing): the generated addresses that containerlab sends as static endpoint requests are rejected by Docker, so the container creation is now retried once with Docker assigning the automatically allocated addresses, while explicit `mgmt-ipv4` and `mgmt-ipv6` requests are preserved. #3481\n- The c9s topology compiler is now consumed from the [c9s](https://c9s.run) project as a Go dependency instead of being maintained in the containerlab codebase, so both projects share a single implementation. #3477\n- Devcontainer fixes: powerlevel10k was replaced with starship, removing the console output warning during zsh initialization, `zsh-autocomplete` is sourced before oh-my-zsh restoring working tab-completion, and pyenv was replaced with `uv`. #3482\n\n### 0.81.2\n\n- Fixed management connectivity loss for `cisco_iol` and `linux` nodes after a `stop`/`start` cycle (`clab start`, `clab restart`, or a restart-driven link apply): the runtime recreates the management veth on start, resetting the TX checksum offload workaround, which is now re-applied when the node is started. #3510",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/docs/rn/0.81.md",
+                "text": "\n- Fixed management network deployments on Docker-selected subnets (`ipv4-subnet: auto` or a reused network with Docker-selected addressing): the generated addresses that containerlab sends as static endpoint requests are rejected by Docker, so the container creation is now retried once with Docker assigning the automatically allocated addresses, while explicit `mgmt-ipv4` and `mgmt-ipv6` requests are preserved. #3481\n- The c9s topology compiler is now consumed from the [c9s](https://c9s.run) project as a Go dependency instead of being maintained in the containerlab codebase, so both projects share a single implementation. #3477\n- Devcontainer fixes: powerlevel10k was replaced with starship, removing the console output warning during zsh initialization, `zsh-autocomplete` is sourced before oh-my-zsh restoring working tab-completion, and pyenv was replaced with `uv`. #3482\n\n### 0.81.2\n\n- Fixed management connectivity loss for `cisco_iol` and `linux` nodes after a `stop`/`start` cycle (`clab start`, `clab restart`, or a restart-driven link apply): the runtime recreates the management veth on start, resetting the TX checksum offload workaround, which is now re-applied when the node is started. #3510",
+                "lineStart": 95,
+                "lineEnd": 102,
+                "totalLines": 102,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792527900476,
+              "end": 1792527900482
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15afd1f45001kdnVfN6ZxnEt1X",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd17a0001KCa0k7AUB217Yg",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 40204,
+            "input": 748,
+            "output": 31,
+            "reasoning": 1,
+            "cache": {
+              "read": 39424,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_15afd1f51001MR4IJCvtb3e78e",
+        "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+        "time": {
+          "created": 1792527900497,
+          "completed": 1792527928279
+        },
+        "parentID": "msg_15afbfcc60010w6ll5fIbCmvy8",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-CQXv6d",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 45479,
+          "input": 358,
+          "output": 2931,
+          "reasoning": 1998,
+          "cache": {
+            "read": 40192,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_15afd260d0017VSA2cMapSPbis",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd1f51001MR4IJCvtb3e78e"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_15afd260f001gfJzC0tf4xKusr",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd1f51001MR4IJCvtb3e78e",
+          "text": "The RN says \"Fixed management connectivity loss for `cisco_iol` and `linux` nodes\". For `linux` nodes, per the code comment, the offload setting breaks consumers that bridge or capture traffic on the interface — not management connectivity itself. Actually, hmm — let me think about whether TX checksum offload on the linux mgmt veth actually breaks connectivity in some scenarios. The historic issue #543: \"Fixed disabling tx checksum offload for linux nodes\" — the original issue was related to tools disable-tx-offload. In 0.74, the note says the per-veth offload disable remains in place as \"the correct fix\" for... it says originally added for SR Linux checksum issues. For plain linux nodes, does offloaded checksum on mgmt veth break connectivity? With veth, the peer sees CHECKSUM_PARTIAL; if the peer is the host bridge (docker bridge), the host stack recomputes checksums... usually fine. The linux kind comment (added in an earlier change, line 119-121) says frames \"break consumers that bridge or capture traffic on that interface\" — so connectivity to the node itself is not broken; the symptom is on bridge/capture consumers (e.g., a linux node bridging mgmt to dataplane, or running tcpdump inside).\n\nSo the RN wording overstates for `linux`: \"management connectivity loss\" is accurate for `cisco_iol` (SSH breaks per issue #3510) but for `linux` the practical symptom is broken bridging/capture consumers. This is a minor documentation-accuracy point — P4 or P3? It's user-facing release-note wording that could mislead users diagnosing why their linux node's traffic capture/bridging fails after restart. I'd call it P4 (minor doc wording accuracy). Hmm — is this worth flagging? The review docs check says \"check that added, changed... user-visible behavior is reflected in relevant docs\". The RN does reflect the change; the wording is slightly imprecise. I'll include it as a P4 doc-accuracy note combined with... no, one finding per root cause. It's a separate root cause (RN wording) from the host-net guard. I'll include it as P4.\n\nActually, let me reconsider — I should be careful not to pad the report with nitpicks. The RN wording issue: for `linux` nodes, is there any scenario where mgmt connectivity actually breaks due to offload? Consider a linux node bridging eth0 (mgmt) with a dataplane interface inside the container (e.g., running a bridge daemon): packets from outside cross eth0 with CHECKSUM_PARTIAL, get bridged out to dataplane veth where the checksum is never recomputed (veth doesn't validate), and the far-end receiver drops. That breaks external connectivity through the bridge — arguably \"connectivity loss\" via linux nodes used as bridges. The issue #3510 likely covers this. The code comment says \"break consumers that bridge or capture traffic on that interface\". So RN wording \"management connectivity loss\" is defensible for bridge-consumer scenarios. I'll drop this nitpick — too speculative to assert the RN is wrong. Instead, I'll note it in coverage notes.\n\nOK, final findings list:\n\n1. P4 — Host-networked `linux` nodes re-apply TX offload disable to the host's `eth0` on every start (`nodes/linux/linux.go:102-116`).\n2. P4 — No runnable check covers the `linux.Start` offload re-application (`nodes/linux/linux.go:102-116` vs `tests/10-basic-cisco_iol/01-iol.robot:139-156`).\n3. P4 — Optional: `disableMgmtTxOffload` duplicates `sros.PostDeployEndpoints` logic; could be shared on `DefaultNode` (`nodes/iol/iol.go:304-323` vs `nodes/sros/sros.go:466-487`).\n\nWait — should finding 1 be merged with something? It's distinct. Should finding 3 be included? Per karpathy surgical-changes: this PR is a patch fix; a refactor of sros is out of scope. But ponytail says reuse existing helpers. The duplication is pre-existing (iol had its own copy in PostDeploy before; the PR merely moved it into a named method). The PR didn't increase duplication. So flagging it as an improvement tied to this PR is weak — the PR actually improved things by naming the method. I'll drop finding 3 (or mention in coverage notes). Decision: drop; mention in coverage notes as optional.\n\nSo two P4 findings. Let me also double-check the test addition for any issue: the `Stop router1` test — after this stop, subsequent... nothing else runs after. Fine. The `Start router1` test is last before keywords. Fine.\n\nOne more check — does `clab start --node router1` work when the lab file specifies... The `iol.clab.yml` — the start with `--node` requires topology file, provided. OK.\n\nAlso check `Verify IOL SSH Login` — `sh ip int br | head -5`: the pipe is executed by the local shell on the ssh output (not quoted), so the remote command is `sh ip int br` and head truncates locally. `Should Contain ${output} up` — the first 5 lines of `sh ip int br` include headers and some interfaces; \"up\" appears. Consistent with line 28 usage. OK.\n\nNow — one more correctness consideration I should double check: in `iol.Start`, when only some nodes are started via `clab start --node router1`, `disableMgmtTxOffload` runs for that node — fine. When `clab start` runs for the whole lab, `StartNodes` iterates all nodes concurrently (max workers). For IOL nodes, `ExecFunction` executes `cat /sys/class/net/eth0/iflink` etc. inside container — concurrent execs fine.\n\nAlso `VethPeerIndex` runs inside container netns reading `/sys/class/net/eth0/iflink` → host ifindex of the peer (the mgmt veth host side) → `DisableTxOffloadByIndex` runs on host. During concurrent starts, multiple ethtool invocations — fine.\n\nEdge: `clab start` on a lab where the mgmt network uses macvlan → skip (correct, no veth host side in the same way — actually with macvlan there IS a host-side? For macvlan mgmt, the node's mgmt interface is a macvlan subinterface in the host; the offload workaround is not needed / different. Pre-existing guard.)\n\nEdge: `clab start` after the mgmt network was never created (lab deployed with `--reconfigure` previously)? Not relevant.\n\nWhat about `clab start` for a linux node whose container netns exec fails transiently right after start (container still starting)? `DefaultNode.Start` waits? `DefaultNode.Start` calls `StartContainer` which returns when started; exec immediately after should be fine as netns exists. OK.\n\nNow the coverage notes:\n- Verified the fix pattern matches existing sros precedent; logic extraction from PostDeploy is behavior-preserving for both kinds.\n- Confirmed all paths that recreate the mgmt veth (`core/start.go`, `core/restart.go`, `core/lifecycle.go` restartApplyNodes, `core/deploy.go` startNodeSet) route through `Node.Start`, so all container-runtime lifecycle paths get the fix; the c9s lab runtime path (`core/labruntime.go`) manages nodes via its own K8s lifecycle and does not invoke `Node.Start` — out of scope for this fix and not exercised here (noted, not flagged).\n- No tests were executed (source-only review); the new robot test was reviewed statically.\n- The RN wording \"management connectivity loss for `linux` nodes\" is broader than the code comment's stated symptom (bridging/capture consumers); not flagged as it is defensible for bridging scenarios.\n- Optional dedup with `sros.PostDeployEndpoints` considered and not flagged (pre-existing duplication; PR actually improved by extracting a named method).\n\nAlso mention the hostname/IP verification: the test relies on stable mgmt addresses from state — fine.\n\nLet me now check line numbers for permalink anchors:\n- nodes/linux/linux.go:102-116 — `Start` method; disableEth0TxOffload at 118-127.\n- tests/10-basic-cisco_iol/01-iol.robot:139-156 — new test cases.\n- nodes/iol/iol.go:284-298 — iol.Start; 304-323 disableMgmtTxOffload.\n- docs/rn/0.81.md:100-102.\n\nPermalink root: https://github.com/srl-labs/containerlab — I don't have an explicitly supplied root in this session... The instructions say \"Use the supplied GitHub permalink roots for file and line references in Markdown.\" In prior task context the root is `https://github.com/srl-labs/containerlab/blob/{commit}/{path}`. I'll use:\n`https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116` etc.\n\nFor base-revision references (none needed for findings — all findings are head).\n\nNow write the final Markdown review + JSON.",
+          "time": {
+            "start": 1792527902223,
+            "end": 1792527916295
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_15afd5d0a001xx8rltuTAadR7w",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd1f51001MR4IJCvtb3e78e",
+          "text": "All investigation steps are complete. Here is the final review.\n\n---\n\n# PR Review: Re-apply mgmt TX offload fix on start for `cisco_iol` and `linux`\n\n## Summary\n\nThis PR fixes a regression reported in #3510: after `clab stop` followed by `clab start` (or `clab restart`, or a restart-driven link apply), the container runtime recreates the management veth with default offload settings, silently undoing the TX-checksum-offload workaround that `PostDeploy` had applied. The PR extracts the offload logic in `nodes/iol/iol.go` and `nodes/linux/linux.go` into named helpers and adds `Start` overrides that re-apply the workaround after the runtime recreates the veth. It also adds a robot regression test for the IOL path and a release note.\n\nThe approach is correct and consistent with the existing SR-SIM precedent (`sros.Start` → `PostDeployEndpoints`). I verified that every container-runtime lifecycle path that recreates the mgmt veth routes through `Node.Start` (`core/start.go`, `core/restart.go`, `core/lifecycle.go:restartApplyNodes`, and the start-existing-nodes path in `core/deploy.go:672`), and that the extraction into `disableMgmtTxOffload` / `disableEth0TxOffload` is behavior-preserving versus the base revisions. No blocking defects were found; the findings below are minor and optional.\n\n## Findings\n\n| Priority | Title |\n| --- | --- |\n| P4 | `linux.Start` re-disables TX offload on the host's `eth0` for host-networked linux nodes |\n| P4 | No runnable check covers the `linux.Start` offload re-application |\n\n### P4 — `linux.Start` re-disables TX offload on the host's `eth0` for host-networked linux nodes\n\n**Location:** [`nodes/linux/linux.go#L102-L116`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116)\n\n**Problem:** The new `Start` override skips the offload fix only when `ShouldSkipLifecycle()` is true, which covers `IsRootNamespaceBased` kinds (`host`, `ovs`, `bridge` — see `nodes/host/host.go:44`, `nodes/ovs/ovs.go:46`, `nodes/bridge/bridge.go:62`) and auto-remove nodes. A plain `linux` node with `network-mode: host` is not root-namespace-based, so `disableEth0TxOffload` runs `NSEthtoolTXOff(..., \"eth0\")` via `ExecFunction` in the container's network namespace — which for host networking *is* the host namespace, disabling TX checksum offload on the host's `eth0`.\n\n**Trigger:** `clab start` or `clab restart` (or an apply-driven restart in `core/lifecycle.go`) on a lab containing a `linux` node with `network-mode: host`.\n\n**Impact:** This behavior already exists at deploy time in `PostDeploy`, so the failure mode is not new; the PR extends it so the host interface is touched again on every start cycle. Practically this re-applies an already-off setting (idempotent) unless an operator deliberately re-enabled offload on the host, in which case it is silently turned off again. Marginal but real side effect on host state.\n\n**Suggestion:** Skip the fix when the node runs in host network mode, e.g. return early from `disableEth0TxOffload` when `n.Cfg.NetworkMode == \"host\"` (there is no container-owned `eth0` to adjust), or at minimum document the limitation next to the `Start` override. The `cisco_iol` kind does not need the equivalent guard because the IOL kind is not commonly used with host networking, but the same reasoning applies there if desired.\n\n### P4 — No runnable check covers the `linux.Start` offload re-application\n\n**Location:** [`nodes/linux/linux.go#L102-L116`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116), contrasted with the new IOL test in [`tests/10-basic-cisco_iol/01-iol.robot#L139-L156`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/tests/10-basic-cisco_iol/01-iol.robot#L139-L156)\n\n**Problem:** The PR adds a regression test for the `cisco_iol` path (stop/start with an SSH-login assertion) but nothing exercises the identical `linux.go` change. The existing lifecycle smoke suite (`tests/01-smoke/28-node-lifecycle.robot`) already runs stop/start/restart cycles on the linux nodes `l1`/`l2`, but it only asserts dataplane ping, which does not regress when TX offload is enabled — so a future regression of this fix would go unnoticed.\n\n**Trigger:** Any future change that drops or breaks the `linux.Start` override.\n\n**Impact:** The linux half of the fix ships without verification; the smallest useful guard would catch it.\n\n**Suggestion:** Add one assertion to `tests/01-smoke/28-node-lifecycle.robot` after a start cycle, e.g. `clab exec --node l1 --cmd \"ethtool -k eth0\"` asserting `tx-checksumming: off`. This fits the existing `clab exec` keyword style in that suite and requires no new lab.\n\n## Coverage notes\n\n- All four changed paths were reviewed: `nodes/iol/iol.go`, `nodes/linux/linux.go`, `tests/10-basic-cisco_iol/01-iol.robot`, `docs/rn/0.81.md`. The base revisions of both Go files were compared; the helper extraction is behavior-preserving (`PostDeploy` previously inlined the same logic, including the macvlan guard in the IOL case).\n- Verified the fix reaches every relevant caller: `core/start.go` (`StartNodes`), `core/restart.go` (`RestartNodes`), `core/lifecycle.go:restartApplyNodes` (restart-driven link apply, matching the release-note wording), and the start-existing-nodes path in `core/deploy.go:672`. Dataplane links restored by `RestoreEndpoints` re-use veths whose offload was disabled at creation (`links/link_veth.go:206-249`), so only the runtime-managed mgmt veth needs the re-application — the PR's scope is coherent.\n- The c9s lab-runtime path (`core/labruntime.go` → `LabRuntime.Start`) does not invoke `Node.Start`, so the fix does not apply there; I found no evidence that this path recreates mgmt veths in the same way, so it is noted rather than flagged.\n- No tests or build commands were executed (source-only review). The new robot test was reviewed statically; its retry timing (5 min for IOL boot over SSH) and assertions look sound, and the CI workflow `.github/workflows/cisco_iols-tests.yml` picks up the `01-*.robot` suite, so the new cases will run.\n- Considered and not flagged: the near-duplication between `iol.disableMgmtTxOffload` (`nodes/iol/iol.go:304-323`) and `sros.PostDeployEndpoints` (`nodes/sros/sros.go:466-487`) predates this PR, and the PR actually improved the situation by naming the IOL helper; a shared `DefaultNode` helper would be a reasonable follow-up but is not warranted inside this patch. The release note's phrase \"management connectivity loss for `linux` nodes\" is broader than the code comment's stated symptom (bridging/capture consumers), but it is defensible for linux nodes that bridge the mgmt interface, so it was left as is. No topology-schema surface was touched, so no schema comparison was needed.\n\n---\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`linux.Start` re-disables TX offload on the host's `eth0` for host-networked linux nodes\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/linux/linux.go\",\n        \"start\": 102,\n        \"end\": 116\n      },\n      \"problem\": \"The new `Start` override skips the offload fix only when `ShouldSkipLifecycle()` returns true, which covers `IsRootNamespaceBased` kinds (`host`, `ovs`, `bridge`) and auto-remove nodes. A plain `linux` node with `network-mode: host` is not root-namespace-based, so `disableEth0TxOffload` runs `NSEthtoolTXOff(..., \\\"eth0\\\")` via `ExecFunction` in a network namespace that for host networking is the host namespace itself, disabling TX checksum offload on the host's `eth0`.\",\n      \"trigger\": \"`clab start`, `clab restart`, or an apply-driven restart (see `core/lifecycle.go:restartApplyNodes`) on a lab containing a `linux` node configured with `network-mode: host`.\",\n      \"impact\": \"The behavior already exists at deploy time in `PostDeploy`, so the failure mode is not new; this PR extends it so the host interface is touched again on every start cycle. In practice it re-applies an already-disabled setting, unless an operator deliberately re-enabled offload on the host, in which case it is silently turned off again. Marginal but real side effect on host state.\",\n      \"suggestion\": \"Skip the fix when the node runs in host network mode, for example by returning early from `disableEth0TxOffload` when `n.Cfg.NetworkMode == \\\"host\\\"`, or at minimum document the limitation next to the `Start` override. The same reasoning applies to `iol.disableMgmtTxOffload` if desired, though IOL nodes are rarely used with host networking.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No runnable check covers the `linux.Start` offload re-application\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/linux/linux.go\",\n        \"start\": 102,\n        \"end\": 116\n      },\n      \"problem\": \"The PR adds a stop/start regression test for the `cisco_iol` path in `tests/10-basic-cisco_iol/01-iol.robot` but nothing exercises the identical `linux.go` change. The existing smoke suite `tests/01-smoke/28-node-lifecycle.robot` runs stop/start/restart cycles on the linux nodes `l1`/`l2`, but only asserts dataplane ping, which does not regress when TX offload is enabled.\",\n      \"trigger\": \"Any future change that drops or breaks the `linux.Start` override.\",\n      \"impact\": \"The linux half of the fix ships without automated verification, so a future regression of the re-application on start would go unnoticed by CI.\",\n      \"suggestion\": \"Add one assertion to `tests/01-smoke/28-node-lifecycle.robot` after a start cycle, for example `clab exec --node l1 --cmd \\\"ethtool -k eth0\\\"` asserting `tx-checksumming: off`. This fits the existing `clab exec` keyword style in that suite and requires no new lab.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All four changed paths were reviewed: `nodes/iol/iol.go`, `nodes/linux/linux.go`, `tests/10-basic-cisco_iol/01-iol.robot`, and `docs/rn/0.81.md`; base revisions of both Go files were compared and the helper extraction is behavior-preserving, including the macvlan guard.\",\n      \"Verified that every container-runtime lifecycle path that recreates the mgmt veth routes through `Node.Start`: `core/start.go` (`StartNodes`), `core/restart.go` (`RestartNodes`), `core/lifecycle.go:restartApplyNodes`, and the start-existing-nodes path in `core/deploy.go:672`.\",\n      \"Dataplane links restored by `RestoreEndpoints` reuse veths whose TX offload was disabled at creation time (`links/link_veth.go:206-249`), so only the runtime-managed mgmt veth needs re-application; the PR scope is coherent.\",\n      \"The c9s lab-runtime path (`core/labruntime.go` -> `LabRuntime.Start`) does not invoke `Node.Start`, so the fix does not apply there; no evidence was found that this path recreates mgmt veths in the same way, so it is noted rather than flagged.\",\n      \"The `iol` implementation matches the existing `sros.PostDeployEndpoints` precedent (`nodes/sros/sros.go:466-487`), including the macvlan guard and warn-and-continue failure handling; the near-duplication predates this PR and was not flagged.\",\n      \"The release note wording 'management connectivity loss for `linux` nodes' is broader than the code comment's stated symptom (bridging/capture consumers on eth0), but it is defensible for linux nodes that bridge the mgmt interface, so it was not flagged.\",\n      \"No tests or build commands were executed; the review is source-only and the new robot test was assessed statically. No topology-schema surface was touched, so no schema comparison was needed.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1792527916298,
+            "end": 1792527928272
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_15afd8bd3001IuSIECB8ZZFMW3",
+          "sessionID": "ses_ea506eda8ffeX1qwu51yhVOwb2",
+          "messageID": "msg_15afd1f51001MR4IJCvtb3e78e",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 45479,
+            "input": 358,
+            "output": 2931,
+            "reasoning": 1998,
+            "cache": {
+              "read": 40192,
+              "write": 0
+            }
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - `linux.Start` re-disables TX offload on the `host`&#39;s `eth0` for host-networked `linux` nodes** | [nodes/linux/linux.go:102-116](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116) |\n| **P4 - No runnable check covers the `linux.Start` offload re-application** | [nodes/linux/linux.go:102-116](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116) |\n\n## P4 - `linux.Start` re-disables TX offload on the `host`&#39;s `eth0` for host-networked `linux` nodes\n\n**Location:** [nodes/linux/linux.go:102-116](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116)\n\n**Problem:** The new `Start` override skips the offload fix only when `ShouldSkipLifecycle()` returns true, which covers `IsRootNamespaceBased` kinds &#40;`host`, `ovs`, `bridge`&#41; and auto-remove nodes. A plain `linux` node with `network-mode: host` is not root-namespace-based, so `disableEth0TxOffload` runs `NSEthtoolTXOff(..., \"eth0\")` via `ExecFunction` in a network namespace that for `host` networking is the `host` namespace itself, disabling TX checksum offload on the `host`&#39;s `eth0`.\n\n**Trigger:** `clab start`, `clab restart`, or an apply-driven restart &#40;see [`core/lifecycle.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/core/lifecycle.go#L1-L1)&#58;restartApplyNodes`) on a lab containing a `linux` node configured with `network-mode&#58; host&#96;.\n\n**Impact:** The behavior already exists at deploy time in `PostDeploy`, so the failure mode is not new; this PR extends it so the `host` interface is touched again on every start cycle. In practice it re-applies an already-disabled setting, unless an operator deliberately re-enabled offload on the `host`, in which case it is silently turned off again. Marginal but real side effect on `host` state.\n\n**Suggested correction:** Skip the fix when the node runs in `host` network mode, for example by returning early from `disableEth0TxOffload` when `n.Cfg.NetworkMode == \"host\"`, or at minimum document the limitation next to the `Start` override. The same reasoning applies to `iol.disableMgmtTxOffload` if desired, though IOL nodes are rarely used with `host` networking.\n\n\n## P4 - No runnable check covers the `linux.Start` offload re-application\n\n**Location:** [nodes/linux/linux.go:102-116](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L102-L116)\n\n**Problem:** The PR adds a stop/start regression test for the `cisco_iol` path in [`tests/10-basic-cisco_iol/01-iol.robot`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/tests/10-basic-cisco_iol/01-iol.robot#L1-L1) but nothing exercises the identical [`linux.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L1-L1) change. The existing smoke suite [`tests/01-smoke/28-node-lifecycle.robot`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/tests/01-smoke/28-node-lifecycle.robot#L1-L1) runs stop/start/restart cycles on the `linux` nodes `l1`/`l2`, but only asserts dataplane ping, which does not regress when TX offload is enabled.\n\n**Trigger:** Any future change that drops or breaks the `linux.Start` override.\n\n**Impact:** The `linux` half of the fix ships without automated verification, so a future regression of the re-application on start would go unnoticed by CI.\n\n**Suggested correction:** Add one assertion to [`tests/01-smoke/28-node-lifecycle.robot`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/tests/01-smoke/28-node-lifecycle.robot#L1-L1) after a start cycle, for example `clab exec --node l1 --cmd \"ethtool -k eth0\"` asserting `tx-checksumming: off`. This fits the existing `clab exec` keyword style in that suite and requires no new lab.\n\n\n## Coverage\n\n- All four changed paths were reviewed&#58; [`nodes/iol/iol.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/iol/iol.go#L1-L1), [`nodes/linux/linux.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/linux/linux.go#L1-L1), [`tests/10-basic-cisco_iol/01-iol.robot`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/tests/10-basic-cisco_iol/01-iol.robot#L1-L1), and [`docs/rn/0.81.md`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/docs/rn/0.81.md#L1-L1); base revisions of both Go files were compared and the helper extraction is behavior-preserving, including the macvlan guard.\n- Verified that every container-runtime lifecycle path that recreates the mgmt veth routes through `Node.Start`&#58; [`core/start.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/core/start.go#L1-L1) &#40;`StartNodes`&#41;, [`core/restart.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/core/restart.go#L1-L1) &#40;`RestartNodes`&#41;, [`core/lifecycle.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/core/lifecycle.go#L1-L1)&#58;restartApplyNodes&#96;, and the start-existing-nodes path in [`core/deploy.go:672`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/core/deploy.go#L672-L672).\n- Dataplane links restored by `RestoreEndpoints` reuse veths whose TX offload was disabled at creation time &#40;[`links/link_veth.go:206-249`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/links/link_veth.go#L206-L249)&#41;, so only the runtime-managed mgmt veth needs re-application; the PR scope is coherent.\n- The c9s lab-runtime path &#40;[`core/labruntime.go`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/core/labruntime.go#L1-L1) -&#62; `LabRuntime.Start`&#41; does not invoke `Node.Start`, so the fix does not apply there; no evidence was found that this path recreates mgmt veths in the same way, so it is noted rather than flagged.\n- The `iol` implementation matches the existing `sros.PostDeployEndpoints` precedent &#40;[`nodes/sros/sros.go:466-487`](https://github.com/srl-labs/containerlab/blob/89be6648cb59ec135175fc697aed3b793f17bbfb/nodes/sros/sros.go#L466-L487)&#41;, including the macvlan guard and warn-and-continue failure handling; the near-duplication predates this PR and was not flagged.\n- The release note wording &#39;management connectivity loss for `linux` nodes&#39; is broader than the code comment&#39;s stated symptom &#40;bridging/capture consumers on `eth0`&#41;, but it is defensible for `linux` nodes that `bridge` the mgmt interface, so it was not flagged.\n- No tests or build commands were executed; the review is source-only and the new robot test was assessed statically. No topology-schema surface was touched, so no schema comparison was needed.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`linux.Start` re-disables TX offload on the `host`'s `eth0` for host-networked `linux` nodes\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/linux/linux.go\",\n        \"start\": 102,\n        \"end\": 116\n      },\n      \"problem\": \"The new `Start` override skips the offload fix only when `ShouldSkipLifecycle()` returns true, which covers `IsRootNamespaceBased` kinds (`host`, `ovs`, `bridge`) and auto-remove nodes. A plain `linux` node with `network-mode: host` is not root-namespace-based, so `disableEth0TxOffload` runs `NSEthtoolTXOff(..., \\\"eth0\\\")` via `ExecFunction` in a network namespace that for `host` networking is the `host` namespace itself, disabling TX checksum offload on the `host`'s `eth0`.\",\n      \"trigger\": \"`clab start`, `clab restart`, or an apply-driven restart (see `core/lifecycle.go:restartApplyNodes`) on a lab containing a `linux` node configured with `network-mode: host`.\",\n      \"impact\": \"The behavior already exists at deploy time in `PostDeploy`, so the failure mode is not new; this PR extends it so the `host` interface is touched again on every start cycle. In practice it re-applies an already-disabled setting, unless an operator deliberately re-enabled offload on the `host`, in which case it is silently turned off again. Marginal but real side effect on `host` state.\",\n      \"suggestion\": \"Skip the fix when the node runs in `host` network mode, for example by returning early from `disableEth0TxOffload` when `n.Cfg.NetworkMode == \\\"host\\\"`, or at minimum document the limitation next to the `Start` override. The same reasoning applies to `iol.disableMgmtTxOffload` if desired, though IOL nodes are rarely used with `host` networking.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No runnable check covers the `linux.Start` offload re-application\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/linux/linux.go\",\n        \"start\": 102,\n        \"end\": 116\n      },\n      \"problem\": \"The PR adds a stop/start regression test for the `cisco_iol` path in `tests/10-basic-cisco_iol/01-iol.robot` but nothing exercises the identical `linux.go` change. The existing smoke suite `tests/01-smoke/28-node-lifecycle.robot` runs stop/start/restart cycles on the `linux` nodes `l1`/`l2`, but only asserts dataplane ping, which does not regress when TX offload is enabled.\",\n      \"trigger\": \"Any future change that drops or breaks the `linux.Start` override.\",\n      \"impact\": \"The `linux` half of the fix ships without automated verification, so a future regression of the re-application on start would go unnoticed by CI.\",\n      \"suggestion\": \"Add one assertion to `tests/01-smoke/28-node-lifecycle.robot` after a start cycle, for example `clab exec --node l1 --cmd \\\"ethtool -k eth0\\\"` asserting `tx-checksumming: off`. This fits the existing `clab exec` keyword style in that suite and requires no new lab.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All four changed paths were reviewed: `nodes/iol/iol.go`, `nodes/linux/linux.go`, `tests/10-basic-cisco_iol/01-iol.robot`, and `docs/rn/0.81.md`; base revisions of both Go files were compared and the helper extraction is behavior-preserving, including the macvlan guard.\",\n      \"Verified that every container-runtime lifecycle path that recreates the mgmt veth routes through `Node.Start`: `core/start.go` (`StartNodes`), `core/restart.go` (`RestartNodes`), `core/lifecycle.go:restartApplyNodes`, and the start-existing-nodes path in `core/deploy.go:672`.\",\n      \"Dataplane links restored by `RestoreEndpoints` reuse veths whose TX offload was disabled at creation time (`links/link_veth.go:206-249`), so only the runtime-managed mgmt veth needs re-application; the PR scope is coherent.\",\n      \"The c9s lab-runtime path (`core/labruntime.go` -> `LabRuntime.Start`) does not invoke `Node.Start`, so the fix does not apply there; no evidence was found that this path recreates mgmt veths in the same way, so it is noted rather than flagged.\",\n      \"The `iol` implementation matches the existing `sros.PostDeployEndpoints` precedent (`nodes/sros/sros.go:466-487`), including the macvlan guard and warn-and-continue failure handling; the near-duplication predates this PR and was not flagged.\",\n      \"The release note wording 'management connectivity loss for `linux` nodes' is broader than the code comment's stated symptom (bridging/capture consumers on `eth0`), but it is defensible for `linux` nodes that `bridge` the mgmt interface, so it was not flagged.\",\n      \"No tests or build commands were executed; the review is source-only and the new robot test was assessed statically. No topology-schema surface was touched, so no schema comparison was needed.\"\n    ]\n  }\n}\n```"
 }
