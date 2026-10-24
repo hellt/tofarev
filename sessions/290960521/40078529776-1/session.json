@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "2146421f980d2aa5fa80fcb52e14b41ee92e99c4",
-  "updatedAt": "2026-10-24T08:37:08.779Z",
-  "state": "running",
+  "updatedAt": "2026-10-24T08:37:24.677Z",
+  "state": "completed",
   "info": {
     "id": "ses_e92f356caffeP1iBiC2qa70R4i",
     "title": "ToFaRev review",
@@ -18,9 +18,9 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 103979,
-      "output": 599,
-      "reasoning": 3471,
+      "input": 146926,
+      "output": 2379,
+      "reasoning": 4050,
       "cache": {
         "read": 41984,
         "write": 0
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792830908725,
-      "updated": 1792831005563
+      "updated": 1792831044632
     }
   },
   "messages": [
@@ -1077,7 +1077,8 @@
         "id": "msg_16d0e2377001GjLwcyG5fWAAQL",
         "sessionID": "ses_e92f356caffeP1iBiC2qa70R4i",
         "time": {
-          "created": 1792831005559
+          "created": 1792831005559,
+          "completed": 1792831044623
         },
         "parentID": "msg_16d0cb017001oCUitOHmEM6Mhp",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -1090,14 +1091,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 45306,
+          "input": 42947,
+          "output": 1780,
+          "reasoning": 579,
           "cache": {
             "read": 0,
             "write": 0
           }
-        }
+        },
+        "finish": "stop"
       },
       "parts": [
         {
@@ -1122,12 +1125,32 @@
           "id": "prt_16d0e6fb2001V7RDuYQ9m4KNr3",
           "sessionID": "ses_e92f356caffeP1iBiC2qa70R4i",
           "messageID": "msg_16d0e2377001GjLwcyG5fWAAQL",
-          "text": "",
+          "text": "I have complete coverage of the three changed paths and their surroundings. Let me finalize the review.\n\n---\n\n## PR Review: Extract SSH config-export helpers for MikroTik RouterOS\n\n### Summary\n\nThis PR is a focused refactor of `vrRos.SaveConfig`. It extracts two helpers into the shared `nodes` package — `ExportConfigOverSSH` (password-authenticated SSH exec with trimmed output) and `WriteSavedConfig` (persist the config to `<LabDir>/<dir>/<file>`) — and rewrites `nodes/vr_ros/vr-ros.go` to use them. A new `nodes/ssh_export_test.go` covers both helpers with an in-test SSH server.\n\n**Verified behavior preservation (head vs base):**\n\n- Connection target: `fmt.Sprintf(\"%s:22\", n.Cfg.LongName)` → `net.JoinHostPort(n.Cfg.LongName, \"22\")` — equivalent for container names, and more correct for IPv6 addresses if ever passed.\n- Trim-then-empty-check ordering, `filterManagementInterfaceConfig` application, and the final write path (`filepath.Join(n.Cfg.LabDir, n.ConfigDirName, n.StartupCfgFName)`) are identical.\n- Error messages keep the same prefixes (`failed to connect to %s via SSH`, `failed to execute`, `received empty configuration from`, `failed to write config by ... path from ... container`) and now wrap with `%w` instead of `%v`/`%+v`, an improvement.\n- `ssh.InsecureIgnoreHostKey()` is pre-existing behavior carried over unchanged (the comment actually improved from \"Accept any host key\" to a rationale).\n\nNo schema impact (no topology API change) and no documentation impact (no user-visible behavior change; `clab save` for `vr-ros` behaves the same).\n\n### Severity summary\n\n| Priority | Count | Summary |\n|---|---|---|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 1 | Optional: existing `VRNode.SaveConfig` still duplicates the newly extracted `WriteSavedConfig` logic |\n\n### Finding details\n\n#### P4 — `VRNode.SaveConfig` duplicates the write logic this PR extracted into `WriteSavedConfig`\n\n**Location:** [nodes/ssh_export.go:L57-L77](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/ssh_export.go#L57-L77) (introducing change) vs. [nodes/vr_node.go:L139-L158](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/vr_node.go#L139-L158)\n\n**Problem:** This PR extracted the exact \"write config to `<LabDir>/<dir>/<file>` plus log line plus `SaveConfigResult`\" block into the new `WriteSavedConfig` helper. `VRNode.SaveConfig` in the same package (`nodes` — so the helper is directly callable there, no import gymnastics needed) contains a verbatim copy of that block, including the same `clabconstants.PermissionsOpen` write and the same log message. The PR is otherwise surgical, so leaving the pre-existing copy untouched is defensible, but the refactor now has two in-package copies of the same logic that can drift (e.g., the `%v` vs `%w` error wrapping already differs between the two).\n\n**Trigger:** Any future maintainer adjusting config-save behavior (path handling, permissions, logging) must remember to change both `WriteSavedConfig` and `VRNode.SaveConfig`.\n\n**Impact:** Low — pure maintainability; no current behavior difference beyond error-wrapping style in a rarely-hit error path.\n\n**Suggestion:** Optionally, in a follow-up (or in this PR if preferred), collapse `VRNode.SaveConfig`'s tail into a single call to `clabnodes.WriteSavedConfig(n.Cfg, n.ConfigDirName, n.StartupCfgFName, []byte(config))` — it is a drop-in replacement given identical arguments and semantics. Do not feel obligated in this PR per the surgical-change rule.\n\n### Coverage notes\n\n- All three changed paths were read in full (`nodes/ssh_export.go`, `nodes/ssh_export_test.go`, `nodes/vr_ros/vr-ros.go`) alongside the base version of `vr-ros.go` and the diff.\n- Traced callers: only `vrRos.SaveConfig` uses the new helpers today; grep confirmed no other `ssh.Dial` users in `nodes/`, and `startSSHServer` has no name collisions in the package.\n- Checked for pre-existing reusable helpers (`utils`, `nodes`): no generic config-write helper existed, so the new helper is justified rather than duplicative (aside from the P4 note).\n- Tests: the new tests cover the happy path, wrong-password, empty-output, and non-zero-exit-status cases, plus `WriteSavedConfig` success and missing-directory error. I did not execute the tests or the formatter — this is a source-only review; verification of actual test execution is outside scope. The in-test SSH server logic was traced for deadlocks/races and looks sound (mutex-guarded command log, listener closed via `t.Cleanup`).\n- No schema or documentation changes are required: the refactor preserves user-visible behavior.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`VRNode.SaveConfig` still duplicates the extracted `WriteSavedConfig` logic\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/ssh_export.go\",\n        \"start\": 57,\n        \"end\": 77\n      },\n      \"problem\": \"This PR extracts the config-write block (build path, `os.WriteFile` with `clabconstants.PermissionsOpen`, log line, `SaveConfigResult`) into `WriteSavedConfig`, but `VRNode.SaveConfig` in `nodes/vr_node.go` (same package, lines 139-158) keeps a verbatim copy of that block, including the identical log message. The two copies already differ subtly in error wrapping (`%v` in `VRNode.SaveConfig` vs `%w` in the new helper).\",\n      \"trigger\": \"A maintainer changes config-save behavior (path construction, permissions, logging) in one of the two copies but not the other.\",\n      \"impact\": \"Low maintainability cost only: duplicated in-package logic that can drift; no current behavior difference.\",\n      \"suggestion\": \"Optionally collapse `VRNode.SaveConfig`'s tail into a single call to `WriteSavedConfig(n.Cfg, n.ConfigDirName, n.StartupCfgFName, []byte(config))` — it is a drop-in replacement. Acceptable to defer to a follow-up to keep this diff surgical.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All three changed paths (nodes/ssh_export.go, nodes/ssh_export_test.go, nodes/vr_ros/vr-ros.go) were reviewed in full, with the base vr-ros.go and diff.txt for comparison.\",\n      \"Traced callers: only vrRos.SaveConfig uses the new helpers; grep found no other ssh.Dial users in nodes/ and no name collisions for startSSHServer in the package.\",\n      \"Checked utils and nodes packages for pre-existing config-write helpers; none existed, so the new helper is not duplicative apart from the VRNode.SaveConfig overlap noted as P4.\",\n      \"Behavior preservation verified line by line: address construction (JoinHostPort improves IPv6 handling), trim/empty-check order, filtering, write path, error prefixes, and logging are unchanged; InsecureIgnoreHostKey is pre-existing carried-over behavior.\",\n      \"No schema or docs impact: no topology API change and no user-visible behavior change; error messages keep the same prefixes and improve by including the port and %w wrapping.\",\n      \"Tests reviewed statically (happy path, auth failure, empty output, non-zero exit status, write success and missing-directory error); the in-test SSH server was traced for races/deadlocks and looks sound. Tests and formatter were not executed — source-only review.\"\n    ]\n  }\n}\n```",
           "time": {
-            "start": 1792831025074
+            "start": 1792831025074,
+            "end": 1792831044615
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16d0ebc0b001ERDc0Cxw1vy9Un",
+          "sessionID": "ses_e92f356caffeP1iBiC2qa70R4i",
+          "messageID": "msg_16d0e2377001GjLwcyG5fWAAQL",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 45306,
+            "input": 42947,
+            "output": 1780,
+            "reasoning": 579,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - `VRNode.SaveConfig` still duplicates the extracted `WriteSavedConfig` logic** | [nodes/ssh&#95;export.go:57-77](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/ssh_export.go#L57-L77) |\n\n## P4 - `VRNode.SaveConfig` still duplicates the extracted `WriteSavedConfig` logic\n\n**Location:** [nodes/ssh&#95;export.go:57-77](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/ssh_export.go#L57-L77)\n\n**Problem:** This PR extracts the config-write block &#40;build path, `os.WriteFile` with `clabconstants.PermissionsOpen`, log line, `SaveConfigResult`&#41; into `WriteSavedConfig`, but `VRNode.SaveConfig` in [`nodes/vr_node.go`](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/vr_node.go#L1-L1) &#40;same package, lines 139-158&#41; keeps a verbatim copy of that block, including the identical log message. The two copies already differ subtly in error wrapping &#40;`%v` in `VRNode.SaveConfig` vs `%w` in the new helper&#41;.\n\n**Trigger:** A maintainer changes config-save behavior &#40;path construction, permissions, logging&#41; in one of the two copies but not the other.\n\n**Impact:** Low maintainability cost only&#58; duplicated in-package logic that can drift; no current behavior difference.\n\n**Suggested correction:** Optionally collapse `VRNode.SaveConfig`&#39;s tail into a single call to `WriteSavedConfig(n.Cfg, n.ConfigDirName, n.StartupCfgFName, []byte(config))` — it is a drop-in replacement. Acceptable to defer to a follow-up to keep this diff surgical.\n\n\n## Coverage\n\n- All three changed paths &#40;[`nodes/ssh_export.go`](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/ssh_export.go#L1-L1), [`nodes/ssh_export_test.go`](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/ssh_export_test.go#L1-L1), [`nodes/vr_ros/vr-ros.go`](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/vr_ros/vr-ros.go#L1-L1)&#41; were reviewed in full, with the base [`vr-ros.go`](https://github.com/srl-labs/containerlab/blob/2146421f980d2aa5fa80fcb52e14b41ee92e99c4/nodes/vr_ros/vr-ros.go#L1-L1) and `diff.txt` for comparison.\n- Traced callers&#58; only `vrRos.SaveConfig` uses the new helpers; grep found no other `ssh.Dial` users in nodes/ and no name collisions for `startSSHServer` in the package.\n- Checked utils and nodes packages for pre-existing config-write helpers; none existed, so the new helper is not duplicative apart from the `VRNode.SaveConfig` overlap noted as P4.\n- Behavior preservation verified line by line&#58; address construction &#40;`JoinHostPort` improves IPv6 handling&#41;, trim/empty-check order, filtering, write path, error prefixes, and logging are unchanged; `InsecureIgnoreHostKey` is pre-existing carried-over behavior.\n- No schema or docs impact&#58; no topology API change and no user-visible behavior change; error messages keep the same prefixes and improve by including the port and `%w` wrapping.\n- Tests reviewed statically &#40;happy path, auth failure, empty output, non-zero exit status, write success and missing-directory error&#41;; the in-test SSH server was traced for races/deadlocks and looks sound. Tests and formatter were not executed — source-only review.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`VRNode.SaveConfig` still duplicates the extracted `WriteSavedConfig` logic\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/ssh_export.go\",\n        \"start\": 57,\n        \"end\": 77\n      },\n      \"problem\": \"This PR extracts the config-write block (build path, `os.WriteFile` with `clabconstants.PermissionsOpen`, log line, `SaveConfigResult`) into `WriteSavedConfig`, but `VRNode.SaveConfig` in `nodes/vr_node.go` (same package, lines 139-158) keeps a verbatim copy of that block, including the identical log message. The two copies already differ subtly in error wrapping (`%v` in `VRNode.SaveConfig` vs `%w` in the new helper).\",\n      \"trigger\": \"A maintainer changes config-save behavior (path construction, permissions, logging) in one of the two copies but not the other.\",\n      \"impact\": \"Low maintainability cost only: duplicated in-package logic that can drift; no current behavior difference.\",\n      \"suggestion\": \"Optionally collapse `VRNode.SaveConfig`'s tail into a single call to `WriteSavedConfig(n.Cfg, n.ConfigDirName, n.StartupCfgFName, []byte(config))` — it is a drop-in replacement. Acceptable to defer to a follow-up to keep this diff surgical.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All three changed paths (`nodes/ssh_export.go`, `nodes/ssh_export_test.go`, `nodes/vr_ros/vr-ros.go`) were reviewed in full, with the base vr-ros.go and `diff.txt` for comparison.\",\n      \"Traced callers: only `vrRos.SaveConfig` uses the new helpers; grep found no other `ssh.Dial` users in nodes/ and no name collisions for `startSSHServer` in the package.\",\n      \"Checked utils and nodes packages for pre-existing config-write helpers; none existed, so the new helper is not duplicative apart from the `VRNode.SaveConfig` overlap noted as P4.\",\n      \"Behavior preservation verified line by line: address construction (`JoinHostPort` improves IPv6 handling), trim/empty-check order, filtering, write path, error prefixes, and logging are unchanged; `InsecureIgnoreHostKey` is pre-existing carried-over behavior.\",\n      \"No schema or docs impact: no topology API change and no user-visible behavior change; error messages keep the same prefixes and improve by including the port and `%w` wrapping.\",\n      \"Tests reviewed statically (happy path, auth failure, empty output, non-zero exit status, write success and missing-directory error); the in-test SSH server was traced for races/deadlocks and looks sound. Tests and formatter were not executed — source-only review.\"\n    ]\n  }\n}\n```"
 }
