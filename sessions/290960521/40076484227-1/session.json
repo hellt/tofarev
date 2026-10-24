@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "c46227a6abdc0aa2eef6b27a16d707bf837deed7",
-  "updatedAt": "2026-10-24T08:17:51.140Z",
-  "state": "running",
+  "updatedAt": "2026-10-24T08:18:07.911Z",
+  "state": "completed",
   "info": {
     "id": "ses_e931037edffefVhRYNcnYJGDUf",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 1063491,
-      "output": 8409,
-      "reasoning": 35423,
+      "input": 1080560,
+      "output": 10545,
+      "reasoning": 35664,
       "cache": {
-        "read": 910592,
+        "read": 913408,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792829016082,
-      "updated": 1792829859265
+      "updated": 1792829887842
     }
   },
   "messages": [
@@ -4713,7 +4713,8 @@
         "id": "msg_16cfca5af001HFA1HslcJRVuCC",
         "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
         "time": {
-          "created": 1792829859247
+          "created": 1792829859247,
+          "completed": 1792829887825
         },
         "parentID": "msg_16cfca5a0001xU8Fbni02KkaIV",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -4726,14 +4727,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 22262,
+          "input": 17069,
+          "output": 2136,
+          "reasoning": 241,
           "cache": {
-            "read": 0,
+            "read": 2816,
             "write": 0
           }
-        }
+        },
+        "finish": "stop"
       },
       "parts": [
         {
@@ -4747,12 +4750,43 @@
           "id": "prt_16cfcc6c6001kheqaHo9127c4P",
           "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
           "messageID": "msg_16cfca5af001HFA1HslcJRVuCC",
-          "text": "",
+          "text": "The previous output was deemed invalid — likely because the final JSON block was followed by nothing? Actually I did emit it correctly. Possibly the issue: the schema says the JSON block must be the FINAL fenced block with no text after it — I did that. Or perhaps the finding locations are fine since findings is empty. Maybe the issue was the \"version\" must be number — it is. Hmm. Possibly the markdown review lacked the required structure (severity summary table, details, coverage notes, permalinks). The publisher wants source links with permalink roots — but with zero findings there's nothing to link. Perhaps the invalidity was that I didn't include the permalink roots. Or the coverage notes mention paths but without links.\n\nTo be safe, I'll re-emit a complete Markdown review with a summary table, explicit permalink roots, findings section (empty), coverage notes, then the JSON block. Also double-check: JSON must match schema exactly — no additional properties. Include \"version\": 1, findings: [], coverage. That should be valid.\n\nMaybe the invalidity was that my JSON was emitted inside a ```json fence — that should be fine. Let me just produce clean output now.",
           "time": {
-            "start": 1792829867718
+            "start": 1792829867718,
+            "end": 1792829872333
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_16cfcd8d0001J0XSURb4klsDbp",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cfca5af001HFA1HslcJRVuCC",
+          "text": "# Code review: `mikrotik_chr` PCI-bridge interface expansion\n\nReview commit (head): `https://github.com/srl-labs/containerlab/blob/c46227a6abdc0aa2eef6b27a16d707bf837deed7/`\nMerge base (base): `https://github.com/srl-labs/containerlab/blob/4272331ab9bc560eb5a1525a7b47bc52f0cae361/`\n\n## Summary\n\nThis PR raises the `mikrotik_chr` interface limit on AMD64 from the old PC-bus ceiling of 29 total Ethernet interfaces (management + 28 data ports) to 255 data NICs by placing data devices behind QEMU `pci-bridge` devices (25 NICs per bridge, buses `chrpci1..N`), while ARM64 keeps the single-bus `virt` layout with an explicit limit of 29 data NICs. The launcher gains `check_nic_index` (rejects MAC-index wrap and the arm64 slot exhaustion before `NICS_FILE` is persisted) and `qemu_data_nic` (emits bridge + NIC arguments), the kind gains a `CheckInterfaceName` override that fails deployment early with an architecture-aware message, and the change is covered by new shell unit tests (`chr_launch_test.go`), an extended Go test (`mikrotik_chr_test.go`), a new AMD64-only e2e suite wired into the workflow, and updated documentation.\n\n## Verification performed\n\n- **Interface-name path**: `VRNode.AddEndpoint` normalizes `etherN` to `ethN` before the new override runs (`nodes/vr_node.go` L75-L104), so `strings.TrimPrefix(ifName, \"eth\")` in `mikrotik_chr.go` always sees mapped names. Malformed names such as `xeth5` fail `strconv.Atoi` and take the ErrSyntax branch, matching the new test case.\n- **Dispatch path**: `DefaultNode.CheckDeploymentConditions` (`nodes/default_node.go` L148) invokes `d.OverwriteNode.CheckInterfaceName()`, and `OverwriteNode` is set to the concrete node in `NewDefaultNode`, so the `mikrotikCHR` override is reached during deploy.\n- **Launcher ordering**: `check_nic_index \"$max\"` runs before `NICS_FILE` persistence, so an over-limit lab can never persist an unusable index; the MAC change from `$((i & 255))` to `$i` is safe because the limit is enforced first.\n- **Device ordering and upgrade safety**: the bridge is emitted only at each bridge's first slot while the ascending `eth1..ethmax` loop guarantees each bridge precedes its NICs; PCI depth-first enumeration yields management NIC, then bridge buses in ascending slot order, matching the pre-upgrade numbering, and MACs are unchanged for indices ≤ 255, so restarts and upgrades keep RouterOS configuration.\n- **Tests**: `TestLauncherShellSyntax` runs `/bin/sh -n`; `TestQEMUDataNIC` cases were recomputed by hand (index 1 → bridge 1/addr 0x1; 28 → bridge 2/addr 0x3; 29 → bridge 2/addr 0x4; 255 → bridge 11/addr 0x5; 11 × 25 = 275 ≥ 255 bridges); `github.com/google/go-cmp v0.7.0` is already present in `go.mod`.\n- **E2e validity**: the inline multi-line `startup-config` in `02-chr-high-ports.clab.yml` is materialized to files by `ProcessDownloadableAndEmbeddedFile` (`utils/file.go` L869-L887); `tests/common.robot` and `tests/ssh.robot` exist; `rf-run.sh` handles the glob-expanded matrix entries.\n- **Schema**: no topology API surface changed and the kind's interface naming is not constrained by `clab.schema.json`, so no schema edit is required.\n\n## Severity summary\n\n| Priority | Count | Findings |\n|----------|-------|----------|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 0 | — |\n\n## Findings\n\nNo actionable defects were identified. The implementation is the minimal, focused change the goal requires: a single gate function in the launcher, a single property-driven argument builder, one architecture-aware limit in the kind, and matching tests and docs. The Go pre-deploy check and the launcher runtime check agree on both limits (255/255 on AMD64, 29/29 on ARM64), and the `CheckInterfaceName` override follows the established pattern used by other kinds (e.g., `nvidiaCumulusVX.CheckInterfaceName` in `nodes/nvidia_cumulusvx/ports.go` L186-L188).\n\n## Coverage notes\n\n- All eight changed paths in `manifest.json` were read in full with their base versions, and callers were traced: `VRNode.AddEndpoint`, `GetMappedInterfaceName`/`CalculateInterfaceIndex`, `DefaultNode.CheckDeploymentConditions`, `LoadStartupConfigFileVr`, and `ProcessDownloadableAndEmbeddedFile`.\n- This is a read-only source review; `go test`, the shell unit tests, and the robot suites were not executed. The e2e verification of the bridge layout, the `ether33` traffic check, and the restart-persistence test rest on the PR's own CI run, not on execution in this environment.\n- The ARM64 no-bridge limit (`maxDataNICIndexARM64` = 29 in `mikrotik_chr.go` and the `check_nic_index` no-bridges branch) is unit-tested only. The `mikrotik_chr-tests` workflow runs solely on `ubuntu-24.04` (x86_64), so the ARM64 runtime behavior is never exercised in CI; the new suite's `Skip If` correctly reflects that.\n- The 255-NIC extreme is unit-tested (`TestQEMUDataNIC` case `highest-unique-mac`) but not e2e-tested, which the documentation explicitly disclaims (\"not a guarantee that every CHR version and host can run 256 interfaces\") — a reasonable tradeoff.\n- The 02 suite adds a restart cycle (up to roughly 6 minutes of worst-case health waits) to a job with a fixed `timeout-minutes: 20`; the existing 01 suite already fits this budget with three nodes, but one CI run should confirm 02 fits, particularly under TCG when `/dev/kvm` is absent.\n- The Go limit check uses `runtime.GOARCH` of the containerlab binary while the launcher uses `uname -m` inside the container; the mismatch case (emulated setups) is acknowledged in both the code comment and the documentation, and the launcher's runtime check still catches it with a clear message.\n- Two cosmetic observations were judged non-actionable: `chr_launch_test.go` carries a different copyright attribution (`narrowin`) than the rest of the package (`NetPilot Labs`), and the `r1` (300 s) versus `r2` (60 s) health-wait asymmetry in `02-chr-high-ports.robot` mirrors the existing `01-chr.robot` pattern.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All eight changed paths in manifest.json were read in full with their base versions; callers were traced: VRNode.AddEndpoint (etherN to ethN mapping before the new CheckInterfaceName runs), GetMappedInterfaceName/CalculateInterfaceIndex, DefaultNode.CheckDeploymentConditions, LoadStartupConfigFileVr, and ProcessDownloadableAndEmbeddedFile (validates the inline startup-config used by the new e2e suite).\",\n      \"Read-only source review: no tests were executed. The e2e verification of the PCI-bridge layout, the ether33 traffic check, and the restart-persistence test rest on the PR's own CI run, not on execution in this environment.\",\n      \"The AMD64 bridge ordering preserves pre-upgrade RouterOS ether numbering by reasoning (depth-first PCI enumeration yields the mgmt NIC then bridge buses in ascending slot order; MACs unchanged for indices <= 255), verified statically, not by execution.\",\n      \"The arm64 no-bridge limit (maxDataNICIndexARM64 = 29 and the check_nic_index no-bridges branch) is unit-tested in Go and shell only; the mikrotik_chr-tests workflow runs exclusively on ubuntu-24.04 x86_64, so the arm64 runtime path is never exercised in CI. The new suite's Skip If correctly reflects this.\",\n      \"The 255-NIC extreme is covered by TestQEMUDataNIC's highest-unique-mac case but not e2e-tested; the documentation explicitly disclaims a guarantee at that scale.\",\n      \"The 02 suite adds a restart cycle (up to ~6 minutes of worst-case health waits) to a fixed timeout-minutes: 20 job budget; the existing 01 suite fits the budget with three nodes, but one CI run should confirm 02 fits, especially under TCG when /dev/kvm is absent.\",\n      \"The Go limit check uses runtime.GOARCH of the containerlab binary while the launcher uses uname -m inside the container; the mismatch case (emulated setups) is acknowledged in code comments and documentation, and the launcher's runtime check still catches it with a clear message.\",\n      \"No schema changes required: no topology API surface changed and the kind's interface naming is not constrained by clab.schema.json.\",\n      \"Two cosmetic observations were judged non-actionable: chr_launch_test.go carries a different copyright attribution (narrowin) than the rest of the package (NetPilot Labs), and the r1/r2 health-wait asymmetry in 02-chr-high-ports.robot mirrors the existing 01-chr.robot pattern.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1792829872336,
+            "end": 1792829887817
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cfd154c0012itX6aboeE4nLC",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cfca5af001HFA1HslcJRVuCC",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 22262,
+            "input": 17069,
+            "output": 2136,
+            "reasoning": 241,
+            "cache": {
+              "read": 2816,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\nNo supported findings were reported within the reviewed scope.\n\n\n## Coverage\n\n- All eight changed paths in `manifest.json` were read in full with their base versions; callers were traced&#58; `VRNode.AddEndpoint` &#40;`etherN` to `ethN` mapping before the new `CheckInterfaceName` runs&#41;, `GetMappedInterfaceName`/`CalculateInterfaceIndex`, `DefaultNode.CheckDeploymentConditions`, `LoadStartupConfigFileVr`, and `ProcessDownloadableAndEmbeddedFile` &#40;validates the inline startup-config used by the new e2e suite&#41;.\n- Read-only source review&#58; no tests were executed. The e2e verification of the PCI-bridge layout, the ether33 traffic check, and the restart-persistence test rest on the PR&#39;s own CI run, not on execution in this environment.\n- The AMD64 bridge ordering preserves pre-upgrade `RouterOS` ether numbering by reasoning &#40;depth-first PCI enumeration yields the mgmt NIC then bridge buses in ascending slot order; MACs unchanged for indices &#60;= 255&#41;, verified statically, not by execution.\n- The arm64 no-bridge limit &#40;`maxDataNICIndexARM64` = 29 and the check&#95;nic&#95;index no-bridges branch&#41; is unit-tested in Go and shell only; the mikrotik&#95;chr-tests workflow runs exclusively on ubuntu-24.04 x86&#95;64, so the arm64 runtime path is never exercised in CI. The new suite&#39;s Skip If correctly reflects this.\n- The 255-NIC extreme is covered by `TestQEMUDataNIC`&#39;s highest-unique-mac case but not e2e-tested; the documentation explicitly disclaims a guarantee at that scale.\n- The 02 suite adds a restart cycle &#40;up to ~6 minutes of worst-case health waits&#41; to a fixed timeout-minutes&#58; 20 job budget; the existing 01 suite fits the budget with three nodes, but one CI run should confirm 02 fits, especially under TCG when /dev/kvm is absent.\n- The Go limit check uses `runtime.GOARCH` of the containerlab binary while the launcher uses uname -m inside the container; the mismatch case &#40;emulated setups&#41; is acknowledged in code comments and documentation, and the launcher&#39;s runtime check still catches it with a clear message.\n- No schema changes required&#58; no topology API surface changed and the kind&#39;s interface naming is not constrained by [`clab.schema.json`](https://github.com/srl-labs/containerlab/blob/c46227a6abdc0aa2eef6b27a16d707bf837deed7/schemas/clab.schema.json#L1-L1).\n- Two cosmetic observations were judged non-actionable&#58; [`chr_launch_test.go`](https://github.com/srl-labs/containerlab/blob/c46227a6abdc0aa2eef6b27a16d707bf837deed7/nodes/mikrotik_chr/chr_launch_test.go#L1-L1) carries a different copyright attribution &#40;narrowin&#41; than the rest of the package &#40;`NetPilot` Labs&#41;, and the r1/r2 health-wait asymmetry in [`02-chr-high-ports.robot`](https://github.com/srl-labs/containerlab/blob/c46227a6abdc0aa2eef6b27a16d707bf837deed7/tests/16-mikrotik-chr/02-chr-high-ports.robot#L1-L1) mirrors the existing [`01-chr.robot`](https://github.com/srl-labs/containerlab/blob/c46227a6abdc0aa2eef6b27a16d707bf837deed7/tests/16-mikrotik-chr/01-chr.robot#L1-L1) pattern.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All eight changed paths in `manifest.json` were read in full with their base versions; callers were traced: `VRNode.AddEndpoint` (`etherN` to `ethN` mapping before the new `CheckInterfaceName` runs), `GetMappedInterfaceName`/`CalculateInterfaceIndex`, `DefaultNode.CheckDeploymentConditions`, `LoadStartupConfigFileVr`, and `ProcessDownloadableAndEmbeddedFile` (validates the inline startup-config used by the new e2e suite).\",\n      \"Read-only source review: no tests were executed. The e2e verification of the PCI-bridge layout, the ether33 traffic check, and the restart-persistence test rest on the PR's own CI run, not on execution in this environment.\",\n      \"The AMD64 bridge ordering preserves pre-upgrade `RouterOS` ether numbering by reasoning (depth-first PCI enumeration yields the mgmt NIC then bridge buses in ascending slot order; MACs unchanged for indices <= 255), verified statically, not by execution.\",\n      \"The arm64 no-bridge limit (`maxDataNICIndexARM64` = 29 and the check_nic_index no-bridges branch) is unit-tested in Go and shell only; the mikrotik_chr-tests workflow runs exclusively on ubuntu-24.04 x86_64, so the arm64 runtime path is never exercised in CI. The new suite's Skip If correctly reflects this.\",\n      \"The 255-NIC extreme is covered by `TestQEMUDataNIC`'s highest-unique-mac case but not e2e-tested; the documentation explicitly disclaims a guarantee at that scale.\",\n      \"The 02 suite adds a restart cycle (up to ~6 minutes of worst-case health waits) to a fixed timeout-minutes: 20 job budget; the existing 01 suite fits the budget with three nodes, but one CI run should confirm 02 fits, especially under TCG when /dev/kvm is absent.\",\n      \"The Go limit check uses `runtime.GOARCH` of the containerlab binary while the launcher uses uname -m inside the container; the mismatch case (emulated setups) is acknowledged in code comments and documentation, and the launcher's runtime check still catches it with a clear message.\",\n      \"No schema changes required: no topology API surface changed and the kind's interface naming is not constrained by `clab.schema.json`.\",\n      \"Two cosmetic observations were judged non-actionable: `chr_launch_test.go` carries a different copyright attribution (narrowin) than the rest of the package (`NetPilot` Labs), and the r1/r2 health-wait asymmetry in 02-chr-high-ports.robot mirrors the existing 01-chr.robot pattern.\"\n    ]\n  }\n}\n```"
 }
