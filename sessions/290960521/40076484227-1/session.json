@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "c46227a6abdc0aa2eef6b27a16d707bf837deed7",
-  "updatedAt": "2026-10-24T08:07:36.136Z",
+  "updatedAt": "2026-10-24T08:09:36.138Z",
   "state": "running",
   "info": {
     "id": "ses_e931037edffefVhRYNcnYJGDUf",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 479889,
-      "output": 774,
-      "reasoning": 7014,
+      "input": 542900,
+      "output": 3270,
+      "reasoning": 14118,
       "cache": {
-        "read": 325632,
+        "read": 425728,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792829016082,
-      "updated": 1792829200305
+      "updated": 1792829370286
     }
   },
   "messages": [
@@ -1969,9 +1969,720 @@
         "id": "msg_16cf297ab001HkrJjo68EZ5DUV",
         "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
         "time": {
-          "created": 1792829200299
+          "created": 1792829200299,
+          "completed": 1792829312348
         },
         "parentID": "msg_16cefcf2d001Kkt72VJg52TOLR",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 86172,
+          "input": 3290,
+          "output": 75,
+          "reasoning": 6263,
+          "cache": {
+            "read": 76544,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf2de45001p926VIBN65JNZh",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf2de47001vP0bZOvWvlqnB8",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV",
+          "text": "Good. `CheckInterfaceName` is invoked during `CheckDeploymentConditions`, i.e., during deploy.\n\nNow, one more important cross-check: `strings.TrimPrefix(ifName, \"eth\")`. Endpoints store the MAPPED name (ethN). But what about interface aliases like \"eth1.100\"? The mapped name comes from GetMappedInterfaceName, which returns \"eth<index>\". But what if the user used an eth name directly like \"eth1\"? That passes VMInterfaceRegexp → no mapping → endpoint keeps \"eth1\". \"eth255\" fine. What about \"eth01\"? TrimPrefix gives \"01\" → Atoi → 1 → index 1 ≤ limit → passes. But the launcher: `SYSNET/eth[1-9]*` matches eth01; the launch loop counts `n=\"${d##*/eth}\"` = \"01\" → `[ \"$01\" -gt ... ]`? Actually in shell arithmetic, \"$n\" = \"01\" → `[ \"01\" -gt \"0\" ]`... fine, treated as 1. But tap names tap01 vs tap1 mismatch — pre-existing behavior, not introduced here.\n\nWhat about duplicate mapped names: \"ether2\" and \"eth1\" both map to eth1 — duplicate detection exists in CheckInterfaceOverlap (parent). OK.\n\nNow the arm64 limit interplay: on arm64, the launcher's virt machine — 29 data NICs. But wait, what about disk? Comment says virt's single bus holds disk + mgmt + 29 data NICs = 31 devices. The `virt` machine PCI bus has 32 slots (0-31); slot 0 reserved; but with default config, are there other devices? virtio-blk on slot... whatever, this was presumably tested.\n\nNow, one potential real correctness issue on amd64: The Go limit is 255, but does QEMU i440fx + SeaBIOS handle 255 virtio-net NICs? The docs disclaim (\"not a guarantee that every CHR version and host can run 256 interfaces\"). Memory: MEM scales 8MB/NIC → ~2.3GB. OK.\n\nNow — an important potential issue: the MAC octet change. Old: `$((i & 255))`. New: `$i`. For i = 256..511, old wrapped; new would print 0x100 = \"100\" (3 hex digits) → invalid MAC. But check_nic_index rejects max > 255 before the loop. So the loop never runs with i > 255. Good.\n\nBut wait — is `check_nic_index` guaranteed to run before the loop in ALL paths? Line 301: `check_nic_index \"$max\" || exit 1`. Yes, single call before the loop.\n\nNow the `qemu_data_nic` uses `_bridge` and `_slot` — local-ish variables (not unset, but the script doesn't use `local`; busybox sh functions share globals — `_bridge`/`_slot` names could clash with other code? The script uses underscore-prefixed names consistently for temporaries. `qemu_data_nic` is called from the top-level loop; `_bridge`, `_slot` are not used elsewhere. Fine.\n\nAnother check: `printf '52:54:00:%s:%02x' \"$node_id\" \"$i\"` — for i > 255... can't happen. For i up to 255 fine.\n\nWait, actually there is one subtle path: `$max` could be up to... `INTFS` from CLAB_INTFS is an int; the launcher guard rejects >255. Good.\n\nNow the test `chr_launch_test.go`: `launcherFunction` cuts at \"\\n}\\n\". In `check_nic_index` body there is no nested \"}\" at line start. In `qemu_data_nic`, the body has case...esac; `printf` lines contain \"}\"? No. Fine.\n\nBut hold on — `launcherFunction` extracts the function and runs `/bin/sh -c fn+\"PCI_BRIDGES=...\"`. For `TestLauncherShellSyntax`, runs `/bin/sh -n` on the whole script. Note: `/bin/sh` on the test host might be dash/bash; the launcher is busybox sh — syntax check via dash is stricter, that's good.\n\nNow — is there a concern that these shell-based tests run in CI on macOS? `/bin/sh -n` fine. Tests run wherever Go tests run. Fine.\n\nNow, let's check the coverage: does `mikrotik_chr` package test compile? `chr_launch_test.go` and `mikrotik_chr_test.go` are in the same package. `launcherScript` is embedded. Fine.\n\nNext: docs — the doc change mentions limits. Is there anything about the `virt` machine / bridges in the doc \"management connectivity\" section? Not needed.\n\nNow, an important consideration per the diff: the docs paragraph says \"This removes the default layout's limit of 29 total Ethernet interfaces (management plus 28 data ports)\". Hmm wait — this says the OLD default layout on AMD64 had limit 29 total = mgmt + 28 data. But the launcher check for no-bridges (arm64) says 29 data NICs fit. These differ between archs — consistent as analyzed.\n\nHmm wait, actually let me re-check: on amd64 PC, free PCI slots: The comment in the code says \"The default PC has only 29 free PCI slots, including management.\" So 28 data NICs max → eth28/ether29 max. The docs' AMD64 statement \"limit of 29 total Ethernet interfaces (management plus 28 data ports)\" matches. arm64: virt machine: disk (virtio) + mgmt + 29 data NICs = 31 slots? The comment says \"one bus holds the disk, management and 29 data NICs\". And the check `\"$1\" -gt 29`. So arm64 allows 29 data NICs — one more than the old amd64 layout. Docs say arm64 limit eth29/ether30. Consistent.\n\nNow, are there schema implications? No.\n\nNow let me think about the CheckInterfaceName implementation subtleties:\n\n1. `strconv.Atoi(strings.TrimPrefix(ifName, \"eth\"))` — if ifName is \"eth\" (just prefix)? Atoi(\"\") → ErrSyntax → \"cannot parse interface index\" error. Can an endpoint have name \"eth\"? VMInterfaceRegexp `eth[1-9]\\d*$` requires at least one digit; so parent check rejects \"eth\" before... wait, parent check runs first: `n.VRNode.CheckInterfaceName()` → error → return. So \"eth\" never reaches the new check. OK.\n\n2. What about mapped names that are valid but the mapping was via InterfaceRegexp e.g. \"ether10\" → \"eth9\". Fine.\n\n3. The error path: `err != nil && !errors.Is(err, strconv.ErrRange)` → parse error. `err != nil || index > limit` → over limit. With ErrRange, Atoi returns 0 and err = ErrRange → falls to second condition, reported as over-limit. Good.\n\n4. `n.goarch` is set in Init — but only when... `n.goarch = runtime.GOARCH` always set in Init. In tests it's overwritten. But what if a node is constructed without Init (e.g., through registry NewNodeOfKind + Init — always called). OK. But there's a subtlety: `dataNICLimit(\"\")` returns 255 (amd64-ish) — safe default.\n\nNow potential issue: **the launcher checks the arch of the container (uname -m), while Go checks the arch of the binary (runtime.GOARCH)**. Docs acknowledge. If they mismatch (emulated container on amd64 host running arm64 image), the Go check would allow ethN up to 255 but the launcher (arm64) rejects >29 at runtime with exit 1 → container fails to start after deployment. That's a deployment failure after containers start; the docs warn about it. Acceptable tradeoff, documented.\n\nReverse: Go binary arm64 on amd64 host — image amd64; Go check rejects ethN>29 even though amd64 launcher could do bridges. Documented (\"except in emulated setups\").\n\nNow — a real potential bug I want to verify: `check_nic_index` uses `[ \"$PCI_BRIDGES\" != 1 ]`. On amd64, PCI_BRIDGES=1. Fine.\n\nAnother: in `qemu_data_nic`, the case pattern `1)` vs `*)` — PCI_BRIDGES is 0 or 1. Fine.\n\nNow let's double-check the test robot file for the arch skip: `Skip If    '${arch}' != 'x86_64' and '${arch}' != 'amd64'` — Robot's Skip If takes a condition; Python-like: `'x86_64' != 'x86_64' and 'x86_64' != 'amd64'` → False → not skipped on amd64. On arm64: True and True → True → skipped. OK.\n\nOne concern: `Require AMD64` runs `uname -m` via OperatingSystem.Run — fine.\n\nBut note: Suite Setup Skip — when a suite setup skips, all tests in the suite are skipped. Good.\n\nHowever — there's a subtle issue with the workflow: the matrix runs `02*.robot` on both docker and podman (runtime input). On podman, continue-on-error. OK.\n\nNow — the health check test uses `${runtime}` variable = docker (hardcoded), ignoring the CI runtime input. Same as 01 suite. Pre-existing pattern.\n\nNext, let me check `rf-run.sh` and `common.robot` for `CLAB_BIN` etc. Not needed deeply.\n\nNow let me look for issues in the launcher function-extraction test: `strings.Cut(string(launcherScript), \"\\n\"+name+\"() {\")` — for \"check_nic_index\", the script has `check_nic_index() {` at line 185 with a comment after: `check_nic_index() { # check_nic_index <max-index>: ...`. The cut pattern is \"\\ncheck_nic_index() {\" — matches. Then body until \"\\n}\\n\". The body includes the trailing comment part of the first line. Then returns `check_nic_index() { # comment...\\n    # The last MAC...\\n...}`. Then the test prepends a `log()` definition. But wait — the body for check_nic_index contains no other functions. Good. For qemu_data_nic similarly.\n\nNow — one more potential issue with the test: `fn+\"PCI_BRIDGES=\\\"$1\\\"; qemu_data_nic \\\"$2\\\" \\\"$3\\\"\"` — the fn string ends with \"\\n}\\n\"; then PCI_BRIDGES assignment. Fine.\n\nNow, the docs: does the interface help text (`InterfaceHelp`) mention limits? No change needed.\n\nNow, are there other callers of the changed MAC semantics? The `SaveConfig`/filterLauncherConfig unaffected.\n\nOne more important thing: `mikrotik_chr.go` adds `runtime` and `errors` imports. Fine.\n\nNow let's consider the \"watch_links\" loop and `max` — unchanged.\n\nPotential issue: **`bridge_eth` for indices that exist** — unchanged.\n\nNow let me think about whether the amd64 bridge layout works with the `-M pc` default of qemu-system-x86_64 (i440fx). The default machine is `pc` (i440fx) — pci.0 exists. `-device pci-bridge,bus=pci.0` — supported. `chassis_nr` required for pci-bridge device? Actually for `-device pci-bridge`, `chassis_nr` is a property with default; specifying it is fine.\n\nSlot calculation: `_slot=$(( ($1 - 1) % 25 + 1 ))` → 1..25 → addr 0x1..0x19. On a bridge's secondary bus, device 0 is reserved for the bridge itself, so 1..25 fine. Devices with addr up to 0x19 fine.\n\nOne QEMU concern: `vectors=2` for virtio-net-pci means 1 RX/TX queue pair + config vector. Default for virtio-net-pci is 3 vectors (2 queue pairs? no—default vectors=3: rx, tx, config for 1 queue pair? Actually default is 3 for one queue pair: rx, tx, config). vectors=2 gives rx/tx sharing one vector + config. QEMU requires vectors ≥ 2 for MSI-X. Fine.\n\nAnother QEMU concern: the number of IRQs. Fine.\n\nNow — a genuine issue to consider: **`_bridge` calculation for index 255**: (255-1)/25+1 = 254/25=10 → +1 = 11. Slot: 254%25 = 4 → +1 = 5 → 0x5. Test expects bus \"11\", addr \"0x5\". Good.\n\nNow the Go side: on amd64, `dataNICLimit` returns 255. But the launcher's actual PCI capacity: 11 bridges × 25 = 275 ≥ 255. OK.\n\nNow let me also check the docs statement \"This removes the default layout's limit of 29 total Ethernet interfaces (management plus 28 data ports)\". Wait — is 28 correct for the OLD amd64 behavior? Base had no bridges; on amd64 PC, free slots: the docs claim 29 total including mgmt. The base launcher had no limit check; QEMU would error. The doc statement is new info; can't verify precisely but plausible.\n\nNow — a potential functional gap: **`check_nic_index` on amd64 rejects index > 255 with the message \"at most 255 data NICs\"** — but on amd64, is the MAC the binding constraint? 255 is the MAC limit. Also Go check says the same. Consistent.\n\nNow let's consider the **restart with NICS_FILE > limit**: prev could be ≤255 from an old deployment; fine.\n\nNext: **Test coverage gap** — the launcher changes are covered by TestLauncherShellSyntax, TestQEMUDataNIC, TestCheckNICIndex. The Go CheckInterfaceName covered. The e2e test covers amd64 high ports. Arm64 e2e not covered (hard to run in CI) — the 01 suite runs on both. Acceptable; maybe note.\n\nNow, potential issue with the robot test: \"Wait for r1 and r2 to be healthy\" — r2 gets only 60s. In 01 suite, same pattern (r1 300s, r2 60s). r1 waits longer because its startup config is imported; r2 has the same startup config in 02 (both have startup-config with /ip address add). Actually in 02 both r1 and r2 import configs. The 60s for r2 — mirrors 01. Since both boot concurrently, r2 might take longer than 60s under TCG. But CI uses KVM. It matches the existing suite pattern; not a defect introduced.\n\nHmm, wait — actually in 01, r1 has 300s because its startup-config r1.rsc import can take long; r2 60s. In 02, both r1 and r2 have startup-configs importing on ether33. r2 with only 60s — if r2's boot is slow (import of config), the healthcheck may not be ready in 60s. But both nodes boot in parallel, so by the time r1 is healthy, r2 is likely ready. Mirror of 01; low risk. Not a finding.\n\nAnother potential issue: the 02 test's `Node is healthy` uses `${runtime}` = docker — but the CI podman job would use podman. In 01 the same. Pre-existing pattern; not introduced.\n\nNow let me look at more subtle Go behavior: `AddEndpoint` is called per iface; for \"ether256\" → mapped to \"eth255\"; then CheckInterfaceName: index 255 ≤ 255 OK. For arm64: \"ether30\" → \"eth29\" OK; \"ether31\" → \"eth30\" → over limit → error message says \"(eth29 / ether30)\". Good.\n\nBut — hmm, wait. There's a subtle mapping detail: for \"ether33\" → index 33-2+1 = 32 → \"eth32\". The launcher creates taps for eth1..eth32 and QEMU NICs for indices 1..32, so RouterOS ether(N+1) = ether33. Consistent with the test topology comment.\n\nNow — the e2e test topology: link on r1:ether33 and r2:ether33. Each node gets 32 data NICs (eth1..eth32) → 2 qemu processes × 32 virtio NICs + bridges (bridge1 for 1-25, bridge2 for 26-32). MEM = 256 + 8*1*32 = 512 MB per node. OK.\n\nNow — an important check on `check_nic_index` placement: it's called after computing max from INTFS etc. But BEFORE the MEM calc (MEM uses max). Fine.\n\nNow — potential issue: **`check_nic_index` exits 1 — but the NICS_FILE is not updated; on the next start, the same failure. Fine.\n\nNow, the docs claim: \"The highest interface depends on the architecture, and larger indices are rejected during deployment\". Good — matches Go check.\n\nOne more docs check: the doc says \"On AMD64, data NICs are placed behind PCI bridges rather than sharing the default PC's root bus with all other devices.\" — fine.\n\nNow — anything about the `groups_fwd_mask`/watch links unchanged.\n\nLet me now double-check `qemu_data_nic` output when PCI_BRIDGES=1 and the test compares words. The `-device pci-bridge...` is printf'd with a trailing space `'%s '`. Then `-netdev tap...` — wait, look carefully: the first printf prints `\"-device pci-bridge,id=chrpci$_bridge,chassis_nr=$_bridge,bus=pci.0\"` followed by a space. The second printf prints `\"-netdev tap,id=d$1,ifname=tap$1,script=no,downscript=no -device virtio-net,netdev=d$1,mac=$2,bus=chrpci$_bridge,addr=...\"`. So the full output for index 1: \"-device pci-bridge,id=chrpci1,chassis_nr=1,bus=pci.0 -netdev tap,id=d1,... -device virtio-net,netdev=d1,mac=...,bus=chrpci1,addr=0x1,romfile=,vectors=2\". Test want: bridge string prefixed. Good.\n\nNow — one real QEMU semantics question: `-device pci-bridge,id=chrpci1,chassis_nr=1,bus=pci.0` — for i440fx, pci.0 is the bus id. Yes.\n\nBut hold on: the shorthorn — on the amd64 path, the management NIC device is `virtio-net` on pci.0 (default bus), created BEFORE the bridges. So mgmt gets slot after the host bridge devices. Fine.\n\nNow, does the NIC order argument hold? \"NIC order = PCI order = the order of the -device args below.\" With bridges: QEMU assigns PCI addresses in command-line order: mgmt NIC gets an address on pci.0; bridge1 gets the next pci.0 address; d1..d25 get addresses on chrpci1 in order; bridge2 gets next pci.0 address; d26..d32 on chrpci2; etc. Guest enumeration: depth-first through the PCI tree by bus/slot order: pci.0: mgmt (slot 2?), bridge1 (slot 3), bridge2 (slot 4), ..., bridge11. Each bridge's secondary bus enumerated... The guest OS enumerates bridges depth-first: after bridge1 at slot 3, its bus is enumerated immediately (ether2..ether26 on bridge1's bus in slot order), then bridge2's bus, etc. Hmm — actually PCI enumeration: depth-first — when the OS encounters bridge1 (slot 3), it enumerates bridge1's secondary bus before moving to slot 4 (bridge2). So the order is: mgmt, then bridge1's 25 NICs, then bridge2's NICs, etc. That matches index order 1..25, 26..50... Good — RouterOS ether numbering follows device order, so ether2..ether26 on bridge1. Consistent.\n\nBut wait — there's a subtlety: does QEMU *guarantee* that bridge devices get increasing slots in command-line order? Auto-assign: yes, QEMU assigns the first free slot in order of device creation. mgmt is created first (line 183), then per-loop: bridge1 (slot next free), d1..d25 on chrpci1, then bridge2 (next free on pci.0), etc. So pci.0 slots: host bridge (0), then possibly other built-ins? On i440fx: slot 0 = host bridge; also there might be ISA bridge/PIIX at slots 1... Actually the PC machine places PIIX3 at slot 1. So mgmt NIC → slot 2, bridge1 → slot 3, ..., bridge11 → slot 13. Fine, well under 29.\n\nOK the design is sound.\n\nNow let me review remaining changed file: the workflow (fine), docs (fine), test files.\n\nNow — potential P3/P4 findings:\n\n1. **`TestQEMUDataNIC` \"old-limit\" case name/misleading**: not a real finding.\n\n2. **Docs inconsistency?** The docs say ARM64 limit eth29/ether30 — \"the last data port that fits on the virt machine's PCI bus\". The Go comment says \"its single bus holds the disk, the management NIC and at most 29 data NICs before QEMU runs out of slots\". Consistent.\n\n3. **`check_nic_index` message vs Go message mismatch on amd64**: The launcher says \"at most 255 data NICs are supported (eth255 / ether256); index $1 would reuse a NIC MAC\". Go says same. Fine.\n\n4. Potential issue: **Go check applies the arm64 limit based on the containerlab binary's arch, but the launcher's limit is based on the container's arch (`uname -m` inside the image)**. If they diverge, the Go pre-deploy check and the launcher runtime check disagree, and the user sees a deploy failure at container start (exit 1 in launcher) that the pre-deploy check didn't catch — for the amd64-binary-on-arm64-image direction. Wait: Go binary amd64 → limit 255 → allows eth100. Image arm64 → launcher PCI_BRIDGES=0 → rejects index 100 → exit 1 → container dies. Docs mention \"The check uses the architecture of the containerlab binary, which matches the image's except in emulated setups.\" So documented. The runtime failure is caught by the launcher with a clear message. Acceptable.\n\n5. **Performance**: `qemu_data_nic` is called in a shell loop — fine.\n\n6. Now a subtle shell portability issue: `$(printf '0x%x' \"$_slot\")` — busybox printf supports %x with numeric arg. Fine.\n\n7. `$(( ($1 - 1) / 25 + 1 ))` — busybox arithmetic. Fine.\n\nNow, let me think about a REAL potential bug: **the bridge device is emitted only when `_slot` == 1, i.e., for indices 1, 26, 51, ...**. In the actual launcher loop, all indices 1..max are emitted in order, so bridges appear before their NICs. Good. But what about the case where the tap/NIC for index i is created but bridge for i's group wasn't emitted because... no, it's emitted at slot 1 of each group which is included in 1..max. Good.\n\nBut WAIT — there's a subtle bug: the `check_nic_index` and the NIC loop use `$max`. But what about **restart with prev > current max and the bridges**? Same loop covers 1..max. Fine.\n\nNow — one more important consideration: **the mgmt NIC is still on pci.0**, and the bridge devices consume pci.0 slots. With 255 NICs → 11 bridges. But what if `max` is, say, 255 and the amd64 image's qemu is old and doesn't support pci-bridge? The mikrotik/chr image ships qemu; pci-bridge is standard. Fine.\n\nNow let's check the potential issue with **`romfile=`**: `romfile=` empty disables option ROM. Standard.\n\nNow — **`vectors=2`**: for virtio-net-pci, minimum vectors for MSI-X is 2 (config + one queue pair shared)? QEMU accepts vectors=2. OK.\n\nNow — the deeper question: does RouterOS CHR actually see virtio NICs behind pci-bridge? Presumably tested by the e2e test (which the PR author presumably ran). We can't run it.\n\nNow let me check remaining: the base test file for mikrotik_chr_test.go — the diff shows the changes; the head version we read. Let me quickly scan base for the changed section to ensure nothing was lost. The diff shows the full TestInterfaceParsing rewrite. Base had cases \"routeros-names\", \"eth-names\", \"mgmt-ether1\". Head adds many. Also the test now always sets `n.goarch = \"amd64\"` then overrides. Note: `newInitialized` calls `n.Init` which sets goarch = runtime.GOARCH; then the test overrides to amd64/arm64 — good for determinism.\n\nWait — but there's a subtlety: in the test, for arm64 case with goarch=\"arm64\", `n.goarch = \"arm64\"`. Fine.\n\nNow let me check the \"malformed\" case: \"xeth5\" — parent CheckInterfaceName passes (regexp not anchored). Then new check: TrimPrefix(\"xeth5\", \"eth\") → \"xeth5\" (no prefix match) → Atoi fails ErrSyntax → error \"cannot parse interface index\". Good — this closes a pre-existing gap where malformed names passed the parent check. Good improvement.\n\nHmm — but wait: what about names like \"eth1x\"? VMInterfaceRegexp: `eth[1-9]\\d*$` matches \"eth1x\"? `\\d*$` — \"eth1x\" ends with 'x', so `eth[1-9]\\d*$` requires the string to end with digits after eth[1-9]. \"eth1x\" doesn't match. So parent check rejects it. OK.\n\nWhat about \"ether5x\"? Doesn't match VMInterfaceRegexp → GetMappedInterfaceName: regexp `ether(?P<port>\\d+)` — `(?P<port>\\d+)` is greedy but not anchored; \"ether5x\" → port \"5\" → mapped \"eth4\"?? Wait: InterfaceRegexp matches \"ether5\" within \"ether5x\" (not anchored at end!). So \"ether5x\" would map to eth4! Hmm, that's a pre-existing quirk of AddEndpoint mapping (not introduced here). Actually wait — VMInterfaceRegexp.MatchString(\"ether5x\") → does `eth[1-9]\\d*$` match \"ether5x\"? The string must end with eth+digits — \"ether5x\" ends with \"5x\" — no match. So AddEndpoint maps it → \"eth4\". Then CheckInterfaceName: parent passes (eth4 matches), new check: index 4 ≤ limit. So \"ether5x\" silently becomes eth4 — pre-existing behavior, not introduced by this PR. Skip.\n\nNow, what about \"ether256\" mapping → eth255 (allowed on amd64). And the launcher creates 255 data NICs. Good.\n\nNow — **one potential real defect in the Go check**: it iterates `n.Endpoints` and uses `ep.GetIfaceName()`. For the FIRST error found, it returns. Fine.\n\nBut — is `CheckInterfaceName` also invoked in other flows (e.g., ` redeploy`, `tools`)? It's part of CheckDeploymentConditions — deploy path. OK.\n\nNow — the schema check: no API change.\n\nNext: verify there are no other callers of the changed launcher functions within the script that could break. `qemu_data_nic` used once; `check_nic_index` once.\n\nNow, let me also check `tests/common.robot` and `ssh.robot` exist and the `Skip If` keyword availability (BuiltIn). Fine.\n\nLet me also check `rf-run.sh` accepts a glob — the workflow runs `./tests/16-mikrotik-chr/02*.robot` — with matrix \"02*.robot\" the shell expands... in the workflow, `bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/16-mikrotik-chr/${{ matrix.test-suite }}` — the glob expands in bash (run step uses bash). rf-run.sh receives the expanded list. Same as 01*.robot pattern. Fine.\n\nLet me quickly verify rf-run.sh handles multiple files.",
+          "time": {
+            "start": 1792829218375,
+            "end": 1792829311491
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_16cf44a09001ylXCBGTw2OqF6a",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV",
+          "text": "Let me check `rf-run.sh` and the common resources, plus verify remaining details of the launcher diff region in base.",
+          "time": {
+            "start": 1792829311497,
+            "end": 1792829312334
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf44bf6001mdzsjeH6Omb1kQ",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV",
+          "callID": "call_bd5a6ac92a78407d8ac18ece",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/tests/rf-run.sh"
+            },
+            "output": "<path>/source/head/tests/rf-run.sh</path>\n<type>file</type>\n<content>\n1: #!/bin/bash\n2: # Copyright 2020 Nokia\n3: # Licensed under the BSD 3-Clause License.\n4: # SPDX-License-Identifier: BSD-3-Clause\n5: \n6: # arguments\n7: # $1 - runtime: [docker, podman, c9s]\n8: # $2 - test suite to execute\n9: # $3... - optional arguments passed to robot\n10: \n11: set -euo pipefail\n12: \n13: if [ \"$#\" -lt 2 ]; then\n14:   echo \"usage: $0 <runtime> <test suite>\"\n15:   exit 1\n16: fi\n17: \n18: runtime=$1\n19: suite=$2\n20: shift 2\n21: extra_robot_args=(\"$@\")\n22: \n23: # set containerlab binary path to a value of CLAB_BIN env variable\n24: # unless it is not set, then use 'containerlab' as a default value\n25: if [ -z \"${CLAB_BIN:-}\" ]; then\n26:   CLAB_BIN=containerlab\n27: fi\n28: \n29: export AWS_ACCESS_KEY_ID\n30: export AWS_SECRET_ACCESS_KEY\n31: \n32: echo \"Running tests with containerlab binary at $(command -v \"${CLAB_BIN}\") path and selected runtime: ${runtime}\"\n33: \n34: COV_DIR=/tmp/clab-tests/coverage\n35: \n36: # coverage output directory\n37: mkdir -p \"${COV_DIR}\"\n38: \n39: # parses the dir or file name passed to the rf-run.sh script\n40: # and in case of a directory, it returns the name of the directory\n41: # in case of a file it returns the name of the file's dir catenated with file name without extension\n42: function get_logname() {\n43:   path=$1\n44:   filename=$(basename \"$path\")\n45:   if [[ \"$filename\" == *.* ]]; then\n46:     dirname=$(dirname \"$path\")\n47:     basename=$(basename \"$path\" | cut -d. -f1)\n48:     echo \"${dirname##*/}-${basename}\"\n49:   else\n50:     echo \"${filename}\"\n51:   fi\n52: }\n53: \n54: robot_args=()\n55: if [ \"${runtime}\" = \"c9s\" ]; then\n56:   robot_args+=(--include clabernetes)\n57: fi\n58: \n59: GOCOVERDIR=${COV_DIR} uv run --project . -m robot \\\n60:   --consolecolors on \\\n61:   -r none \\\n62:   --variable CLAB_BIN:${CLAB_BIN} \\\n63:   --variable runtime:${runtime} \\\n64:   -l ./tests/out/$(get_logname \"${suite}\")-${runtime}-log \\\n65:   --output ./tests/out/$(basename \"${suite}\")-${runtime}-out.xml \\\n66:   \"${extra_robot_args[@]}\" \\\n67:   \"${robot_args[@]}\" \\\n68:   \"${suite}\"\n\n(End of file - total 68 lines)\n</content>",
+            "title": "source/head/tests/rf-run.sh",
+            "metadata": {
+              "preview": "#!/bin/bash\n# Copyright 2020 Nokia\n# Licensed under the BSD 3-Clause License.\n# SPDX-License-Identifier: BSD-3-Clause\n\n# arguments\n# $1 - runtime: [docker, podman, c9s]\n# $2 - test suite to execute\n# $3... - optional arguments passed to robot\n\nset -euo pipefail\n\nif [ \"$#\" -lt 2 ]; then\n  echo \"usage: $0 <runtime> <test suite>\"\n  exit 1\nfi\n\nruntime=$1\nsuite=$2\nshift 2",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/tests/rf-run.sh",
+                "text": "#!/bin/bash\n# Copyright 2020 Nokia\n# Licensed under the BSD 3-Clause License.\n# SPDX-License-Identifier: BSD-3-Clause\n\n# arguments\n# $1 - runtime: [docker, podman, c9s]\n# $2 - test suite to execute\n# $3... - optional arguments passed to robot\n\nset -euo pipefail\n\nif [ \"$#\" -lt 2 ]; then\n  echo \"usage: $0 <runtime> <test suite>\"\n  exit 1\nfi\n\nruntime=$1\nsuite=$2\nshift 2\nextra_robot_args=(\"$@\")\n\n# set containerlab binary path to a value of CLAB_BIN env variable\n# unless it is not set, then use 'containerlab' as a default value\nif [ -z \"${CLAB_BIN:-}\" ]; then\n  CLAB_BIN=containerlab\nfi\n\nexport AWS_ACCESS_KEY_ID\nexport AWS_SECRET_ACCESS_KEY\n\necho \"Running tests with containerlab binary at $(command -v \"${CLAB_BIN}\") path and selected runtime: ${runtime}\"\n\nCOV_DIR=/tmp/clab-tests/coverage\n\n# coverage output directory\nmkdir -p \"${COV_DIR}\"\n\n# parses the dir or file name passed to the rf-run.sh script\n# and in case of a directory, it returns the name of the directory\n# in case of a file it returns the name of the file's dir catenated with file name without extension\nfunction get_logname() {\n  path=$1\n  filename=$(basename \"$path\")\n  if [[ \"$filename\" == *.* ]]; then\n    dirname=$(dirname \"$path\")\n    basename=$(basename \"$path\" | cut -d. -f1)\n    echo \"${dirname##*/}-${basename}\"\n  else\n    echo \"${filename}\"\n  fi\n}\n\nrobot_args=()\nif [ \"${runtime}\" = \"c9s\" ]; then\n  robot_args+=(--include clabernetes)\nfi\n\nGOCOVERDIR=${COV_DIR} uv run --project . -m robot \\\n  --consolecolors on \\\n  -r none \\\n  --variable CLAB_BIN:${CLAB_BIN} \\\n  --variable runtime:${runtime} \\\n  -l ./tests/out/$(get_logname \"${suite}\")-${runtime}-log \\\n  --output ./tests/out/$(basename \"${suite}\")-${runtime}-out.xml \\\n  \"${extra_robot_args[@]}\" \\\n  \"${robot_args[@]}\" \\\n  \"${suite}\"",
+                "lineStart": 1,
+                "lineEnd": 68,
+                "totalLines": 68,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792829311996,
+              "end": 1792829312003
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf44d46001zYMqBWBC1cTMKK",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV",
+          "callID": "call_541ecb2bb1db4cb281567895",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/base/nodes/mikrotik_chr/chr-launch.sh",
+              "limit": 60,
+              "offset": 269
+            },
+            "output": "<path>/source/base/nodes/mikrotik_chr/chr-launch.sh</path>\n<type>file</type>\n<content>\n269: fi\n270: \n271: bridge_eth() { # bridge_eth <i>: container ethI joins brI beside tapI (brI made once)\n272:     _mtu=\"$(cat \"$SYSNET/eth$1/mtu\" 2>/dev/null || echo 1500)\"\n273:     if [ ! -e \"$SYSNET/br$1\" ]; then\n274:         brctl addbr \"br$1\"\n275:         ip link set \"br$1\" mtu \"$_mtu\"\n276:         ip link set \"tap$1\" mtu \"$_mtu\"\n277:         # forward LLDP (01:80:c2:00:00:0e, bit 14); STP/LACP cannot cross a bridge\n278:         echo 16384 > \"$SYSNET/br$1/bridge/group_fwd_mask\" 2>/dev/null\n279:         brctl addif \"br$1\" \"tap$1\"\n280:     fi\n281:     brctl addif \"br$1\" \"eth$1\"\n282:     ip link set \"eth$1\" up\n283:     ip link set \"br$1\" up\n284: }\n285: # A veth that lands or returns while qemu runs (containerlab restores a link\n286: # right after a restart --node, a large lab attaches late, a peer node's\n287: # redeploy recreates the pair) joins its bridge as it appears, so the RouterOS\n288: # interface behind tapN gets its link back without a restart here.\n289: watch_links() {\n290:     _warned=\"\"\n291:     while kill -0 \"$QEMU_PID\" 2>/dev/null; do\n292:         i=1\n293:         while [ \"$i\" -le \"$max\" ]; do\n294:             if [ -e \"$SYSNET/eth$i\" ] && [ ! -e \"$SYSNET/br$i/brif/eth$i\" ]; then\n295:                 bridge_eth \"$i\" && log \"link eth$i attached: bridged to tap$i\"\n296:             fi\n297:             i=$((i + 1))\n298:         done\n299:         for d in \"$SYSNET\"/eth[1-9]*; do\n300:             [ -e \"$d\" ] || continue\n301:             n=\"${d##*/eth}\"\n302:             [ \"$n\" -gt \"$max\" ] || continue\n303:             case \" $_warned \" in *\" $n \"*) continue ;; esac\n304:             _warned=\"$_warned $n\"\n305:             log \"link eth$n attached after qemu started with $max data NICs: no RouterOS interface for it until the node is restarted\"\n306:         done\n307:         sleep 2\n308:     done\n309: }\n310: \n311: i=1\n312: while [ \"$i\" -le \"$max\" ]; do\n313:     tap=\"tap$i\"\n314:     tunctl -t \"$tap\" >/dev/null 2>&1 || ip tuntap add dev \"$tap\" mode tap\n315:     [ -e \"$SYSNET/eth$i\" ] && bridge_eth \"$i\"\n316:     ip link set \"$tap\" up\n317:     mac=\"$(printf '52:54:00:%s:%02x' \"$node_id\" \"$((i & 255))\")\"\n318:     NET=\"$NET -netdev tap,id=d$i,ifname=$tap,script=no,downscript=no -device virtio-net,netdev=d$i,mac=$mac\"\n319:     i=$((i + 1))\n320: done\n321: \n322: # shellcheck disable=SC2086\n323: $QEMU $ACCEL -display none -monitor none \\\n324:     -m \"$MEM\" -smp \"cpus=$CPUS\" \\\n325:     -drive \"file=$IMG,format=raw\" \\\n326:     -serial telnet:0.0.0.0:5000,server,nowait \\\n327:     $NET &\n328: QEMU_PID=$!\n\n(Showing lines 269-328 of 670. Use offset=329 to continue.)\n</content>",
+            "title": "source/base/nodes/mikrotik_chr/chr-launch.sh",
+            "metadata": {
+              "preview": "fi\n\nbridge_eth() { # bridge_eth <i>: container ethI joins brI beside tapI (brI made once)\n    _mtu=\"$(cat \"$SYSNET/eth$1/mtu\" 2>/dev/null || echo 1500)\"\n    if [ ! -e \"$SYSNET/br$1\" ]; then\n        brctl addbr \"br$1\"\n        ip link set \"br$1\" mtu \"$_mtu\"\n        ip link set \"tap$1\" mtu \"$_mtu\"\n        # forward LLDP (01:80:c2:00:00:0e, bit 14); STP/LACP cannot cross a bridge\n        echo 16384 > \"$SYSNET/br$1/bridge/group_fwd_mask\" 2>/dev/null\n        brctl addif \"br$1\" \"tap$1\"\n    fi\n    brctl addif \"br$1\" \"eth$1\"\n    ip link set \"eth$1\" up\n    ip link set \"br$1\" up\n}\n# A veth that lands or returns while qemu runs (containerlab restores a link\n# right after a restart --node, a large lab attaches late, a peer node's\n# redeploy recreates the pair) joins its bridge as it appears, so the RouterOS\n# interface behind tapN gets its link back without a restart here.",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/base/nodes/mikrotik_chr/chr-launch.sh",
+                "text": "fi\n\nbridge_eth() { # bridge_eth <i>: container ethI joins brI beside tapI (brI made once)\n    _mtu=\"$(cat \"$SYSNET/eth$1/mtu\" 2>/dev/null || echo 1500)\"\n    if [ ! -e \"$SYSNET/br$1\" ]; then\n        brctl addbr \"br$1\"\n        ip link set \"br$1\" mtu \"$_mtu\"\n        ip link set \"tap$1\" mtu \"$_mtu\"\n        # forward LLDP (01:80:c2:00:00:0e, bit 14); STP/LACP cannot cross a bridge\n        echo 16384 > \"$SYSNET/br$1/bridge/group_fwd_mask\" 2>/dev/null\n        brctl addif \"br$1\" \"tap$1\"\n    fi\n    brctl addif \"br$1\" \"eth$1\"\n    ip link set \"eth$1\" up\n    ip link set \"br$1\" up\n}\n# A veth that lands or returns while qemu runs (containerlab restores a link\n# right after a restart --node, a large lab attaches late, a peer node's\n# redeploy recreates the pair) joins its bridge as it appears, so the RouterOS\n# interface behind tapN gets its link back without a restart here.\nwatch_links() {\n    _warned=\"\"\n    while kill -0 \"$QEMU_PID\" 2>/dev/null; do\n        i=1\n        while [ \"$i\" -le \"$max\" ]; do\n            if [ -e \"$SYSNET/eth$i\" ] && [ ! -e \"$SYSNET/br$i/brif/eth$i\" ]; then\n                bridge_eth \"$i\" && log \"link eth$i attached: bridged to tap$i\"\n            fi\n            i=$((i + 1))\n        done\n        for d in \"$SYSNET\"/eth[1-9]*; do\n            [ -e \"$d\" ] || continue\n            n=\"${d##*/eth}\"\n            [ \"$n\" -gt \"$max\" ] || continue\n            case \" $_warned \" in *\" $n \"*) continue ;; esac\n            _warned=\"$_warned $n\"\n            log \"link eth$n attached after qemu started with $max data NICs: no RouterOS interface for it until the node is restarted\"\n        done\n        sleep 2\n    done\n}\n\ni=1\nwhile [ \"$i\" -le \"$max\" ]; do\n    tap=\"tap$i\"\n    tunctl -t \"$tap\" >/dev/null 2>&1 || ip tuntap add dev \"$tap\" mode tap\n    [ -e \"$SYSNET/eth$i\" ] && bridge_eth \"$i\"\n    ip link set \"$tap\" up\n    mac=\"$(printf '52:54:00:%s:%02x' \"$node_id\" \"$((i & 255))\")\"\n    NET=\"$NET -netdev tap,id=d$i,ifname=$tap,script=no,downscript=no -device virtio-net,netdev=d$i,mac=$mac\"\n    i=$((i + 1))\ndone\n\n# shellcheck disable=SC2086\n$QEMU $ACCEL -display none -monitor none \\\n    -m \"$MEM\" -smp \"cpus=$CPUS\" \\\n    -drive \"file=$IMG,format=raw\" \\\n    -serial telnet:0.0.0.0:5000,server,nowait \\\n    $NET &\nQEMU_PID=$!",
+                "lineStart": 269,
+                "lineEnd": 328,
+                "totalLines": 670,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792829312331,
+              "end": 1792829312341
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf44d58001YMD5RjJTVY9G14",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 86172,
+            "input": 3290,
+            "output": 75,
+            "reasoning": 6263,
+            "cache": {
+              "read": 76544,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_16cf44d5e001E93VSVk8LXi9Np",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829312350
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_16cf44d5f0016XEAYSbRrcL63s",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf44d5e001E93VSVk8LXi9Np",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_16cf1dd6c001ROhvLrKb2fsnsz"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf44d76001xcMyv4srUZ9jKq",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829312375,
+          "completed": 1792829349300
+        },
+        "parentID": "msg_16cf44d5e001E93VSVk8LXi9Np",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 18937,
+          "input": 16673,
+          "output": 2251,
+          "reasoning": 13,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf4743f0017zrJ5mI7myO7h0",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf44d76001xcMyv4srUZ9jKq"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf47441001lPtQ9xNAjpKtoI",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf44d76001xcMyv4srUZ9jKq",
+          "text": "Let me create a structured summary of this code review conversation.",
+          "time": {
+            "start": 1792829322305,
+            "end": 1792829322418
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_16cf474b40016WOTk2lLBUuPJH",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf44d76001xcMyv4srUZ9jKq",
+          "text": "## Objective\n- Perform a read-only source review of a PR snapshot at `/source` (containerlab repo, head `c46227a6abdc0aa2eef6b27a16d707bf837deed7`, base `4272331ab9bc560eb5a1525a7b47bc52f0cae361`), covering all 8 changed paths, callers, tests, docs, and schema, and return a trusted result schema. No test execution possible (source-only); disclose that limitation.\n\n## Important Details\n- Snapshot: `/source` with `standards.json` (references `.cursor/rules/karpathy-guidelines.mdc` and `.cursor/rules/ponytail.mdc`), `manifest.json`, `diff.txt`, `head/`, `base/` trees.\n- `manifest.json` lists 8 changed paths: M `.github/workflows/mikrotik_chr-tests.yml`, M `docs/manual/kinds/mikrotik_chr.md`, M `nodes/mikrotik_chr/chr-launch.sh`, A `nodes/mikrotik_chr/chr_launch_test.go`, M `nodes/mikrotik_chr/mikrotik_chr.go`, M `nodes/mikrotik_chr/mikrotik_chr_test.go`, A `tests/16-mikrotik-chr/02-chr-high-ports.clab.yml`, A `tests/16-mikrotik-chr/02-chr-high-ports.robot`.\n- PR theme: raises mikrotik_chr interface limit. On AMD64, data NICs moved behind PCI bridges (`pci-bridge`, `chassis_nr`, buses `chrpci1..N`, 25 NICs/bridge) removing old 29-interface limit → new limit 255 data NICs (`eth255`/`ether256`). ARM64 keeps single PCI bus on `virt` machine, limit 29 (`eth29`/`ether30`).\n- Key code changes analyzed:\n  - `chr-launch.sh`: new `check_nic_index` function (rejects index > limit per arch, exit 1); MAC format changed from `$((i & 255))` mask to plain `$i` with `%02x` (safe because check_nic_index rejects >255 before NICS_FILE write); new `qemu_data_nic` function emitting `-device pci-bridge,id=chrpciN,chassis_nr=N,bus=pci.0` only at slot 1 plus `-netdev`/`-device virtio-net-pci` with `bus=chrpciN`, `addr=0xX`, `vectors=2`; `NET=\"$NET $(qemu_data_nic \"$i\" \"$mac\")\"` word-splitting verified OK; MEM = 256 + 8*CPUS*max.\n  - `mikrotik_chr.go`: added `dataNICLimit()` (255 amd64, 29 arm64) based on `runtime.GOARCH` of the containerlab binary (docs acknowledge emulated-setup caveat); added `CheckInterfaceName` override using `strconv.Atoi(strings.TrimPrefix(ifName, \"eth\"))`, error strings \"cannot parse interface index\" (ErrSyntax) and range-limit error.\n  - Verified via `nodes/vr_node.go` `AddEndpoint` (line 75) + `default_node.go` `GetMappedInterfaceName` (line 621): `etherN` names are mapped to `ethN` (InterfaceOffset=2, FirstDataIfIndex=1) BEFORE `CheckInterfaceName` runs, so `TrimPrefix` works; `ether256` → `eth255` confirmed. Malformed \"xeth5\" → ErrSyntax path, matches test expectations.\n  - Test verification: `TestQEMUDataNIC` cases: index 1 → bridge 1, bus 1, addr 0x1; index 28 (\"old-limit\", bridge \"\" since bridge only emitted at slot 1) → bus 2, addr 0x3; index 29 → bus 2, addr 0x4. `launcherFunction` extraction assumes nested closing braces are indented — verified no nested col-0 braces in target functions. `check_nic_index` is called before NICS_FILE persistence (correct ordering).\n  - Workflow: adds `\"02*.robot\"` to test-suite matrix; podman `continue-on-error` unchanged.\n  - Docs (`mikrotik_chr.md` lines ~72+): documents AMD64 PCI-bridge layout, ARM64 unchanged, arch-check caveat.\n  - New robot test: AMD64-only (`Skip If`), image `mikrotik/chr:7.24.5`, 33-interface check on r2 (ether1..ether33 = mgmt + 32 data); minor observation: health wait timeouts differ (r1 300s/5s vs r2 60s/5s) — noted as minor.\n- GitHub permalinks: head=`https://github.com/srl-labs/containerlab/blob/c46227a6abdc0aa2eef6b27a16d707bf837deed7/`, base=`https://github.com/srl-labs/containerlab/blob/4272331ab9bc560eb5a1525a7b47bc52f0cae361/`.\n- Standards: karpathy-guidelines.mdc (surgical changes, surface assumptions) and ponytail.mdc (simplest solution) apply to the review.\n\n## Work State\n### Completed\n- Read `standards.json`, both rules files, `manifest.json`, `diff.txt`.\n- Read head versions: `chr-launch.sh` (710 lines), `mikrotik_chr.go`, `mikrotik_chr_test.go`, `chr_launch_test.go`, workflow yml, docs excerpt.\n- Read base versions: `chr-launch.sh` (MAC/mask region), `mikrotik_chr.go`.\n- Traced and verified the `etherN`→`ethN` mapping chain (`vr_node.go` line 75 `AddEndpoint`, `default_node.go` lines 600-637), confirming `CheckInterfaceName` operates on mapped `ethN` names — resolves the initial concern about `TrimPrefix(\"ether30\",\"eth\")`.\n- Verified test expectations for `qemu_data_nic` slot/bridge math (25 NICs per bridge, 11 bridges for 255 NICs, bridge device emitted only when `_slot == 1`).\n- Verified `check_nic_index` ordering (before NICS_FILE write) and MAC `printf '%02x' \"$i\"` safety (no wrap since index ≤ 255 enforced).\n\n### Active\n- Still need to finish reading: full head `mikrotik_chr.go` and `mikrotik_chr_test.go` (truncated portions), full `chr_launch_test.go`, full docs, the new `tests/16-mikrotik-chr/02-chr-high-ports.clab.yml` and `02-chr-high-ports.robot`, and remaining diff hunks (diff.txt was truncated at line ~30).\n- Need to check base versions of `mikrotik_chr_test.go`, workflow, docs for full diff coverage; possibly check other callers/tests of `CheckInterfaceName` behavior and any schema/limits references elsewhere (grep for \"29\"/\"255\" mentions in docs/other kinds).\n\n### Blocked\n- Test execution impossible (read-only snapshot); must disclose in final result.\n- Read tool errors on `/source` root direct read (permission rules) — use explicit file paths under `/source`.\n\n## Next Move\n1. Read remaining truncated files with offsets: full `head/nodes/mikrotik_chr/mikrotik_chr.go`, full `mikrotik_chr_test.go`, full `chr_launch_test.go`, full `diff.txt` remainder, `head/docs/manual/kinds/mikrotik_chr.md` lines 72-170, both new `tests/16-mikrotik-chr/02-chr-high-ports.*` files, and base workflow/docs/test files.\n2. Grep for other references to interface limits (e.g., \"29\", \"ether30\", \"InterfaceOffset\") in docs/schema/callers; check base `mikrotik_chr_test.go` for prior test expectations; then compile final findings (including minor r1/r2 health-wait timeout asymmetry, arch-based limit caveat) and return the trusted result schema.\n\n## Relevant Files\n- `/source/manifest.json`: inventory of all 8 changed paths and file sizes/lines.\n- `/source/diff.txt`: full change hunks (partially read; truncated around line 30 — re-read with offset).\n- `/source/head/nodes/mikrotik_chr/chr-launch.sh`: core launcher changes — `check_nic_index`, `qemu_data_nic`, MAC formatting, NIC loop.\n- `/source/base/nodes/mikrotik_chr/chr-launch.sh`: base for comparison (MAC mask `$((i & 255))`, no bridges).\n- `/source/head/nodes/mikrotik_chr/mikrotik_chr.go`: `dataNICLimit()`, `CheckInterfaceName` override (partially read).\n- `/source/base/nodes/mikrotik_chr/mikrotik_chr.go`: base for comparison (partially read).\n- `/source/head/nodes/mikrotik_chr/mikrotik_chr_test.go`: tests incl. `TestInterfaceParsing`, duplicate/malformed cases (partially read).\n- `/source/head/nodes/mikrotik_chr/chr_launch_test.go`: new launcher unit tests (`TestLauncherShellSyntax`, `TestQEMUDataNIC`, `launcherFunction` helper) (partially read).\n- `/source/head/nodes/vr_node.go`: `AddEndpoint` mapping — verified `etherN`→`ethN` normalization before `CheckInterfaceName`.\n- `/source/head/nodes/default_node.go`: `GetMappedInterfaceName` (line 621), `CheckInterfaceName` (line 586) — verified mapping math.\n- `/source/head/.github/workflows/mikrotik_chr-tests.yml`: matrix adds `02*.robot` (partially read).\n- `/source/head/docs/manual/kinds/mikrotik_chr.md`: documented limits/architecture behavior (partially read).\n- `/source/head/tests/16-mikrotik-chr/02-chr-high-ports.clab.yml`: new test topology (not yet read).\n- `/source/head/tests/16-mikrotik-chr/02-chr-high-ports.robot`: new robot test — AMD64-only skip, 33-interface check, differing health-wait timeouts (not yet fully read).",
+          "time": {
+            "start": 1792829322420,
+            "end": 1792829349292
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf4ddb0001MYsho9NyM8iAXZ",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf44d76001xcMyv4srUZ9jKq",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 18937,
+            "input": 16673,
+            "output": 2251,
+            "reasoning": 13,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829349303
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_16cf4ddb8001ZVEpDjTDTSOasN",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1792829349304,
+            "end": 1792829349304
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf4ddbe0016Vu0vokEXkVaYe",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829349310,
+          "completed": 1792829359291
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 18468,
+          "input": 17896,
+          "output": 57,
+          "reasoning": 515,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf4e5b7001W4XTeoc2pvNrjM",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf4ddbe0016Vu0vokEXkVaYe"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf4e5b90016ipD8fHHuMvVer",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf4ddbe0016Vu0vokEXkVaYe",
+          "text": "Good — this confirms the base MAC line: `mac=\"$(printf '52:54:00:%s:%02x' \"$node_id\" \"$((i & 255))\")\"`. So base MAC last octet was `$((i & 255))`. Head changes it to `$i` with `%02x`. Wait — in the head version I read earlier, the loop had:\n\n```\nmac=\"$(printf '52:54:00:%s:%02x' \"$node_id\" \"$i\")\"\nNET=\"$NET $(qemu_data_nic \"$i\" \"$mac\")\"\n```\n\nHmm, but I need to double check what I actually read in head. Let me re-read the head loop to confirm exact lines and line numbers for citation. Earlier in the conversation (per summary), head lines ~301: `check_nic_index \"$max\" || exit 1`. And qemu_data_nic function. Let me re-read the head launcher loop region precisely to confirm the MAC change and line numbers.\n\nAlso note: with base MAC `$((i & 255))` and head `$i` — for i ≤ 255 identical. But wait, one subtle thing: base wrapped at 256; head's check_nic_index caps at 255 (amd64) / 29 (arm64). So identical for allowed ranges. Actually wait — is there a case where head allows i=256? No. OK.\n\nBut actually, hold on — there's something I should double check in head: does head use `%02x` with `$i` — for i up to 255, %02x gives 2 hex digits (01..ff). Same as before for i≤255. For i=0? Not used (loop starts at 1). Good.\n\nOne more important check I should do: the head launcher's `qemu_data_nic` and whether the mgmt NIC ordering claim holds — already analyzed.\n\nNow remaining reads:\n1. Head launcher loop region (lines ~295-340) to confirm exact line numbers for findings.\n2. Full diff.txt remainder.\n3. Full head mikrotik_chr.go (partially read).\n4. Full head mikrotik_chr_test.go.\n5. Full head chr_launch_test.go.\n6. Head docs lines 72-170.\n7. Head tests 02 files (already partially; the robot file summary exists — let me read fully to be precise).\n8. Base workflow/docs/test for diff verification.\n\nLet me batch these reads.",
+          "time": {
+            "start": 1792829351354,
+            "end": 1792829359105
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf50404001l46f29q7ZOuvq3",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf4ddbe0016Vu0vokEXkVaYe",
+          "callID": "call_181a25049d1c44ebaa0618eb",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/mikrotik_chr/chr-launch.sh",
+              "limit": 80,
+              "offset": 280
+            },
+            "output": "<path>/source/head/nodes/mikrotik_chr/chr-launch.sh</path>\n<type>file</type>\n<content>\n280: # NIC order = PCI order = the order of the -device args below. Walk\n281: # eth1..ethMAX so a gap (links on ether2 and ether5 only) keeps RouterOS\n282: # numbering aligned: a missing ethN still gets a tap, just no bridge. The count\n283: # never shrinks across restarts: a `docker restart` recreates the netns and\n284: # every lab veth of the node is gone, and a NIC absent for one boot loses the\n285: # config bound to it. The tap keeps ether(N+1) a real interface, its link comes\n286: # back when containerlab restores the veth or the lab is redeployed.\n287: max=0\n288: for d in \"$SYSNET\"/eth[1-9]*; do\n289:     [ -e \"$d\" ] || continue\n290:     n=\"${d##*/eth}\"\n291:     [ \"$n\" -gt \"$max\" ] && max=\"$n\"\n292: done\n293: prev=\"$(cat \"$NICS_FILE\" 2>/dev/null)\"\n294: case \"$prev\" in *[!0-9]*|\"\") prev=0 ;; esac\n295: [ \"$prev\" -gt \"$max\" ] && max=\"$prev\"\n296: # The wait above can end short of CLAB_INTFS on a large lab (links attach after\n297: # every container started): the NIC set still spans the expected count, and\n298: # the watcher bridges the late veths.\n299: case \"$INTFS\" in *[!0-9]*|\"\") INTFS=0 ;; esac\n300: [ \"$INTFS\" -gt \"$max\" ] && max=\"$INTFS\"\n301: check_nic_index \"$max\" || exit 1\n302: [ \"$max\" -gt \"$prev\" ] && { printf '%s\\n' \"$max\" > \"$NICS_FILE\" 2>/dev/null || true; }\n303: \n304: # RouterOS v7 memory ≈ 256 + 8·CPUS·(ifaces) MiB (MikroTik CHR system\n305: # requirements). Scale by the HIGHEST generated NIC, not CLAB_INTFS: a sparse\n306: # link on ether64 means CLAB_INTFS=1 yet 63 data NICs are created below.\n307: if [ -z \"${MEM:-}\" ]; then\n308:     MEM=$((256 + 8 * CPUS * max))\n309: fi\n310: \n311: bridge_eth() { # bridge_eth <i>: container ethI joins brI beside tapI (brI made once)\n312:     _mtu=\"$(cat \"$SYSNET/eth$1/mtu\" 2>/dev/null || echo 1500)\"\n313:     if [ ! -e \"$SYSNET/br$1\" ]; then\n314:         brctl addbr \"br$1\"\n315:         ip link set \"br$1\" mtu \"$_mtu\"\n316:         ip link set \"tap$1\" mtu \"$_mtu\"\n317:         # forward LLDP (01:80:c2:00:00:0e, bit 14); STP/LACP cannot cross a bridge\n318:         echo 16384 > \"$SYSNET/br$1/bridge/group_fwd_mask\" 2>/dev/null\n319:         brctl addif \"br$1\" \"tap$1\"\n320:     fi\n321:     brctl addif \"br$1\" \"eth$1\"\n322:     ip link set \"eth$1\" up\n323:     ip link set \"br$1\" up\n324: }\n325: # A veth that lands or returns while qemu runs (containerlab restores a link\n326: # right after a restart --node, a large lab attaches late, a peer node's\n327: # redeploy recreates the pair) joins its bridge as it appears, so the RouterOS\n328: # interface behind tapN gets its link back without a restart here.\n329: watch_links() {\n330:     _warned=\"\"\n331:     while kill -0 \"$QEMU_PID\" 2>/dev/null; do\n332:         i=1\n333:         while [ \"$i\" -le \"$max\" ]; do\n334:             if [ -e \"$SYSNET/eth$i\" ] && [ ! -e \"$SYSNET/br$i/brif/eth$i\" ]; then\n335:                 bridge_eth \"$i\" && log \"link eth$i attached: bridged to tap$i\"\n336:             fi\n337:             i=$((i + 1))\n338:         done\n339:         for d in \"$SYSNET\"/eth[1-9]*; do\n340:             [ -e \"$d\" ] || continue\n341:             n=\"${d##*/eth}\"\n342:             [ \"$n\" -gt \"$max\" ] || continue\n343:             case \" $_warned \" in *\" $n \"*) continue ;; esac\n344:             _warned=\"$_warned $n\"\n345:             log \"link eth$n attached after qemu started with $max data NICs: no RouterOS interface for it until the node is restarted\"\n346:         done\n347:         sleep 2\n348:     done\n349: }\n350: \n351: i=1\n352: while [ \"$i\" -le \"$max\" ]; do\n353:     tap=\"tap$i\"\n354:     tunctl -t \"$tap\" >/dev/null 2>&1 || ip tuntap add dev \"$tap\" mode tap\n355:     [ -e \"$SYSNET/eth$i\" ] && bridge_eth \"$i\"\n356:     ip link set \"$tap\" up\n357:     mac=\"$(printf '52:54:00:%s:%02x' \"$node_id\" \"$i\")\"\n358:     NET=\"$NET $(qemu_data_nic \"$i\" \"$mac\")\"\n359:     i=$((i + 1))\n\n(Showing lines 280-359 of 710. Use offset=360 to continue.)\n</content>",
+            "title": "source/head/nodes/mikrotik_chr/chr-launch.sh",
+            "metadata": {
+              "preview": "# NIC order = PCI order = the order of the -device args below. Walk\n# eth1..ethMAX so a gap (links on ether2 and ether5 only) keeps RouterOS\n# numbering aligned: a missing ethN still gets a tap, just no bridge. The count\n# never shrinks across restarts: a `docker restart` recreates the netns and\n# every lab veth of the node is gone, and a NIC absent for one boot loses the\n# config bound to it. The tap keeps ether(N+1) a real interface, its link comes\n# back when containerlab restores the veth or the lab is redeployed.\nmax=0\nfor d in \"$SYSNET\"/eth[1-9]*; do\n    [ -e \"$d\" ] || continue\n    n=\"${d##*/eth}\"\n    [ \"$n\" -gt \"$max\" ] && max=\"$n\"\ndone\nprev=\"$(cat \"$NICS_FILE\" 2>/dev/null)\"\ncase \"$prev\" in *[!0-9]*|\"\") prev=0 ;; esac\n[ \"$prev\" -gt \"$max\" ] && max=\"$prev\"\n# The wait above can end short of CLAB_INTFS on a large lab (links attach after\n# every container started): the NIC set still spans the expected count, and\n# the watcher bridges the late veths.\ncase \"$INTFS\" in *[!0-9]*|\"\") INTFS=0 ;; esac",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/mikrotik_chr/chr-launch.sh",
+                "text": "# NIC order = PCI order = the order of the -device args below. Walk\n# eth1..ethMAX so a gap (links on ether2 and ether5 only) keeps RouterOS\n# numbering aligned: a missing ethN still gets a tap, just no bridge. The count\n# never shrinks across restarts: a `docker restart` recreates the netns and\n# every lab veth of the node is gone, and a NIC absent for one boot loses the\n# config bound to it. The tap keeps ether(N+1) a real interface, its link comes\n# back when containerlab restores the veth or the lab is redeployed.\nmax=0\nfor d in \"$SYSNET\"/eth[1-9]*; do\n    [ -e \"$d\" ] || continue\n    n=\"${d##*/eth}\"\n    [ \"$n\" -gt \"$max\" ] && max=\"$n\"\ndone\nprev=\"$(cat \"$NICS_FILE\" 2>/dev/null)\"\ncase \"$prev\" in *[!0-9]*|\"\") prev=0 ;; esac\n[ \"$prev\" -gt \"$max\" ] && max=\"$prev\"\n# The wait above can end short of CLAB_INTFS on a large lab (links attach after\n# every container started): the NIC set still spans the expected count, and\n# the watcher bridges the late veths.\ncase \"$INTFS\" in *[!0-9]*|\"\") INTFS=0 ;; esac\n[ \"$INTFS\" -gt \"$max\" ] && max=\"$INTFS\"\ncheck_nic_index \"$max\" || exit 1\n[ \"$max\" -gt \"$prev\" ] && { printf '%s\\n' \"$max\" > \"$NICS_FILE\" 2>/dev/null || true; }\n\n# RouterOS v7 memory ≈ 256 + 8·CPUS·(ifaces) MiB (MikroTik CHR system\n# requirements). Scale by the HIGHEST generated NIC, not CLAB_INTFS: a sparse\n# link on ether64 means CLAB_INTFS=1 yet 63 data NICs are created below.\nif [ -z \"${MEM:-}\" ]; then\n    MEM=$((256 + 8 * CPUS * max))\nfi\n\nbridge_eth() { # bridge_eth <i>: container ethI joins brI beside tapI (brI made once)\n    _mtu=\"$(cat \"$SYSNET/eth$1/mtu\" 2>/dev/null || echo 1500)\"\n    if [ ! -e \"$SYSNET/br$1\" ]; then\n        brctl addbr \"br$1\"\n        ip link set \"br$1\" mtu \"$_mtu\"\n        ip link set \"tap$1\" mtu \"$_mtu\"\n        # forward LLDP (01:80:c2:00:00:0e, bit 14); STP/LACP cannot cross a bridge\n        echo 16384 > \"$SYSNET/br$1/bridge/group_fwd_mask\" 2>/dev/null\n        brctl addif \"br$1\" \"tap$1\"\n    fi\n    brctl addif \"br$1\" \"eth$1\"\n    ip link set \"eth$1\" up\n    ip link set \"br$1\" up\n}\n# A veth that lands or returns while qemu runs (containerlab restores a link\n# right after a restart --node, a large lab attaches late, a peer node's\n# redeploy recreates the pair) joins its bridge as it appears, so the RouterOS\n# interface behind tapN gets its link back without a restart here.\nwatch_links() {\n    _warned=\"\"\n    while kill -0 \"$QEMU_PID\" 2>/dev/null; do\n        i=1\n        while [ \"$i\" -le \"$max\" ]; do\n            if [ -e \"$SYSNET/eth$i\" ] && [ ! -e \"$SYSNET/br$i/brif/eth$i\" ]; then\n                bridge_eth \"$i\" && log \"link eth$i attached: bridged to tap$i\"\n            fi\n            i=$((i + 1))\n        done\n        for d in \"$SYSNET\"/eth[1-9]*; do\n            [ -e \"$d\" ] || continue\n            n=\"${d##*/eth}\"\n            [ \"$n\" -gt \"$max\" ] || continue\n            case \" $_warned \" in *\" $n \"*) continue ;; esac\n            _warned=\"$_warned $n\"\n            log \"link eth$n attached after qemu started with $max data NICs: no RouterOS interface for it until the node is restarted\"\n        done\n        sleep 2\n    done\n}\n\ni=1\nwhile [ \"$i\" -le \"$max\" ]; do\n    tap=\"tap$i\"\n    tunctl -t \"$tap\" >/dev/null 2>&1 || ip tuntap add dev \"$tap\" mode tap\n    [ -e \"$SYSNET/eth$i\" ] && bridge_eth \"$i\"\n    ip link set \"$tap\" up\n    mac=\"$(printf '52:54:00:%s:%02x' \"$node_id\" \"$i\")\"\n    NET=\"$NET $(qemu_data_nic \"$i\" \"$mac\")\"\n    i=$((i + 1))",
+                "lineStart": 280,
+                "lineEnd": 359,
+                "totalLines": 710,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792829359112,
+              "end": 1792829359120
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf504a9001CE1Hyy1reWm108",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf4ddbe0016Vu0vokEXkVaYe",
+          "callID": "call_7e677abdfac74dabbed0afb1",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/mikrotik_chr/mikrotik_chr.go"
+            },
+            "output": "<path>/source/head/nodes/mikrotik_chr/mikrotik_chr.go</path>\n<type>file</type>\n<content>\n1: // Copyright 2026 NetPilot Labs\n2: // Licensed under the BSD 3-Clause License.\n3: // SPDX-License-Identifier: BSD-3-Clause\n4: \n5: // Package mikrotik_chr runs MikroTik RouterOS CHR from the official mikrotik/chr image.\n6: //\n7: // The image is MikroTik's own distribution (Alpine + qemu + the CHR disk) and is used\n8: // unmodified: the kind writes chr-launch.sh into the node's lab directory, bind-mounts it\n9: // read-only and sets it as the entrypoint in place of the image's /start.sh, which is not\n10: // orchestration-ready (containerlab#3116, #3464).\n11: package mikrotik_chr\n12: \n13: import (\n14: \t\"context\"\n15: \t_ \"embed\"\n16: \t\"errors\"\n17: \t\"fmt\"\n18: \t\"net\"\n19: \t\"os\"\n20: \t\"path\"\n21: \t\"path/filepath\"\n22: \t\"regexp\"\n23: \t\"runtime\"\n24: \t\"slices\"\n25: \t\"strconv\"\n26: \t\"strings\"\n27: \n28: \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n29: \tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n30: \tclabtypes \"github.com/srl-labs/containerlab/types\"\n31: \tclabutils \"github.com/srl-labs/containerlab/utils\"\n32: )\n33: \n34: var (\n35: \tkindNames          = []string{\"mikrotik_chr\"}\n36: \tdefaultCredentials = clabnodes.NewCredentials(\"admin\", \"admin\")\n37: \n38: \tInterfaceRegexp = regexp.MustCompile(`ether(?P<port>\\d+)`)\n39: \tInterfaceOffset = 2\n40: \tInterfaceHelp   = \"etherX (where X >= 2) or ethX (where X >= 1)\"\n41: \n42: \t//go:embed chr-launch.sh\n43: \tlauncherScript []byte\n44: )\n45: \n46: const (\n47: \tconfigDirName   = \"ftpboot\"\n48: \tstartupCfgFName = \"config.auto.rsc\"\n49: \n50: \tlauncherFName = \"chr-launch.sh\"\n51: \tlauncherPath  = \"/chr-launch.sh\"\n52: \t// readyFile is written by the launcher once RouterOS accepted the credentials and the\n53: \t// startup config, and removed at every container start.\n54: \treadyFile = \"/.chr-launch-ready\"\n55: \n56: \t// mgmtComment tags every management object the launcher creates in RouterOS.\n57: \tmgmtComment = \"clab-mgmt\"\n58: \n59: \t// The last MAC octet is the NIC index; zero is reserved for management.\n60: \tmaxDataNICIndex = 255\n61: \t// arm64's virt machine gets no PCI bridges: its single bus holds the disk, the\n62: \t// management NIC and at most 29 data NICs before QEMU runs out of slots.\n63: \tmaxDataNICIndexARM64 = 29\n64: \n65: \t// the launcher's CHR_INTF_WAIT and CHR_BOOT_WAIT defaults, and the time its config\n66: \t// fetch and gateway check add, in seconds.\n67: \tdefaultIntfWait  = 60\n68: \tdefaultBootWait  = 300\n69: \tstartPeriodSlack = 90\n70: \n71: \tscrapliPlatformName = \"mikrotik_routeros\" //nolint: misspell\n72: )\n73: \n74: // Register registers the node in the NodeRegistry.\n75: func Register(r *clabnodes.NodeRegistry) {\n76: \tplatformAttrs := &clabnodes.PlatformAttrs{\n77: \t\tScrapliPlatformName: scrapliPlatformName,\n78: \t}\n79: \n80: \tnrea := clabnodes.NewNodeRegistryEntryAttributes(defaultCredentials, nil, platformAttrs)\n81: \n82: \tr.Register(kindNames, func() clabnodes.Node {\n83: \t\treturn new(mikrotikCHR)\n84: \t}, nrea)\n85: }\n86: \n87: type mikrotikCHR struct {\n88: \tclabnodes.VRNode\n89: \t// goarch selects the NIC layout the interface limit is checked against. The\n90: \t// containerlab binary's architecture matches the image's outside emulated setups.\n91: \tgoarch string\n92: }\n93: \n94: func (n *mikrotikCHR) Init(cfg *clabtypes.NodeConfig, opts ...clabnodes.NodeOption) error {\n95: \tn.VRNode = *clabnodes.NewVRNode(n, defaultCredentials, scrapliPlatformName)\n96: \tn.ConfigDirName = configDirName\n97: \tn.StartupCfgFName = startupCfgFName\n98: \t// The image's qemu falls back to TCG emulation without /dev/kvm: KVM makes the boot\n99: \t// fast but is not required.\n100: \tn.HostRequirements.VirtRequired = false\n101: \n102: \tn.Cfg = cfg\n103: \tfor _, o := range opts {\n104: \t\to(n)\n105: \t}\n106: \n107: \t// Credentials travel as env, not on the command line, so a password needs no quoting.\n108: \tdefEnv := map[string]string{\n109: \t\t\"USERNAME\": n.Cfg.Credentials.Username,\n110: \t\t\"PASSWORD\": n.Cfg.Credentials.Password,\n111: \t}\n112: \tn.Cfg.Env = clabutils.MergeStringMaps(defEnv, n.Cfg.Env)\n113: \n114: \tn.Cfg.Binds = append(n.Cfg.Binds,\n115: \t\tfmt.Sprint(path.Join(n.Cfg.LabDir, configDirName), \":/ftpboot\"),\n116: \t\tfmt.Sprint(path.Join(n.Cfg.LabDir, launcherFName), \":\", launcherPath, \":ro\"),\n117: \t)\n118: \n119: \tif n.Cfg.Entrypoint == \"\" {\n120: \t\tn.Cfg.Entrypoint = \"/bin/sh \" + launcherPath\n121: \t}\n122: \tn.Cfg.Cmd = fmt.Sprintf(\"--hostname %s\", n.Cfg.ShortName)\n123: \n124: \tif n.Cfg.Healthcheck == nil {\n125: \t\tn.Cfg.Healthcheck = &clabtypes.HealthcheckConfig{\n126: \t\t\tTest:        []string{\"CMD-SHELL\", \"test -f \" + readyFile},\n127: \t\t\tInterval:    5,\n128: \t\t\tTimeout:     3,\n129: \t\t\tRetries:     3,\n130: \t\t\tStartPeriod: startPeriod(n.Cfg.Env),\n131: \t\t}\n132: \t}\n133: \n134: \tn.InterfaceRegexp = InterfaceRegexp\n135: \tn.InterfaceOffset = InterfaceOffset\n136: \tn.InterfaceHelp = InterfaceHelp\n137: \tn.goarch = runtime.GOARCH\n138: \n139: \treturn nil\n140: }\n141: \n142: // dataNICLimit is the highest data NIC index the launcher's NIC layout holds on goarch.\n143: func dataNICLimit(goarch string) int {\n144: \tif goarch == \"arm64\" {\n145: \t\treturn maxDataNICIndexARM64\n146: \t}\n147: \n148: \treturn maxDataNICIndex\n149: }\n150: \n151: // CheckInterfaceName rejects data NIC indices the launcher cannot create: beyond the\n152: // free PCI slots on arm64, or wrapping the launcher's MAC addresses.\n153: func (n *mikrotikCHR) CheckInterfaceName() error {\n154: \tif err := n.VRNode.CheckInterfaceName(); err != nil {\n155: \t\treturn err\n156: \t}\n157: \n158: \tlimit := dataNICLimit(n.goarch)\n159: \tfor _, ep := range n.Endpoints {\n160: \t\tifName := ep.GetIfaceName()\n161: \t\tindex, err := strconv.Atoi(strings.TrimPrefix(ifName, \"eth\"))\n162: \t\t// An index too large for an int is still an index over the limit.\n163: \t\tif err != nil && !errors.Is(err, strconv.ErrRange) {\n164: \t\t\treturn fmt.Errorf(\n165: \t\t\t\t\"node %q interface %q: cannot parse interface index: %w\",\n166: \t\t\t\tn.Cfg.ShortName, ifName, err,\n167: \t\t\t)\n168: \t\t}\n169: \t\tif err != nil || index > limit {\n170: \t\t\treturn fmt.Errorf(\n171: \t\t\t\t\"node %q interface %q exceeds the maximum data NIC index %d on %s (eth%d / ether%d)\",\n172: \t\t\t\tn.Cfg.ShortName, ifName, limit, n.goarch, limit, limit+1,\n173: \t\t\t)\n174: \t\t}\n175: \t}\n176: \n177: \treturn nil\n178: }\n179: \n180: // startPeriod is the healthcheck start period in seconds: the launcher's own worst case\n181: // before the ready file, so a slow boot (TCG) never reports unhealthy. It waits up to\n182: // CHR_INTF_WAIT for the links, then up to CHR_BOOT_WAIT each for REST, the startup-config\n183: // import and the SSH banner, plus the config fetch and the gateway check.\n184: func startPeriod(env map[string]string) int {\n185: \treturn envSeconds(env, \"CHR_INTF_WAIT\", defaultIntfWait) +\n186: \t\t3*envSeconds(env, \"CHR_BOOT_WAIT\", defaultBootWait) + startPeriodSlack\n187: }\n188: \n189: // envSeconds reads a positive number of seconds from env, else returns def (the launcher\n190: // falls back to its default the same way).\n191: func envSeconds(env map[string]string, key string, def int) int {\n192: \tif v, err := strconv.Atoi(strings.TrimSpace(env[key])); err == nil && v > 0 {\n193: \t\treturn v\n194: \t}\n195: \n196: \treturn def\n197: }\n198: \n199: // PreDeploy writes the launcher next to the startup config on every deploy, so a\n200: // containerlab upgrade ships its launcher to existing labs.\n201: func (n *mikrotikCHR) PreDeploy(ctx context.Context, params *clabnodes.PreDeployParams) error {\n202: \tif err := n.VRNode.PreDeploy(ctx, params); err != nil {\n203: \t\treturn err\n204: \t}\n205: \n206: \tdst := filepath.Join(n.Cfg.LabDir, launcherFName)\n207: \tif err := os.WriteFile(dst, launcherScript, clabconstants.PermissionsFileDefault); err != nil {\n208: \t\treturn fmt.Errorf(\"node %q: failed to write %s: %w\", n.Cfg.ShortName, dst, err)\n209: \t}\n210: \n211: \treturn nil\n212: }\n213: \n214: // PreStop skips VRNode's vrnetlab qcow2 alias step, which does not apply to this image.\n215: func (*mikrotikCHR) PreStop(_ context.Context) error {\n216: \treturn nil\n217: }\n218: \n219: // SaveConfig exports the RouterOS configuration over SSH (scrapligo has no RouterOS\n220: // platform, see clabnodes.ExportConfigOverSSH) and writes it as the node's startup config,\n221: // without the objects the launcher creates at every boot.\n222: func (n *mikrotikCHR) SaveConfig(_ context.Context) (*clabnodes.SaveConfigResult, error) {\n223: \texported, err := clabnodes.ExportConfigOverSSH(\n224: \t\tnet.JoinHostPort(n.Cfg.LongName, \"22\"),\n225: \t\tn.Cfg.Credentials.Username,\n226: \t\tn.Cfg.Credentials.Password,\n227: \t\t\"/export\",\n228: \t)\n229: \tif err != nil {\n230: \t\treturn nil, err\n231: \t}\n232: \n233: \treturn clabnodes.WriteSavedConfig(n.Cfg, n.ConfigDirName, n.StartupCfgFName,\n234: \t\t[]byte(filterLauncherConfig(exported)+\"\\n\"))\n235: }\n236: \n237: // filterLauncherConfig drops what the launcher configures at every boot from an /export:\n238: // every object tagged clab-mgmt (the ether1 management addresses, the mgmt routing table,\n239: // its routes and rules), the ether1 ND entry and CHR's ether1 DHCP client. Imported again\n240: // as a startup config, these lines duplicate objects the launcher already created and\n241: // RouterOS stops the import at the first one; the management addressing also belongs to\n242: // the deployment, not the lab. Continuation lines (an unescaped trailing backslash) are joined\n243: // before\n244: // matching.\n245: func filterLauncherConfig(config string) string {\n246: \tvar out []string\n247: \n248: \tsection := \"\"\n249: \tpending := \"\"\n250: \tfor line := range strings.SplitSeq(strings.ReplaceAll(config, \"\\r\\n\", \"\\n\"), \"\\n\") {\n251: \t\tif pending != \"\" {\n252: \t\t\tline = pending + \"\\n\" + line\n253: \t\t\tpending = \"\"\n254: \t\t}\n255: \t\tif continues(line) {\n256: \t\t\tpending = line\n257: \t\t\tcontinue\n258: \t\t}\n259: \n260: \t\ttrimmed := strings.TrimSpace(line)\n261: \t\tif strings.HasPrefix(trimmed, \"/\") {\n262: \t\t\tsection = trimmed\n263: \t\t}\n264: \t\tif launcherOwned(section, trimmed) {\n265: \t\t\tcontinue\n266: \t\t}\n267: \t\tout = append(out, line)\n268: \t}\n269: \tif pending != \"\" {\n270: \t\tout = append(out, pending)\n271: \t}\n272: \n273: \treturn strings.Join(out, \"\\n\")\n274: }\n275: \n276: // continues reports whether an /export line continues on the next one: it ends in an\n277: // unescaped backslash. RouterOS writes a literal backslash in a value as `\\\\`, so an even\n278: // run of trailing backslashes ends the line.\n279: func continues(line string) bool {\n280: \ttrailing := len(line) - len(strings.TrimRight(line, `\\`))\n281: \n282: \treturn trailing%2 == 1\n283: }\n284: \n285: func launcherOwned(section, line string) bool {\n286: \tif !strings.HasPrefix(line, \"add \") {\n287: \t\treturn false\n288: \t}\n289: \n290: \tfields := strings.Fields(strings.ReplaceAll(line, `\\`, \" \"))\n291: \thas := func(kv string) bool { return slices.Contains(fields, kv) }\n292: \n293: \tif has(\"comment=\" + mgmtComment) {\n294: \t\treturn true\n295: \t}\n296: \n297: \t// /ipv6 nd keeps no comment: the launcher's ether1 entry is matched by interface.\n298: \tswitch section {\n299: \tcase \"/ip address\", \"/ipv6 address\", \"/ip dhcp-client\", \"/ipv6 nd\":\n300: \t\treturn has(\"interface=ether1\")\n301: \t}\n302: \n303: \treturn false\n304: }\n\n(End of file - total 304 lines)\n</content>",
+            "title": "source/head/nodes/mikrotik_chr/mikrotik_chr.go",
+            "metadata": {
+              "preview": "// Copyright 2026 NetPilot Labs\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\n// Package mikrotik_chr runs MikroTik RouterOS CHR from the official mikrotik/chr image.\n//\n// The image is MikroTik's own distribution (Alpine + qemu + the CHR disk) and is used\n// unmodified: the kind writes chr-launch.sh into the node's lab directory, bind-mounts it\n// read-only and sets it as the entrypoint in place of the image's /start.sh, which is not\n// orchestration-ready (containerlab#3116, #3464).\npackage mikrotik_chr\n\nimport (\n\t\"context\"\n\t_ \"embed\"\n\t\"errors\"\n\t\"fmt\"\n\t\"net\"\n\t\"os\"\n\t\"path\"",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/mikrotik_chr/mikrotik_chr.go",
+                "text": "// Copyright 2026 NetPilot Labs\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\n// Package mikrotik_chr runs MikroTik RouterOS CHR from the official mikrotik/chr image.\n//\n// The image is MikroTik's own distribution (Alpine + qemu + the CHR disk) and is used\n// unmodified: the kind writes chr-launch.sh into the node's lab directory, bind-mounts it\n// read-only and sets it as the entrypoint in place of the image's /start.sh, which is not\n// orchestration-ready (containerlab#3116, #3464).\npackage mikrotik_chr\n\nimport (\n\t\"context\"\n\t_ \"embed\"\n\t\"errors\"\n\t\"fmt\"\n\t\"net\"\n\t\"os\"\n\t\"path\"\n\t\"path/filepath\"\n\t\"regexp\"\n\t\"runtime\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n\nvar (\n\tkindNames          = []string{\"mikrotik_chr\"}\n\tdefaultCredentials = clabnodes.NewCredentials(\"admin\", \"admin\")\n\n\tInterfaceRegexp = regexp.MustCompile(`ether(?P<port>\\d+)`)\n\tInterfaceOffset = 2\n\tInterfaceHelp   = \"etherX (where X >= 2) or ethX (where X >= 1)\"\n\n\t//go:embed chr-launch.sh\n\tlauncherScript []byte\n)\n\nconst (\n\tconfigDirName   = \"ftpboot\"\n\tstartupCfgFName = \"config.auto.rsc\"\n\n\tlauncherFName = \"chr-launch.sh\"\n\tlauncherPath  = \"/chr-launch.sh\"\n\t// readyFile is written by the launcher once RouterOS accepted the credentials and the\n\t// startup config, and removed at every container start.\n\treadyFile = \"/.chr-launch-ready\"\n\n\t// mgmtComment tags every management object the launcher creates in RouterOS.\n\tmgmtComment = \"clab-mgmt\"\n\n\t// The last MAC octet is the NIC index; zero is reserved for management.\n\tmaxDataNICIndex = 255\n\t// arm64's virt machine gets no PCI bridges: its single bus holds the disk, the\n\t// management NIC and at most 29 data NICs before QEMU runs out of slots.\n\tmaxDataNICIndexARM64 = 29\n\n\t// the launcher's CHR_INTF_WAIT and CHR_BOOT_WAIT defaults, and the time its config\n\t// fetch and gateway check add, in seconds.\n\tdefaultIntfWait  = 60\n\tdefaultBootWait  = 300\n\tstartPeriodSlack = 90\n\n\tscrapliPlatformName = \"mikrotik_routeros\" //nolint: misspell\n)\n\n// Register registers the node in the NodeRegistry.\nfunc Register(r *clabnodes.NodeRegistry) {\n\tplatformAttrs := &clabnodes.PlatformAttrs{\n\t\tScrapliPlatformName: scrapliPlatformName,\n\t}\n\n\tnrea := clabnodes.NewNodeRegistryEntryAttributes(defaultCredentials, nil, platformAttrs)\n\n\tr.Register(kindNames, func() clabnodes.Node {\n\t\treturn new(mikrotikCHR)\n\t}, nrea)\n}\n\ntype mikrotikCHR struct {\n\tclabnodes.VRNode\n\t// goarch selects the NIC layout the interface limit is checked against. The\n\t// containerlab binary's architecture matches the image's outside emulated setups.\n\tgoarch string\n}\n\nfunc (n *mikrotikCHR) Init(cfg *clabtypes.NodeConfig, opts ...clabnodes.NodeOption) error {\n\tn.VRNode = *clabnodes.NewVRNode(n, defaultCredentials, scrapliPlatformName)\n\tn.ConfigDirName = configDirName\n\tn.StartupCfgFName = startupCfgFName\n\t// The image's qemu falls back to TCG emulation without /dev/kvm: KVM makes the boot\n\t// fast but is not required.\n\tn.HostRequirements.VirtRequired = false\n\n\tn.Cfg = cfg\n\tfor _, o := range opts {\n\t\to(n)\n\t}\n\n\t// Credentials travel as env, not on the command line, so a password needs no quoting.\n\tdefEnv := map[string]string{\n\t\t\"USERNAME\": n.Cfg.Credentials.Username,\n\t\t\"PASSWORD\": n.Cfg.Credentials.Password,\n\t}\n\tn.Cfg.Env = clabutils.MergeStringMaps(defEnv, n.Cfg.Env)\n\n\tn.Cfg.Binds = append(n.Cfg.Binds,\n\t\tfmt.Sprint(path.Join(n.Cfg.LabDir, configDirName), \":/ftpboot\"),\n\t\tfmt.Sprint(path.Join(n.Cfg.LabDir, launcherFName), \":\", launcherPath, \":ro\"),\n\t)\n\n\tif n.Cfg.Entrypoint == \"\" {\n\t\tn.Cfg.Entrypoint = \"/bin/sh \" + launcherPath\n\t}\n\tn.Cfg.Cmd = fmt.Sprintf(\"--hostname %s\", n.Cfg.ShortName)\n\n\tif n.Cfg.Healthcheck == nil {\n\t\tn.Cfg.Healthcheck = &clabtypes.HealthcheckConfig{\n\t\t\tTest:        []string{\"CMD-SHELL\", \"test -f \" + readyFile},\n\t\t\tInterval:    5,\n\t\t\tTimeout:     3,\n\t\t\tRetries:     3,\n\t\t\tStartPeriod: startPeriod(n.Cfg.Env),\n\t\t}\n\t}\n\n\tn.InterfaceRegexp = InterfaceRegexp\n\tn.InterfaceOffset = InterfaceOffset\n\tn.InterfaceHelp = InterfaceHelp\n\tn.goarch = runtime.GOARCH\n\n\treturn nil\n}\n\n// dataNICLimit is the highest data NIC index the launcher's NIC layout holds on goarch.\nfunc dataNICLimit(goarch string) int {\n\tif goarch == \"arm64\" {\n\t\treturn maxDataNICIndexARM64\n\t}\n\n\treturn maxDataNICIndex\n}\n\n// CheckInterfaceName rejects data NIC indices the launcher cannot create: beyond the\n// free PCI slots on arm64, or wrapping the launcher's MAC addresses.\nfunc (n *mikrotikCHR) CheckInterfaceName() error {\n\tif err := n.VRNode.CheckInterfaceName(); err != nil {\n\t\treturn err\n\t}\n\n\tlimit := dataNICLimit(n.goarch)\n\tfor _, ep := range n.Endpoints {\n\t\tifName := ep.GetIfaceName()\n\t\tindex, err := strconv.Atoi(strings.TrimPrefix(ifName, \"eth\"))\n\t\t// An index too large for an int is still an index over the limit.\n\t\tif err != nil && !errors.Is(err, strconv.ErrRange) {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q interface %q: cannot parse interface index: %w\",\n\t\t\t\tn.Cfg.ShortName, ifName, err,\n\t\t\t)\n\t\t}\n\t\tif err != nil || index > limit {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q interface %q exceeds the maximum data NIC index %d on %s (eth%d / ether%d)\",\n\t\t\t\tn.Cfg.ShortName, ifName, limit, n.goarch, limit, limit+1,\n\t\t\t)\n\t\t}\n\t}\n\n\treturn nil\n}\n\n// startPeriod is the healthcheck start period in seconds: the launcher's own worst case\n// before the ready file, so a slow boot (TCG) never reports unhealthy. It waits up to\n// CHR_INTF_WAIT for the links, then up to CHR_BOOT_WAIT each for REST, the startup-config\n// import and the SSH banner, plus the config fetch and the gateway check.\nfunc startPeriod(env map[string]string) int {\n\treturn envSeconds(env, \"CHR_INTF_WAIT\", defaultIntfWait) +\n\t\t3*envSeconds(env, \"CHR_BOOT_WAIT\", defaultBootWait) + startPeriodSlack\n}\n\n// envSeconds reads a positive number of seconds from env, else returns def (the launcher\n// falls back to its default the same way).\nfunc envSeconds(env map[string]string, key string, def int) int {\n\tif v, err := strconv.Atoi(strings.TrimSpace(env[key])); err == nil && v > 0 {\n\t\treturn v\n\t}\n\n\treturn def\n}\n\n// PreDeploy writes the launcher next to the startup config on every deploy, so a\n// containerlab upgrade ships its launcher to existing labs.\nfunc (n *mikrotikCHR) PreDeploy(ctx context.Context, params *clabnodes.PreDeployParams) error {\n\tif err := n.VRNode.PreDeploy(ctx, params); err != nil {\n\t\treturn err\n\t}\n\n\tdst := filepath.Join(n.Cfg.LabDir, launcherFName)\n\tif err := os.WriteFile(dst, launcherScript, clabconstants.PermissionsFileDefault); err != nil {\n\t\treturn fmt.Errorf(\"node %q: failed to write %s: %w\", n.Cfg.ShortName, dst, err)\n\t}\n\n\treturn nil\n}\n\n// PreStop skips VRNode's vrnetlab qcow2 alias step, which does not apply to this image.\nfunc (*mikrotikCHR) PreStop(_ context.Context) error {\n\treturn nil\n}\n\n// SaveConfig exports the RouterOS configuration over SSH (scrapligo has no RouterOS\n// platform, see clabnodes.ExportConfigOverSSH) and writes it as the node's startup config,\n// without the objects the launcher creates at every boot.\nfunc (n *mikrotikCHR) SaveConfig(_ context.Context) (*clabnodes.SaveConfigResult, error) {\n\texported, err := clabnodes.ExportConfigOverSSH(\n\t\tnet.JoinHostPort(n.Cfg.LongName, \"22\"),\n\t\tn.Cfg.Credentials.Username,\n\t\tn.Cfg.Credentials.Password,\n\t\t\"/export\",\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn clabnodes.WriteSavedConfig(n.Cfg, n.ConfigDirName, n.StartupCfgFName,\n\t\t[]byte(filterLauncherConfig(exported)+\"\\n\"))\n}\n\n// filterLauncherConfig drops what the launcher configures at every boot from an /export:\n// every object tagged clab-mgmt (the ether1 management addresses, the mgmt routing table,\n// its routes and rules), the ether1 ND entry and CHR's ether1 DHCP client. Imported again\n// as a startup config, these lines duplicate objects the launcher already created and\n// RouterOS stops the import at the first one; the management addressing also belongs to\n// the deployment, not the lab. Continuation lines (an unescaped trailing backslash) are joined\n// before\n// matching.\nfunc filterLauncherConfig(config string) string {\n\tvar out []string\n\n\tsection := \"\"\n\tpending := \"\"\n\tfor line := range strings.SplitSeq(strings.ReplaceAll(config, \"\\r\\n\", \"\\n\"), \"\\n\") {\n\t\tif pending != \"\" {\n\t\t\tline = pending + \"\\n\" + line\n\t\t\tpending = \"\"\n\t\t}\n\t\tif continues(line) {\n\t\t\tpending = line\n\t\t\tcontinue\n\t\t}\n\n\t\ttrimmed := strings.TrimSpace(line)\n\t\tif strings.HasPrefix(trimmed, \"/\") {\n\t\t\tsection = trimmed\n\t\t}\n\t\tif launcherOwned(section, trimmed) {\n\t\t\tcontinue\n\t\t}\n\t\tout = append(out, line)\n\t}\n\tif pending != \"\" {\n\t\tout = append(out, pending)\n\t}\n\n\treturn strings.Join(out, \"\\n\")\n}\n\n// continues reports whether an /export line continues on the next one: it ends in an\n// unescaped backslash. RouterOS writes a literal backslash in a value as `\\\\`, so an even\n// run of trailing backslashes ends the line.\nfunc continues(line string) bool {\n\ttrailing := len(line) - len(strings.TrimRight(line, `\\`))\n\n\treturn trailing%2 == 1\n}\n\nfunc launcherOwned(section, line string) bool {\n\tif !strings.HasPrefix(line, \"add \") {\n\t\treturn false\n\t}\n\n\tfields := strings.Fields(strings.ReplaceAll(line, `\\`, \" \"))\n\thas := func(kv string) bool { return slices.Contains(fields, kv) }\n\n\tif has(\"comment=\" + mgmtComment) {\n\t\treturn true\n\t}\n\n\t// /ipv6 nd keeps no comment: the launcher's ether1 entry is matched by interface.\n\tswitch section {\n\tcase \"/ip address\", \"/ipv6 address\", \"/ip dhcp-client\", \"/ipv6 nd\":\n\t\treturn has(\"interface=ether1\")\n\t}\n\n\treturn false\n}",
+                "lineStart": 1,
+                "lineEnd": 304,
+                "totalLines": 304,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792829359278,
+              "end": 1792829359285
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf504b7001X0qWUw5rQTqh0Z",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf4ddbe0016Vu0vokEXkVaYe",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 18468,
+            "input": 17896,
+            "output": 57,
+            "reasoning": 515,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf504c10015tft3KM0RMItNZ",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829359297,
+          "completed": 1792829365341
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 23713,
+          "input": 23381,
+          "output": 63,
+          "reasoning": 269,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf50c65001FcRT2XQojN5s4L",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf504c10015tft3KM0RMItNZ"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf50c67001kLFr1r3K4VWMAW",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf504c10015tft3KM0RMItNZ",
+          "text": "Now I have the full head `mikrotik_chr.go`. Let me re-verify one thing: `CheckInterfaceName` error message says \"exceeds the maximum data NIC index %d on %s (eth%d / ether%d)\" with limit, goarch, limit, limit+1. Good.\n\nOne subtle Go issue: `n.goarch` is only set in `Init`. If `CheckInterfaceName` is called on a node created via registry without `Init`... In `default_node.go` line 148, it's called in `CheckDeploymentConditions`, which runs after Init. But in the TEST, `newInitialized` sets goarch explicitly. If goarch is empty (node not Init'ed), `dataNICLimit(\"\")` returns 255 — safe default (more permissive, launcher still rejects). Minor.\n\nHmm wait, actually there's a subtle issue: for arm64, `dataNICLimit(\"arm64\")` returns 29. But what about `arm` (32-bit)? Not a thing for containerlab. Fine.\n\nNow, the launcher: let me read the `qemu_data_nic` and `check_nic_index` functions with exact line numbers, plus the diff for those regions. Let me read lines 180-260 of head launcher.",
+          "time": {
+            "start": 1792829361255,
+            "end": 1792829365111
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf51b79001HGWLDioPElhTsl",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf504c10015tft3KM0RMItNZ",
+          "callID": "call_e633b45fadc74a7d826ad621",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/mikrotik_chr/chr-launch.sh",
+              "limit": 70,
+              "offset": 175
+            },
+            "output": "<path>/source/head/nodes/mikrotik_chr/chr-launch.sh</path>\n<type>file</type>\n<content>\n175:             node_id=\"$o1:$o2\"\n176:         else\n177:             node_id=\"$(hexdump -n2 -e '2/1 \"%02x:\"' /dev/urandom | sed 's/:$//')\"\n178:         fi\n179:         printf '%s\\n' \"$node_id\" > \"$ID_FILE\" 2>/dev/null \\\n180:             || log \"node id $node_id not persisted: a restart will renumber the NICs\"\n181:         ;;\n182: esac\n183: NET=\"-netdev tap,id=mgmt,ifname=tap0,script=no,downscript=no -device virtio-net,netdev=mgmt,mac=52:54:00:$node_id:00\"\n184: \n185: check_nic_index() { # check_nic_index <max-index>: reject indices the NIC layout cannot hold\n186:     # The last MAC octet holds the NIC index; zero belongs to management.\n187:     if [ \"$1\" -gt 255 ]; then\n188:         log \"at most 255 data NICs are supported (eth255 / ether256); index $1 would reuse a NIC MAC\"\n189:         return 1\n190:     fi\n191:     # Without bridges (arm64 virt) one bus holds the disk, management and 29 data NICs.\n192:     if [ \"$PCI_BRIDGES\" != 1 ] && [ \"$1\" -gt 29 ]; then\n193:         log \"at most 29 data NICs fit without PCI bridges (eth29 / ether30); index $1 leaves no PCI slot for the disk\"\n194:         return 1\n195:     fi\n196: }\n197: \n198: qemu_data_nic() { # qemu_data_nic <index> <mac>: append-only QEMU arguments\n199:     case \"$PCI_BRIDGES\" in\n200:         1)\n201:             # The default PC has only 29 free PCI slots, including management.\n202:             # Keep management on the root bus and put data NICs behind bridges.\n203:             # Follow vrnetlab's conservative allocation of 25 NICs per bridge.\n204:             _bridge=$(( ($1 - 1) / 25 + 1 ))\n205:             _slot=$(( ($1 - 1) % 25 + 1 ))\n206:             if [ \"$_slot\" -eq 1 ]; then\n207:                 printf '%s ' \"-device pci-bridge,id=chrpci$_bridge,chassis_nr=$_bridge,bus=pci.0\"\n208:             fi\n209:             # Omit PXE ROMs to avoid exhausting SeaBIOS option-ROM space.\n210:             # Keep MSI-X, but share one vector between RX/TX queues (plus one\n211:             # for config) to reduce IRQ pressure.\n212:             # Disabling MSI-X entirely can leave NICs missing in RouterOS.\n213:             printf '%s' \"-netdev tap,id=d$1,ifname=tap$1,script=no,downscript=no -device virtio-net,netdev=d$1,mac=$2,bus=chrpci$_bridge,addr=$(printf '0x%x' \"$_slot\"),romfile=,vectors=2\"\n214:             ;;\n215:         *)\n216:             # ARM64 uses the virt machine and keeps its existing NIC layout.\n217:             printf '%s' \"-netdev tap,id=d$1,ifname=tap$1,script=no,downscript=no -device virtio-net,netdev=d$1,mac=$2\"\n218:             ;;\n219:     esac\n220: }\n221: \n222: # ---- management: eth0 + tap0 on one bridge, eth0's addressing to the VM ----\n223: ip_global() { # ip_global <4|6> <dev>: the first global address/prefix\n224:     ip -\"$1\" addr show dev \"$2\" 2>/dev/null \\\n225:         | sed -n '/scope global/s/^ *inet6\\{0,1\\} \\([^ ]*\\) .*/\\1/p' | head -n1\n226: }\n227: ip_gw() { # ip_gw <4|6>: the default gateway\n228:     ip -\"$1\" route show default 2>/dev/null | sed -n 's/^default via \\([^ ]*\\) .*/\\1/p' | head -n1\n229: }\n230: M4=\"$(ip_global 4 eth0)\"; M6=\"$(ip_global 6 eth0)\"\n231: G4=\"$(ip_gw 4)\"; G6=\"$(ip_gw 6)\"\n232: if [ -n \"$M4$M6\" ]; then\n233:     printf 'M4=%s\\nM6=%s\\nG4=%s\\nG6=%s\\n' \"$M4\" \"$M6\" \"$G4\" \"$G6\" > \"$MGMT_FILE\" 2>/dev/null || true\n234: elif [ -f \"$MGMT_FILE\" ]; then\n235:     # shellcheck disable=SC1090  # written by this script, four plain assignments\n236:     . \"$MGMT_FILE\"\n237: fi\n238: log \"management: ${M4:-no IPv4}${M6:+, $M6} via ${G4:-no gateway}${G6:+, $G6}\"\n239: \n240: tunctl -t tap0 >/dev/null 2>&1 || ip tuntap add dev tap0 mode tap\n241: if [ ! -e \"$SYSNET/$MGMT_BR\" ]; then\n242:     _mtu=\"$(cat \"$SYSNET/eth0/mtu\" 2>/dev/null || echo 1500)\"\n243:     ip addr flush dev eth0\n244:     # The launcher's side of the bootstrap channel: IPv6 link-local on the\n\n(Showing lines 175-244 of 710. Use offset=245 to continue.)\n</content>",
+            "title": "source/head/nodes/mikrotik_chr/chr-launch.sh",
+            "metadata": {
+              "preview": "            node_id=\"$o1:$o2\"\n        else\n            node_id=\"$(hexdump -n2 -e '2/1 \"%02x:\"' /dev/urandom | sed 's/:$//')\"\n        fi\n        printf '%s\\n' \"$node_id\" > \"$ID_FILE\" 2>/dev/null \\\n            || log \"node id $node_id not persisted: a restart will renumber the NICs\"\n        ;;\nesac\nNET=\"-netdev tap,id=mgmt,ifname=tap0,script=no,downscript=no -device virtio-net,netdev=mgmt,mac=52:54:00:$node_id:00\"\n\ncheck_nic_index() { # check_nic_index <max-index>: reject indices the NIC layout cannot hold\n    # The last MAC octet holds the NIC index; zero belongs to management.\n    if [ \"$1\" -gt 255 ]; then\n        log \"at most 255 data NICs are supported (eth255 / ether256); index $1 would reuse a NIC MAC\"\n        return 1\n    fi\n    # Without bridges (arm64 virt) one bus holds the disk, management and 29 data NICs.\n    if [ \"$PCI_BRIDGES\" != 1 ] && [ \"$1\" -gt 29 ]; then\n        log \"at most 29 data NICs fit without PCI bridges (eth29 / ether30); index $1 leaves no PCI slot for the disk\"\n        return 1",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/mikrotik_chr/chr-launch.sh",
+                "text": "            node_id=\"$o1:$o2\"\n        else\n            node_id=\"$(hexdump -n2 -e '2/1 \"%02x:\"' /dev/urandom | sed 's/:$//')\"\n        fi\n        printf '%s\\n' \"$node_id\" > \"$ID_FILE\" 2>/dev/null \\\n            || log \"node id $node_id not persisted: a restart will renumber the NICs\"\n        ;;\nesac\nNET=\"-netdev tap,id=mgmt,ifname=tap0,script=no,downscript=no -device virtio-net,netdev=mgmt,mac=52:54:00:$node_id:00\"\n\ncheck_nic_index() { # check_nic_index <max-index>: reject indices the NIC layout cannot hold\n    # The last MAC octet holds the NIC index; zero belongs to management.\n    if [ \"$1\" -gt 255 ]; then\n        log \"at most 255 data NICs are supported (eth255 / ether256); index $1 would reuse a NIC MAC\"\n        return 1\n    fi\n    # Without bridges (arm64 virt) one bus holds the disk, management and 29 data NICs.\n    if [ \"$PCI_BRIDGES\" != 1 ] && [ \"$1\" -gt 29 ]; then\n        log \"at most 29 data NICs fit without PCI bridges (eth29 / ether30); index $1 leaves no PCI slot for the disk\"\n        return 1\n    fi\n}\n\nqemu_data_nic() { # qemu_data_nic <index> <mac>: append-only QEMU arguments\n    case \"$PCI_BRIDGES\" in\n        1)\n            # The default PC has only 29 free PCI slots, including management.\n            # Keep management on the root bus and put data NICs behind bridges.\n            # Follow vrnetlab's conservative allocation of 25 NICs per bridge.\n            _bridge=$(( ($1 - 1) / 25 + 1 ))\n            _slot=$(( ($1 - 1) % 25 + 1 ))\n            if [ \"$_slot\" -eq 1 ]; then\n                printf '%s ' \"-device pci-bridge,id=chrpci$_bridge,chassis_nr=$_bridge,bus=pci.0\"\n            fi\n            # Omit PXE ROMs to avoid exhausting SeaBIOS option-ROM space.\n            # Keep MSI-X, but share one vector between RX/TX queues (plus one\n            # for config) to reduce IRQ pressure.\n            # Disabling MSI-X entirely can leave NICs missing in RouterOS.\n            printf '%s' \"-netdev tap,id=d$1,ifname=tap$1,script=no,downscript=no -device virtio-net,netdev=d$1,mac=$2,bus=chrpci$_bridge,addr=$(printf '0x%x' \"$_slot\"),romfile=,vectors=2\"\n            ;;\n        *)\n            # ARM64 uses the virt machine and keeps its existing NIC layout.\n            printf '%s' \"-netdev tap,id=d$1,ifname=tap$1,script=no,downscript=no -device virtio-net,netdev=d$1,mac=$2\"\n            ;;\n    esac\n}\n\n# ---- management: eth0 + tap0 on one bridge, eth0's addressing to the VM ----\nip_global() { # ip_global <4|6> <dev>: the first global address/prefix\n    ip -\"$1\" addr show dev \"$2\" 2>/dev/null \\\n        | sed -n '/scope global/s/^ *inet6\\{0,1\\} \\([^ ]*\\) .*/\\1/p' | head -n1\n}\nip_gw() { # ip_gw <4|6>: the default gateway\n    ip -\"$1\" route show default 2>/dev/null | sed -n 's/^default via \\([^ ]*\\) .*/\\1/p' | head -n1\n}\nM4=\"$(ip_global 4 eth0)\"; M6=\"$(ip_global 6 eth0)\"\nG4=\"$(ip_gw 4)\"; G6=\"$(ip_gw 6)\"\nif [ -n \"$M4$M6\" ]; then\n    printf 'M4=%s\\nM6=%s\\nG4=%s\\nG6=%s\\n' \"$M4\" \"$M6\" \"$G4\" \"$G6\" > \"$MGMT_FILE\" 2>/dev/null || true\nelif [ -f \"$MGMT_FILE\" ]; then\n    # shellcheck disable=SC1090  # written by this script, four plain assignments\n    . \"$MGMT_FILE\"\nfi\nlog \"management: ${M4:-no IPv4}${M6:+, $M6} via ${G4:-no gateway}${G6:+, $G6}\"\n\ntunctl -t tap0 >/dev/null 2>&1 || ip tuntap add dev tap0 mode tap\nif [ ! -e \"$SYSNET/$MGMT_BR\" ]; then\n    _mtu=\"$(cat \"$SYSNET/eth0/mtu\" 2>/dev/null || echo 1500)\"\n    ip addr flush dev eth0\n    # The launcher's side of the bootstrap channel: IPv6 link-local on the",
+                "lineStart": 175,
+                "lineEnd": 244,
+                "totalLines": 710,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792829365117,
+              "end": 1792829365123
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf51c4d001bQCD06z37FkvVg",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf504c10015tft3KM0RMItNZ",
+          "callID": "call_5783892a8f1942f387cd773d",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/tests/16-mikrotik-chr/02-chr-high-ports.clab.yml"
+            },
+            "output": "<path>/source/head/tests/16-mikrotik-chr/02-chr-high-ports.clab.yml</path>\n<type>file</type>\n<content>\n1: name: 16-02-chr-high-ports\n2: topology:\n3:   kinds:\n4:     mikrotik_chr:\n5:       image: mikrotik/chr:7.24.5\n6:   nodes:\n7:     r1:\n8:       kind: mikrotik_chr\n9:       startup-config: |\n10:         /ip address add address=10.0.1.1/30 interface=ether33\n11:     r2:\n12:       kind: mikrotik_chr\n13:       startup-config: |\n14:         /ip address add address=10.0.1.2/30 interface=ether33\n15:   links:\n16:     # A sparse high port: the intervening NICs are created too, so ether33 needs\n17:     # 32 data NICs and lands on the second PCI bridge (AMD64 only).\n18:     - endpoints: [\"r1:ether33\", \"r2:ether33\"]\n\n(End of file - total 18 lines)\n</content>",
+            "title": "source/head/tests/16-mikrotik-chr/02-chr-high-ports.clab.yml",
+            "metadata": {
+              "preview": "name: 16-02-chr-high-ports\ntopology:\n  kinds:\n    mikrotik_chr:\n      image: mikrotik/chr:7.24.5\n  nodes:\n    r1:\n      kind: mikrotik_chr\n      startup-config: |\n        /ip address add address=10.0.1.1/30 interface=ether33\n    r2:\n      kind: mikrotik_chr\n      startup-config: |\n        /ip address add address=10.0.1.2/30 interface=ether33\n  links:\n    # A sparse high port: the intervening NICs are created too, so ether33 needs\n    # 32 data NICs and lands on the second PCI bridge (AMD64 only).\n    - endpoints: [\"r1:ether33\", \"r2:ether33\"]",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/tests/16-mikrotik-chr/02-chr-high-ports.clab.yml",
+                "text": "name: 16-02-chr-high-ports\ntopology:\n  kinds:\n    mikrotik_chr:\n      image: mikrotik/chr:7.24.5\n  nodes:\n    r1:\n      kind: mikrotik_chr\n      startup-config: |\n        /ip address add address=10.0.1.1/30 interface=ether33\n    r2:\n      kind: mikrotik_chr\n      startup-config: |\n        /ip address add address=10.0.1.2/30 interface=ether33\n  links:\n    # A sparse high port: the intervening NICs are created too, so ether33 needs\n    # 32 data NICs and lands on the second PCI bridge (AMD64 only).\n    - endpoints: [\"r1:ether33\", \"r2:ether33\"]",
+                "lineStart": 1,
+                "lineEnd": 18,
+                "totalLines": 18,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792829365330,
+              "end": 1792829365336
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf51c5a001EbNkI1MaRWsMrN",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf504c10015tft3KM0RMItNZ",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 23713,
+            "input": 23381,
+            "output": 63,
+            "reasoning": 269,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf51c63001vbUJoP4BzJN3Bs",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829365347,
+          "completed": 1792829370277
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 25417,
+          "input": 1771,
+          "output": 50,
+          "reasoning": 44,
+          "cache": {
+            "read": 23552,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf52b2b001AhMlvjptFvJaQS",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf51c63001vbUJoP4BzJN3Bs"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf52b2d001il6vhvPP9K5iW7",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf51c63001vbUJoP4BzJN3Bs",
+          "text": "Now let me read the head launcher beginning to see PCI_BRIDGES definition (the arch detection), and the diff.txt remainder to see the full set of hunks, and the chr_launch_test.go full file.",
+          "time": {
+            "start": 1792829369133,
+            "end": 1792829370078
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf52ee0001PJJ9ynwRNPTHYG",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf51c63001vbUJoP4BzJN3Bs",
+          "callID": "call_2696f9cb35644d4b90926f92",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/mikrotik_chr/chr-launch.sh",
+              "limit": 130
+            },
+            "output": "<path>/source/head/nodes/mikrotik_chr/chr-launch.sh</path>\n<type>file</type>\n<content>\n1: #!/bin/sh\n2: # chr-launch.sh: run the OFFICIAL mikrotik/chr image (MikroTik RouterOS Cloud\n3: # Hosted Router) as a containerlab node, image untouched.\n4: #\n5: # The image is MikroTik's own Docker Hub distribution (Alpine + qemu +\n6: # /diskimage/chr-<ver>.img + /start.sh). This script is bind-mounted into the\n7: # node and set as its entrypoint by the containerlab `mikrotik_chr` kind. It replaces\n8: # the image's /start.sh, which is not orchestration-ready (containerlab#3116):\n9: # it scans interfaces once before containerlab attaches the links, bridges the\n10: # management NIC so the container IP never reaches the router, and imports no\n11: # startup config.\n12: #\n13: # What it does (vrnetlab's mikrotik/routeros launch.py is the model, re-done\n14: # with the image's own busybox + qemu: no python, no ftp client, no tc):\n15: #   1. waits for the CLAB_INTFS data interfaces containerlab attaches (eth1..N)\n16: #   2. management, transparent: the container's eth0 is bridged with the VM's\n17: #      ether1 tap, and eth0's addresses and default gateways move into RouterOS\n18: #      ether1. The router IS the node's management address: every service and\n19: #      LLDP reach it directly, nothing is port-forwarded. The image ships only\n20: #      busybox (no tc), so this uses a bridge where vrnetlab uses tc-mirred\n21: #   3. data: one tap per container interface, bridged pairwise (ethN <-> tapN,\n22: #      LLDP forwarded). NIC order in the VM follows the eth index, so container\n23: #      ethN is always RouterOS ether(N+1), even with gaps\n24: #   4. after boot, over IPv6 link-local on the management bridge (no address is\n25: #      added to the management network): sets the credentials and the identity,\n26: #      configures ether1 with the management addresses and keeps their return\n27: #      path in its own routing table (`mgmt`, below), then fetches\n28: #      /ftpboot/config.auto.rsc (the containerlab startup-config, when present)\n29: #      from the launcher and `/import`s it\n30: #   5. prints the ready marker on the container log and waits on qemu\n31: #\n32: # Restart (docker restart, containerlab restart --node): RouterOS keys an\n33: # ethernet interface on its MAC. A NIC that comes back with a new MAC is a NEW\n34: # device (ether1 becomes ether3) and the DHCP client bound to ether1 never\n35: # binds. Docker re-rolls the container's eth0 MAC whenever the netns is\n36: # recreated, so the node id that seeds every NIC MAC and the data NIC count are\n37: # persisted in the container on the first boot and reused: the restarted qemu\n38: # carries the same NICs in the same order and RouterOS keeps ether1..N and\n39: # their config. The REST bootstrap is skipped on a restart; the management\n40: # step re-runs and re-applies the container's current addressing.\n41: #\n42: # Architectures: the image's own qemu (qemu-system-x86_64 on amd64,\n43: #   qemu-system-aarch64 + edk2 on arm64), KVM when /dev/kvm exists, else TCG.\n44: # Args (the kind's Cmd): --hostname H [--username U --password P]\n45: #   (unknown flags are ignored); credentials default to the USERNAME/PASSWORD env\n46: # Env (all optional, set under the node's `env:`); MEM, CPUS and DISK are the\n47: #   official image's own variables:\n48: #   MEM (qemu -m value, default 256 MiB + 8 MiB per data NIC and vCPU), CPUS (default 1),\n49: #   DISK (default 128M), CHR_INTF_WAIT (s, 60), CHR_BOOT_WAIT (s, 300)\n50: # Serial console: port 5000 inside the container\n51: #   (docker exec -it <node> nc 127.0.0.1 5000); the container itself has no\n52: #   address on the management network.\n53: # Ready: /.chr-launch-ready exists once RouterOS is ready (the kind's default\n54: #   healthcheck); it is removed at every start.\n55: # Log lines (docker logs clab-<lab>-<node>), all prefixed \"chr-launch:\":\n56: #   \"RouterOS ready\"                   login + startup config done\n57: #   \"startup config import FAILED: …\"  the router rejected the .rsc (RouterOS's\n58: #                                      own reason, with the line number)\n59: #   \"credential bootstrap FAILED: …\"   the user/password step failed\n60: #   \"management setup FAILED: …\"       the ether1 address / mgmt table step failed\n61: #\n62: # Copyright 2026 NetPilot Labs\n63: # Licensed under the BSD 3-Clause License.\n64: # SPDX-License-Identifier: BSD-3-Clause\n65: \n66: set -u\n67: \n68: # Credentials come from the USERNAME/PASSWORD env the kind sets (no quoting\n69: # limits on the password); --username/--password still override them.\n70: USERNAME=\"${USERNAME:-admin}\"\n71: PASSWORD=\"${PASSWORD-admin}\"\n72: HOSTNAME_ARG=\"\"\n73: while [ $# -gt 0 ]; do\n74:     case \"$1\" in\n75:         --username) USERNAME=\"$2\"; shift 2 ;;\n76:         --password) PASSWORD=\"$2\"; shift 2 ;;\n77:         --hostname) HOSTNAME_ARG=\"$2\"; shift 2 ;;\n78:         --connection-mode) shift 2 ;;\n79:         --trace) shift ;;\n80:         *) shift ;;\n81:     esac\n82: done\n83: [ -n \"$HOSTNAME_ARG\" ] || HOSTNAME_ARG=\"$(hostname)\"\n84: \n85: CPUS=\"${CPUS:-1}\"\n86: DISK=\"${DISK:-128M}\"\n87: INTF_WAIT=\"${CHR_INTF_WAIT:-60}\"\n88: BOOT_WAIT=\"${CHR_BOOT_WAIT:-300}\"\n89: INTFS=\"${CLAB_INTFS:-0}\"\n90: STARTUP_CFG=/ftpboot/config.auto.rsc\n91: # Per-container state in the rw layer: survives every restart, gone with the\n92: # container (destroy, redeploy --cleanup).\n93: DONE_MARKER=/.chr-launch-bootstrapped\n94: READY_FILE=/.chr-launch-ready\n95: ID_FILE=/.chr-launch-node-id\n96: NICS_FILE=/.chr-launch-nics\n97: MGMT_TABLE=mgmt\n98: # every management object the launcher creates carries this comment, so each\n99: # boot can find and re-apply them, and SaveConfig can leave them out\n100: MGMT_COMMENT=clab-mgmt\n101: MGMT_BR=br0\n102: # eth0's addressing as last seen: a launcher re-run in the same network\n103: # namespace finds eth0 already bridged and bare\n104: MGMT_FILE=/.chr-launch-mgmt\n105: SYSNET=/sys/class/net\n106: \n107: log() { echo \"chr-launch: $*\"; }\n108: rm -f \"$READY_FILE\"\n109: \n110: FETCH_PORT=8080\n111: \n112: # ---- disk -----------------------------------------------------------------\n113: IMG=\"\"\n114: for f in /diskimage/*.img; do [ -f \"$f\" ] && IMG=\"$f\" && break; done\n115: if [ -z \"$IMG\" ]; then\n116:     log \"no /diskimage/*.img in this image: not a RouterOS CHR image\"\n117:     exit 1\n118: fi\n119: # Only GROW the disk to the floor: an image already larger keeps its tail.\n120: disk_bytes() {\n121:     case \"$1\" in\n122:         *G|*g) echo $(( ${1%[Gg]} * 1024 * 1024 * 1024 )) ;;\n123:         *M|*m) echo $(( ${1%[Mm]} * 1024 * 1024 )) ;;\n124:         *K|*k) echo $(( ${1%[Kk]} * 1024 )) ;;\n125:         *) echo \"$1\" ;;\n126:     esac\n127: }\n128: want_bytes=\"$(disk_bytes \"$DISK\")\"\n129: cur_bytes=\"$(stat -c %s \"$IMG\" 2>/dev/null || wc -c < \"$IMG\")\"\n130: if [ \"$cur_bytes\" -lt \"$want_bytes\" ] 2>/dev/null; then\n\n(Showing lines 1-130 of 710. Use offset=131 to continue.)\n</content>",
+            "title": "source/head/nodes/mikrotik_chr/chr-launch.sh",
+            "metadata": {
+              "preview": "#!/bin/sh\n# chr-launch.sh: run the OFFICIAL mikrotik/chr image (MikroTik RouterOS Cloud\n# Hosted Router) as a containerlab node, image untouched.\n#\n# The image is MikroTik's own Docker Hub distribution (Alpine + qemu +\n# /diskimage/chr-<ver>.img + /start.sh). This script is bind-mounted into the\n# node and set as its entrypoint by the containerlab `mikrotik_chr` kind. It replaces\n# the image's /start.sh, which is not orchestration-ready (containerlab#3116):\n# it scans interfaces once before containerlab attaches the links, bridges the\n# management NIC so the container IP never reaches the router, and imports no\n# startup config.\n#\n# What it does (vrnetlab's mikrotik/routeros launch.py is the model, re-done\n# with the image's own busybox + qemu: no python, no ftp client, no tc):\n#   1. waits for the CLAB_INTFS data interfaces containerlab attaches (eth1..N)\n#   2. management, transparent: the container's eth0 is bridged with the VM's\n#      ether1 tap, and eth0's addresses and default gateways move into RouterOS\n#      ether1. The router IS the node's management address: every service and\n#      LLDP reach it directly, nothing is port-forwarded. The image ships only\n#      busybox (no tc), so this uses a bridge where vrnetlab uses tc-mirred",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/mikrotik_chr/chr-launch.sh",
+                "text": "#!/bin/sh\n# chr-launch.sh: run the OFFICIAL mikrotik/chr image (MikroTik RouterOS Cloud\n# Hosted Router) as a containerlab node, image untouched.\n#\n# The image is MikroTik's own Docker Hub distribution (Alpine + qemu +\n# /diskimage/chr-<ver>.img + /start.sh). This script is bind-mounted into the\n# node and set as its entrypoint by the containerlab `mikrotik_chr` kind. It replaces\n# the image's /start.sh, which is not orchestration-ready (containerlab#3116):\n# it scans interfaces once before containerlab attaches the links, bridges the\n# management NIC so the container IP never reaches the router, and imports no\n# startup config.\n#\n# What it does (vrnetlab's mikrotik/routeros launch.py is the model, re-done\n# with the image's own busybox + qemu: no python, no ftp client, no tc):\n#   1. waits for the CLAB_INTFS data interfaces containerlab attaches (eth1..N)\n#   2. management, transparent: the container's eth0 is bridged with the VM's\n#      ether1 tap, and eth0's addresses and default gateways move into RouterOS\n#      ether1. The router IS the node's management address: every service and\n#      LLDP reach it directly, nothing is port-forwarded. The image ships only\n#      busybox (no tc), so this uses a bridge where vrnetlab uses tc-mirred\n#   3. data: one tap per container interface, bridged pairwise (ethN <-> tapN,\n#      LLDP forwarded). NIC order in the VM follows the eth index, so container\n#      ethN is always RouterOS ether(N+1), even with gaps\n#   4. after boot, over IPv6 link-local on the management bridge (no address is\n#      added to the management network): sets the credentials and the identity,\n#      configures ether1 with the management addresses and keeps their return\n#      path in its own routing table (`mgmt`, below), then fetches\n#      /ftpboot/config.auto.rsc (the containerlab startup-config, when present)\n#      from the launcher and `/import`s it\n#   5. prints the ready marker on the container log and waits on qemu\n#\n# Restart (docker restart, containerlab restart --node): RouterOS keys an\n# ethernet interface on its MAC. A NIC that comes back with a new MAC is a NEW\n# device (ether1 becomes ether3) and the DHCP client bound to ether1 never\n# binds. Docker re-rolls the container's eth0 MAC whenever the netns is\n# recreated, so the node id that seeds every NIC MAC and the data NIC count are\n# persisted in the container on the first boot and reused: the restarted qemu\n# carries the same NICs in the same order and RouterOS keeps ether1..N and\n# their config. The REST bootstrap is skipped on a restart; the management\n# step re-runs and re-applies the container's current addressing.\n#\n# Architectures: the image's own qemu (qemu-system-x86_64 on amd64,\n#   qemu-system-aarch64 + edk2 on arm64), KVM when /dev/kvm exists, else TCG.\n# Args (the kind's Cmd): --hostname H [--username U --password P]\n#   (unknown flags are ignored); credentials default to the USERNAME/PASSWORD env\n# Env (all optional, set under the node's `env:`); MEM, CPUS and DISK are the\n#   official image's own variables:\n#   MEM (qemu -m value, default 256 MiB + 8 MiB per data NIC and vCPU), CPUS (default 1),\n#   DISK (default 128M), CHR_INTF_WAIT (s, 60), CHR_BOOT_WAIT (s, 300)\n# Serial console: port 5000 inside the container\n#   (docker exec -it <node> nc 127.0.0.1 5000); the container itself has no\n#   address on the management network.\n# Ready: /.chr-launch-ready exists once RouterOS is ready (the kind's default\n#   healthcheck); it is removed at every start.\n# Log lines (docker logs clab-<lab>-<node>), all prefixed \"chr-launch:\":\n#   \"RouterOS ready\"                   login + startup config done\n#   \"startup config import FAILED: …\"  the router rejected the .rsc (RouterOS's\n#                                      own reason, with the line number)\n#   \"credential bootstrap FAILED: …\"   the user/password step failed\n#   \"management setup FAILED: …\"       the ether1 address / mgmt table step failed\n#\n# Copyright 2026 NetPilot Labs\n# Licensed under the BSD 3-Clause License.\n# SPDX-License-Identifier: BSD-3-Clause\n\nset -u\n\n# Credentials come from the USERNAME/PASSWORD env the kind sets (no quoting\n# limits on the password); --username/--password still override them.\nUSERNAME=\"${USERNAME:-admin}\"\nPASSWORD=\"${PASSWORD-admin}\"\nHOSTNAME_ARG=\"\"\nwhile [ $# -gt 0 ]; do\n    case \"$1\" in\n        --username) USERNAME=\"$2\"; shift 2 ;;\n        --password) PASSWORD=\"$2\"; shift 2 ;;\n        --hostname) HOSTNAME_ARG=\"$2\"; shift 2 ;;\n        --connection-mode) shift 2 ;;\n        --trace) shift ;;\n        *) shift ;;\n    esac\ndone\n[ -n \"$HOSTNAME_ARG\" ] || HOSTNAME_ARG=\"$(hostname)\"\n\nCPUS=\"${CPUS:-1}\"\nDISK=\"${DISK:-128M}\"\nINTF_WAIT=\"${CHR_INTF_WAIT:-60}\"\nBOOT_WAIT=\"${CHR_BOOT_WAIT:-300}\"\nINTFS=\"${CLAB_INTFS:-0}\"\nSTARTUP_CFG=/ftpboot/config.auto.rsc\n# Per-container state in the rw layer: survives every restart, gone with the\n# container (destroy, redeploy --cleanup).\nDONE_MARKER=/.chr-launch-bootstrapped\nREADY_FILE=/.chr-launch-ready\nID_FILE=/.chr-launch-node-id\nNICS_FILE=/.chr-launch-nics\nMGMT_TABLE=mgmt\n# every management object the launcher creates carries this comment, so each\n# boot can find and re-apply them, and SaveConfig can leave them out\nMGMT_COMMENT=clab-mgmt\nMGMT_BR=br0\n# eth0's addressing as last seen: a launcher re-run in the same network\n# namespace finds eth0 already bridged and bare\nMGMT_FILE=/.chr-launch-mgmt\nSYSNET=/sys/class/net\n\nlog() { echo \"chr-launch: $*\"; }\nrm -f \"$READY_FILE\"\n\nFETCH_PORT=8080\n\n# ---- disk -----------------------------------------------------------------\nIMG=\"\"\nfor f in /diskimage/*.img; do [ -f \"$f\" ] && IMG=\"$f\" && break; done\nif [ -z \"$IMG\" ]; then\n    log \"no /diskimage/*.img in this image: not a RouterOS CHR image\"\n    exit 1\nfi\n# Only GROW the disk to the floor: an image already larger keeps its tail.\ndisk_bytes() {\n    case \"$1\" in\n        *G|*g) echo $(( ${1%[Gg]} * 1024 * 1024 * 1024 )) ;;\n        *M|*m) echo $(( ${1%[Mm]} * 1024 * 1024 )) ;;\n        *K|*k) echo $(( ${1%[Kk]} * 1024 )) ;;\n        *) echo \"$1\" ;;\n    esac\n}\nwant_bytes=\"$(disk_bytes \"$DISK\")\"\ncur_bytes=\"$(stat -c %s \"$IMG\" 2>/dev/null || wc -c < \"$IMG\")\"\nif [ \"$cur_bytes\" -lt \"$want_bytes\" ] 2>/dev/null; then",
+                "lineStart": 1,
+                "lineEnd": 130,
+                "totalLines": 710,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792829370084,
+              "end": 1792829370096
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf52f96001WDGirAOkQBOl8Q",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf51c63001vbUJoP4BzJN3Bs",
+          "callID": "call_9eac326f74d84096940d7ab5",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/mikrotik_chr/chr_launch_test.go"
+            },
+            "output": "<path>/source/head/nodes/mikrotik_chr/chr_launch_test.go</path>\n<type>file</type>\n<content>\n1: // Copyright 2026 narrowin\n2: // Licensed under the BSD 3-Clause License.\n3: // SPDX-License-Identifier: BSD-3-Clause\n4: \n5: package mikrotik_chr\n6: \n7: import (\n8: \t\"fmt\"\n9: \t\"os/exec\"\n10: \t\"strings\"\n11: \t\"testing\"\n12: \n13: \t\"github.com/google/go-cmp/cmp\"\n14: )\n15: \n16: // launcherFunction isolates a shell function without running the disk, network,\n17: // QEMU or REST operations at the top level of the embedded launcher.\n18: // It assumes nested closing braces are indented; a nested brace at column zero\n19: // would be mistaken for the end of the function.\n20: func launcherFunction(t *testing.T, name string) string {\n21: \tt.Helper()\n22: \n23: \t_, body, ok := strings.Cut(string(launcherScript), \"\\n\"+name+\"() {\")\n24: \tif !ok {\n25: \t\tt.Fatalf(\"launcher function %q not found\", name)\n26: \t}\n27: \tbody, _, ok = strings.Cut(body, \"\\n}\\n\")\n28: \tif !ok {\n29: \t\tt.Fatalf(\"launcher function %q has no closing brace\", name)\n30: \t}\n31: \n32: \treturn name + \"() {\" + body + \"\\n}\\n\"\n33: }\n34: \n35: func TestLauncherShellSyntax(t *testing.T) {\n36: \tcmd := exec.CommandContext(t.Context(), \"/bin/sh\", \"-n\")\n37: \tcmd.Stdin = strings.NewReader(string(launcherScript))\n38: \tif out, err := cmd.CombinedOutput(); err != nil {\n39: \t\tt.Fatalf(\"invalid launcher shell syntax: %v\\n%s\", err, out)\n40: \t}\n41: }\n42: \n43: func TestQEMUDataNIC(t *testing.T) {\n44: \ttests := map[string]struct {\n45: \t\tpciBridges int\n46: \t\tindex      int\n47: \t\tbridge     string\n48: \t\tbus        string\n49: \t\taddr       string\n50: \t}{\n51: \t\t\"first-data-port\": {\n52: \t\t\tpciBridges: 1,\n53: \t\t\tindex:      1,\n54: \t\t\tbridge:     \"1\",\n55: \t\t\tbus:        \"1\",\n56: \t\t\taddr:       \"0x1\",\n57: \t\t},\n58: \t\t\"old-limit\": {\n59: \t\t\tpciBridges: 1,\n60: \t\t\tindex:      28,\n61: \t\t\tbus:        \"2\",\n62: \t\t\taddr:       \"0x3\",\n63: \t\t},\n64: \t\t\"ether30\": {\n65: \t\t\tpciBridges: 1,\n66: \t\t\tindex:      29,\n67: \t\t\tbus:        \"2\",\n68: \t\t\taddr:       \"0x4\",\n69: \t\t},\n70: \t\t\"last-slot\": {\n71: \t\t\tpciBridges: 1,\n72: \t\t\tindex:      25,\n73: \t\t\tbus:        \"1\",\n74: \t\t\taddr:       \"0x19\",\n75: \t\t},\n76: \t\t\"second-bridge\": {\n77: \t\t\tpciBridges: 1,\n78: \t\t\tindex:      26,\n79: \t\t\tbridge:     \"2\",\n80: \t\t\tbus:        \"2\",\n81: \t\t\taddr:       \"0x1\",\n82: \t\t},\n83: \t\t\"second-last-slot\": {\n84: \t\t\tpciBridges: 1,\n85: \t\t\tindex:      50,\n86: \t\t\tbus:        \"2\",\n87: \t\t\taddr:       \"0x19\",\n88: \t\t},\n89: \t\t\"third-bridge\": {\n90: \t\t\tpciBridges: 1,\n91: \t\t\tindex:      51,\n92: \t\t\tbridge:     \"3\",\n93: \t\t\tbus:        \"3\",\n94: \t\t\taddr:       \"0x1\",\n95: \t\t},\n96: \t\t\"highest-unique-mac\": {\n97: \t\t\tpciBridges: 1,\n98: \t\t\tindex:      255,\n99: \t\t\tbus:        \"11\",\n100: \t\t\taddr:       \"0x5\",\n101: \t\t},\n102: \t\t\"arm64-first-port\": {\n103: \t\t\tindex: 1,\n104: \t\t},\n105: \t\t\"arm64-high-port\": {\n106: \t\t\tindex: 32,\n107: \t\t},\n108: \t}\n109: \n110: \tfn := launcherFunction(t, \"qemu_data_nic\")\n111: \tfor name, tc := range tests {\n112: \t\tt.Run(name, func(t *testing.T) {\n113: \t\t\tmac := fmt.Sprintf(\"52:54:00:12:34:%02x\", tc.index)\n114: \t\t\tcmd := exec.CommandContext(t.Context(), \"/bin/sh\", \"-c\",\n115: \t\t\t\tfn+\"PCI_BRIDGES=\\\"$1\\\"; qemu_data_nic \\\"$2\\\" \\\"$3\\\"\",\n116: \t\t\t\t\"chr-launch-test\", fmt.Sprint(tc.pciBridges), fmt.Sprint(tc.index), mac)\n117: \t\t\tout, err := cmd.CombinedOutput()\n118: \t\t\tif err != nil {\n119: \t\t\t\tt.Fatalf(\"qemu_data_nic failed: %v\\n%s\", err, out)\n120: \t\t\t}\n121: \n122: \t\t\twant := fmt.Sprintf(\n123: \t\t\t\t\"-netdev tap,id=d%d,ifname=tap%d,script=no,downscript=no \",\n124: \t\t\t\ttc.index,\n125: \t\t\t\ttc.index,\n126: \t\t\t)\n127: \t\t\tif tc.bus == \"\" {\n128: \t\t\t\twant += fmt.Sprintf(\"-device virtio-net,netdev=d%d,mac=%s\", tc.index, mac)\n129: \t\t\t} else {\n130: \t\t\t\twant += fmt.Sprintf(\n131: \t\t\t\t\t\"-device virtio-net,netdev=d%d,mac=%s,bus=chrpci%s,addr=%s,romfile=,vectors=2\",\n132: \t\t\t\t\ttc.index,\n133: \t\t\t\t\tmac,\n134: \t\t\t\t\ttc.bus,\n135: \t\t\t\t\ttc.addr,\n136: \t\t\t\t)\n137: \t\t\t}\n138: \t\t\tif tc.bridge != \"\" {\n139: \t\t\t\twant = fmt.Sprintf(\"-device pci-bridge,id=chrpci%s,chassis_nr=%s,bus=pci.0 \",\n140: \t\t\t\t\ttc.bridge, tc.bridge) + want\n141: \t\t\t}\n142: \t\t\tif diff := cmp.Diff(strings.Fields(want), strings.Fields(string(out))); diff != \"\" {\n143: \t\t\t\tt.Errorf(\"QEMU arguments mismatch (-want +got):\\n%s\", diff)\n144: \t\t\t}\n145: \t\t})\n146: \t}\n147: }\n148: \n149: func TestCheckNICIndex(t *testing.T) {\n150: \ttests := map[string]struct {\n151: \t\tpciBridges int\n152: \t\tindex      int\n153: \t\terrText    string // empty when the index is accepted\n154: \t}{\n155: \t\t\"bridges-zero\":      {pciBridges: 1, index: 0},\n156: \t\t\"bridges-old-limit\": {pciBridges: 1, index: 28},\n157: \t\t\"bridges-ether33\":   {pciBridges: 1, index: 32},\n158: \t\t\"bridges-max\":       {pciBridges: 1, index: 255},\n159: \t\t\"bridges-wrap\":      {pciBridges: 1, index: 256, errText: \"would reuse a NIC MAC\"},\n160: \t\t\"bridges-wrap-511\":  {pciBridges: 1, index: 511, errText: \"would reuse a NIC MAC\"},\n161: \t\t\"no-bridges-max\":    {pciBridges: 0, index: 29},\n162: \t\t\"no-bridges-full\":   {pciBridges: 0, index: 30, errText: \"no PCI slot for the disk\"},\n163: \t\t\"no-bridges-wrap\":   {pciBridges: 0, index: 256, errText: \"would reuse a NIC MAC\"},\n164: \t}\n165: \n166: \tfn := launcherFunction(t, \"check_nic_index\")\n167: \tfor name, tc := range tests {\n168: \t\tt.Run(name, func(t *testing.T) {\n169: \t\t\tcmd := exec.CommandContext(t.Context(), \"/bin/sh\", \"-c\",\n170: \t\t\t\t\"log() { printf '%s\\\\n' \\\"$*\\\" >&2; }\\n\"+fn+\"PCI_BRIDGES=\\\"$1\\\"; check_nic_index \\\"$2\\\"\",\n171: \t\t\t\t\"chr-launch-test\", fmt.Sprint(tc.pciBridges), fmt.Sprint(tc.index))\n172: \t\t\tout, err := cmd.CombinedOutput()\n173: \t\t\tif tc.errText == \"\" {\n174: \t\t\t\tif err != nil {\n175: \t\t\t\t\tt.Fatalf(\"index %d rejected: %v\\n%s\", tc.index, err, out)\n176: \t\t\t\t}\n177: \t\t\t\treturn\n178: \t\t\t}\n179: \t\t\tif err == nil || !strings.Contains(string(out), tc.errText) {\n180: \t\t\t\tt.Errorf(\"index %d: want error containing %q, got %v: %s\", tc.index, tc.errText, err, out)\n181: \t\t\t}\n182: \t\t})\n183: \t}\n184: }\n\n(End of file - total 184 lines)\n</content>",
+            "title": "source/head/nodes/mikrotik_chr/chr_launch_test.go",
+            "metadata": {
+              "preview": "// Copyright 2026 narrowin\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage mikrotik_chr\n\nimport (\n\t\"fmt\"\n\t\"os/exec\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"github.com/google/go-cmp/cmp\"\n)\n\n// launcherFunction isolates a shell function without running the disk, network,\n// QEMU or REST operations at the top level of the embedded launcher.\n// It assumes nested closing braces are indented; a nested brace at column zero\n// would be mistaken for the end of the function.\nfunc launcherFunction(t *testing.T, name string) string {",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/mikrotik_chr/chr_launch_test.go",
+                "text": "// Copyright 2026 narrowin\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage mikrotik_chr\n\nimport (\n\t\"fmt\"\n\t\"os/exec\"\n\t\"strings\"\n\t\"testing\"\n\n\t\"github.com/google/go-cmp/cmp\"\n)\n\n// launcherFunction isolates a shell function without running the disk, network,\n// QEMU or REST operations at the top level of the embedded launcher.\n// It assumes nested closing braces are indented; a nested brace at column zero\n// would be mistaken for the end of the function.\nfunc launcherFunction(t *testing.T, name string) string {\n\tt.Helper()\n\n\t_, body, ok := strings.Cut(string(launcherScript), \"\\n\"+name+\"() {\")\n\tif !ok {\n\t\tt.Fatalf(\"launcher function %q not found\", name)\n\t}\n\tbody, _, ok = strings.Cut(body, \"\\n}\\n\")\n\tif !ok {\n\t\tt.Fatalf(\"launcher function %q has no closing brace\", name)\n\t}\n\n\treturn name + \"() {\" + body + \"\\n}\\n\"\n}\n\nfunc TestLauncherShellSyntax(t *testing.T) {\n\tcmd := exec.CommandContext(t.Context(), \"/bin/sh\", \"-n\")\n\tcmd.Stdin = strings.NewReader(string(launcherScript))\n\tif out, err := cmd.CombinedOutput(); err != nil {\n\t\tt.Fatalf(\"invalid launcher shell syntax: %v\\n%s\", err, out)\n\t}\n}\n\nfunc TestQEMUDataNIC(t *testing.T) {\n\ttests := map[string]struct {\n\t\tpciBridges int\n\t\tindex      int\n\t\tbridge     string\n\t\tbus        string\n\t\taddr       string\n\t}{\n\t\t\"first-data-port\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      1,\n\t\t\tbridge:     \"1\",\n\t\t\tbus:        \"1\",\n\t\t\taddr:       \"0x1\",\n\t\t},\n\t\t\"old-limit\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      28,\n\t\t\tbus:        \"2\",\n\t\t\taddr:       \"0x3\",\n\t\t},\n\t\t\"ether30\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      29,\n\t\t\tbus:        \"2\",\n\t\t\taddr:       \"0x4\",\n\t\t},\n\t\t\"last-slot\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      25,\n\t\t\tbus:        \"1\",\n\t\t\taddr:       \"0x19\",\n\t\t},\n\t\t\"second-bridge\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      26,\n\t\t\tbridge:     \"2\",\n\t\t\tbus:        \"2\",\n\t\t\taddr:       \"0x1\",\n\t\t},\n\t\t\"second-last-slot\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      50,\n\t\t\tbus:        \"2\",\n\t\t\taddr:       \"0x19\",\n\t\t},\n\t\t\"third-bridge\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      51,\n\t\t\tbridge:     \"3\",\n\t\t\tbus:        \"3\",\n\t\t\taddr:       \"0x1\",\n\t\t},\n\t\t\"highest-unique-mac\": {\n\t\t\tpciBridges: 1,\n\t\t\tindex:      255,\n\t\t\tbus:        \"11\",\n\t\t\taddr:       \"0x5\",\n\t\t},\n\t\t\"arm64-first-port\": {\n\t\t\tindex: 1,\n\t\t},\n\t\t\"arm64-high-port\": {\n\t\t\tindex: 32,\n\t\t},\n\t}\n\n\tfn := launcherFunction(t, \"qemu_data_nic\")\n\tfor name, tc := range tests {\n\t\tt.Run(name, func(t *testing.T) {\n\t\t\tmac := fmt.Sprintf(\"52:54:00:12:34:%02x\", tc.index)\n\t\t\tcmd := exec.CommandContext(t.Context(), \"/bin/sh\", \"-c\",\n\t\t\t\tfn+\"PCI_BRIDGES=\\\"$1\\\"; qemu_data_nic \\\"$2\\\" \\\"$3\\\"\",\n\t\t\t\t\"chr-launch-test\", fmt.Sprint(tc.pciBridges), fmt.Sprint(tc.index), mac)\n\t\t\tout, err := cmd.CombinedOutput()\n\t\t\tif err != nil {\n\t\t\t\tt.Fatalf(\"qemu_data_nic failed: %v\\n%s\", err, out)\n\t\t\t}\n\n\t\t\twant := fmt.Sprintf(\n\t\t\t\t\"-netdev tap,id=d%d,ifname=tap%d,script=no,downscript=no \",\n\t\t\t\ttc.index,\n\t\t\t\ttc.index,\n\t\t\t)\n\t\t\tif tc.bus == \"\" {\n\t\t\t\twant += fmt.Sprintf(\"-device virtio-net,netdev=d%d,mac=%s\", tc.index, mac)\n\t\t\t} else {\n\t\t\t\twant += fmt.Sprintf(\n\t\t\t\t\t\"-device virtio-net,netdev=d%d,mac=%s,bus=chrpci%s,addr=%s,romfile=,vectors=2\",\n\t\t\t\t\ttc.index,\n\t\t\t\t\tmac,\n\t\t\t\t\ttc.bus,\n\t\t\t\t\ttc.addr,\n\t\t\t\t)\n\t\t\t}\n\t\t\tif tc.bridge != \"\" {\n\t\t\t\twant = fmt.Sprintf(\"-device pci-bridge,id=chrpci%s,chassis_nr=%s,bus=pci.0 \",\n\t\t\t\t\ttc.bridge, tc.bridge) + want\n\t\t\t}\n\t\t\tif diff := cmp.Diff(strings.Fields(want), strings.Fields(string(out))); diff != \"\" {\n\t\t\t\tt.Errorf(\"QEMU arguments mismatch (-want +got):\\n%s\", diff)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestCheckNICIndex(t *testing.T) {\n\ttests := map[string]struct {\n\t\tpciBridges int\n\t\tindex      int\n\t\terrText    string // empty when the index is accepted\n\t}{\n\t\t\"bridges-zero\":      {pciBridges: 1, index: 0},\n\t\t\"bridges-old-limit\": {pciBridges: 1, index: 28},\n\t\t\"bridges-ether33\":   {pciBridges: 1, index: 32},\n\t\t\"bridges-max\":       {pciBridges: 1, index: 255},\n\t\t\"bridges-wrap\":      {pciBridges: 1, index: 256, errText: \"would reuse a NIC MAC\"},\n\t\t\"bridges-wrap-511\":  {pciBridges: 1, index: 511, errText: \"would reuse a NIC MAC\"},\n\t\t\"no-bridges-max\":    {pciBridges: 0, index: 29},\n\t\t\"no-bridges-full\":   {pciBridges: 0, index: 30, errText: \"no PCI slot for the disk\"},\n\t\t\"no-bridges-wrap\":   {pciBridges: 0, index: 256, errText: \"would reuse a NIC MAC\"},\n\t}\n\n\tfn := launcherFunction(t, \"check_nic_index\")\n\tfor name, tc := range tests {\n\t\tt.Run(name, func(t *testing.T) {\n\t\t\tcmd := exec.CommandContext(t.Context(), \"/bin/sh\", \"-c\",\n\t\t\t\t\"log() { printf '%s\\\\n' \\\"$*\\\" >&2; }\\n\"+fn+\"PCI_BRIDGES=\\\"$1\\\"; check_nic_index \\\"$2\\\"\",\n\t\t\t\t\"chr-launch-test\", fmt.Sprint(tc.pciBridges), fmt.Sprint(tc.index))\n\t\t\tout, err := cmd.CombinedOutput()\n\t\t\tif tc.errText == \"\" {\n\t\t\t\tif err != nil {\n\t\t\t\t\tt.Fatalf(\"index %d rejected: %v\\n%s\", tc.index, err, out)\n\t\t\t\t}\n\t\t\t\treturn\n\t\t\t}\n\t\t\tif err == nil || !strings.Contains(string(out), tc.errText) {\n\t\t\t\tt.Errorf(\"index %d: want error containing %q, got %v: %s\", tc.index, tc.errText, err, out)\n\t\t\t}\n\t\t})\n\t}\n}",
+                "lineStart": 1,
+                "lineEnd": 184,
+                "totalLines": 184,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792829370266,
+              "end": 1792829370271
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf52fa1001YvxYGbt9UV5yS2",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf51c63001vbUJoP4BzJN3Bs",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 25417,
+            "input": 1771,
+            "output": 50,
+            "reasoning": 44,
+            "cache": {
+              "read": 23552,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf52faa001RC0zJDVLFGjQgS",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829370282
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
         "modelID": "zai-org/GLM-5.3-Flash",
         "providerID": "tofarev",
         "mode": "tofarev",
@@ -1994,18 +2705,18 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_16cf2de45001p926VIBN65JNZh",
+          "id": "prt_16cf541ee001w573s1rtKTmsB5",
           "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
-          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV"
+          "messageID": "msg_16cf52faa001RC0zJDVLFGjQgS"
         },
         {
           "type": "reasoning",
-          "id": "prt_16cf2de47001vP0bZOvWvlqnB8",
+          "id": "prt_16cf541f000155hOr74n2f84CD",
           "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
-          "messageID": "msg_16cf297ab001HkrJjo68EZ5DUV",
+          "messageID": "msg_16cf52faa001RC0zJDVLFGjQgS",
           "text": "",
           "time": {
-            "start": 1792829218375
+            "start": 1792829374960
           }
         }
       ]
