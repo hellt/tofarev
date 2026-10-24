@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "c46227a6abdc0aa2eef6b27a16d707bf837deed7",
-  "updatedAt": "2026-10-24T08:11:36.138Z",
+  "updatedAt": "2026-10-24T08:13:51.140Z",
   "state": "running",
   "info": {
     "id": "ses_e931037edffefVhRYNcnYJGDUf",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 674631,
-      "output": 3436,
-      "reasoning": 15008,
+      "input": 840001,
+      "output": 3673,
+      "reasoning": 21327,
       "cache": {
-        "read": 444160,
+        "read": 630272,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1792829016082,
-      "updated": 1792829400984
+      "updated": 1792829543886
     }
   },
   "messages": [
@@ -3159,7 +3159,650 @@
         "id": "msg_16cf5a794001h8g1X5N6an0NDV",
         "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
         "time": {
-          "created": 1792829400980
+          "created": 1792829400980,
+          "completed": 1792829497906
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 52894,
+          "input": 7305,
+          "output": 76,
+          "reasoning": 5065,
+          "cache": {
+            "read": 40448,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf5d5640019pJBshy5MU6fjb",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf5d566001d7FIFs3E98B6Jz",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV",
+          "text": "Now I have the full diff. Let me analyze remaining potential issues carefully.\n\n**Issue candidate 1: e2e test health check timeout asymmetry — not a defect.**\n\n**Issue candidate 2: `TestQEMUDataNIC` \"old-limit\" case: no bridge emitted, and the test does not verify that a bridge was already emitted for indices 2..25.** The function under test emits the bridge only at slot 1 — this is per-call stateless behavior; the launcher calls it for every index in sequence. Fine.\n\n**Issue candidate 3: The launcher's `check_nic_index` message for amd64**: \"at most 255 data NICs are supported (eth255 / ether256); index $1 would reuse a NIC MAC\" — consistent.\n\n**Issue candidate 4: The docs statement about \"29 total Ethernet interfaces (management plus 28 data ports)\".** Hmm, wait. On AMD64 old layout: no bridges; data NICs on pci.0 alongside disk (IDE on PC — actually the drive is `-drive file=...,format=raw` which on the default pc machine is IDE, not PCI), mgmt NIC. So free PCI slots for data NICs = 29 - 1 (mgmt) = 28 → max index 28 → eth28/ether29 max data. Docs say the limit was 29 total (mgmt + 28 data ports) — consistent.\n\nBut wait: is 28 the real old limit? pci.0 on i440fx: slots 0-31 = 32 slots; slot 0 = host bridge, slot 1 = PIIX3 (ISA), maybe other built-in devices? The launcher comment says \"The default PC has only 29 free PCI slots, including management.\" So 29 usable device slots → mgmt + 28 data. OK.\n\n**Issue candidate 5 — important: `ether33` e2e and QEMU arg ordering.** Covered.\n\n**Issue candidate 6 — real potential issue: on amd64, the PCI bridge emission breaks the \"restart preserves interface numbering\" invariant? No — restart re-runs the loop with same max, same order. Fine.\n\n**Issue candidate 7 — `qemu_data_nic` name-based id collisions:** `-device pci-bridge,id=chrpci$_bridge` — if the launcher runs twice (restart), QEMU process is new each time; ids are per-process. Fine.\n\n**Issue candidate 8 — the `addr=$(printf '0x%x' \"$_slot\")` for slot 25 → 0x19. Good.\n\n**Issue candidate 9 — Go check: `index, err := strconv.Atoi(...)`. For \"eth255\" → 255 ≤ 255 OK. For amd64 limit... fine.\n\nBut hold on — there's an asymmetry worth checking: **the launcher limits arm64 to 29, but the Go arm64 limit is 29; both match. And amd64: Go 255, launcher 255. Match.**\n\n**Issue candidate 10 — `check_nic_index` with PCI_BRIDGES unset:** In the test harness, `PCI_BRIDGES=\"$1\"` is prepended. In the launcher, always set. `[ \"\" != 1 ]` would be true under set -u? `[ \"$PCI_BRIDGES\" != 1 ]` with unset PCI_BRIDGES under `set -u` → error. Not reachable.\n\n**Issue candidate 11 — Real potential bug: `NET=\"$NET $(qemu_data_nic \"$i\" \"$mac\")\"` word splitting.** qemu_data_nic output contains no spaces inside args; word splitting on spaces produces correct args. The first printf emits with a trailing space; second with none. Combined: \"...pci.0 -netdev tap,...vectors=2\". `NET` later used unquoted (`$NET` at line ~361 with shellcheck disable=SC2086). Good.\n\n**Issue candidate 12 — `chassis_nr` semantics**: `chassis_nr` is the chassis number, used for chassis reporting in hotplug; must be unique per bridge — it is (1..11). Fine.\n\n**Issue candidate 13 — Potential QEMU issue: bridge `id=chrpciN` and NIC `bus=chrpciN`. Fine.\n\n**Issue candidate 14 — mem scaling: MEM = 256 + 8*CPUS*max. For max=255, MEM = 256 + 8*1*255 = 2296 MiB. With CPUS=4: 8664 MiB. Documented behavior (\"memory defaults scale with the highest index\"). Fine — documented in the docs change.\n\n**Issue candidate 15 — Documentation claim about `ether30` on ARM64 being usable: `arm64-limit` test confirms Go allows eth29. Launcher check no-bridges max 29. Consistent.\n\n**Issue candidate 16 — A REAL issue candidate: The base behavior on amd64 allowed up to ~28 data NICs directly on pci.0. The new amd64 layout puts ALL data NICs (1..N) behind bridge 1. For existing deployments with ≤28 NICs, after a containerlab upgrade + node restart, the QEMU NIC layout changes (NICs move behind a bridge). Does RouterOS keep the same interface numbering? The header comments say RouterOS keys interfaces on MAC, and the NIC order = PCI order = order of -device args. With the bridge, enumeration order: mgmt (pci.0 slot 2), then bridge1's bus children... \n\nHmm wait, actually there's a subtlety: with PCI enumeration depth-first, the devices behind bridge1 are enumerated when bridge1 is encountered. bridge1 sits at pci.0 slot 3 (after mgmt at slot 2 — wait, is mgmt at slot 2?). On the pc machine: slot 0 host bridge, slot 1 PIIX3 (ISA bridge + IDE + USB), ... mgmt NIC gets next free slot. Actually there might be more built-in devices on i440fx? The default pc machine: PCI devices are the host bridge (0), ISA bridge/PIIX3 (1), and IDE (built into PIIX3), VGA? Not by default with -display none... `-display none` doesn't add VGA? QEMU adds a default VGA device unless `-vga none` is given! Hmm — with `-display none`, QEMU still creates the default VGA device (std VGA) on PCI bus? Yes, QEMU creates default devices including VGA unless disabled. On i440fx pc machine, VGA typically sits at slot 2. So the mgmt NIC might get slot 3, bridge1 slot 4, etc. This doesn't matter for ordering as long as ordering is preserved.\n\nThe order of enumeration in the guest: PCI bus scan is depth-first. mgmt NIC (no bus), bridge1 (secondary bus with 25 NICs), bridge2, ... Depth-first: when the guest scans pci.0 in slot order: host bridge (0), ISA (1), VGA (2), mgmt NIC (3), bridge1 (4) → enumerate its bus: NIC d1..d25 in slot order → then bridge2 (5) → its 25 NICs → ... So the NIC order is mgmt, d1..d25, d26..d50, ... That matches index order. RouterOS numbering follows discovery order. So ether numbering is preserved. Good.\n\nBut what about the OLD deployments (pre-upgrade) restarting with the new launcher: previously NICs were all on pci.0 in slots 3..30; now d1..d25 are on bridge1's bus. The device order as enumerated remains the same (depth-first yields the same sequence). And MACs are unchanged (node_id + index). So RouterOS keeps its interfaces. Good — the PR preserved the invariant.\n\n**Issue candidate 17 — `prev`/NICS_FILE and Go check: not an issue.\n\n**Issue candidate 18 — the docs claim \"This removes the default layout's limit of 29 total Ethernet interfaces (management plus 28 data ports), so links can use `ether30` and higher\"** — accurate.\n\n**Issue candidate 19 — the arm64 `qemu_data_nic` fallback (`*)` branch) handles PCI_BRIDGES=0 only; if PCI_BRIDGES were something else, it goes to `*)`. Only 0/1 exist. Fine.\n\n**Issue candidate 20 — the workflow timeout-minutes 20: deploying 2 CHR nodes + boot + restart. The 02 test: deploy + 300s health wait + restart + another 300s wait. Total could exceed 20 minutes? The 01 suite with 3 nodes (including one that never becomes healthy, waiting 120s) runs with timeout-minutes 20 (same value, pre-existing). The 02 suite: deploy (~2 nodes, each with TCG fallback if no KVM... CI uses KVM), health wait up to 300+60, restart r1 + 300 wait + ping. Total worst-case: deploy startup ~1min, waits ~6min, restart ~5min → ~12min + teardown. Under 20 min but closer. On podman (allowed to fail) fine. Not a finding — speculative.\n\n**Issue candidate 21 — REAL issue candidate: The `Skip If` inside `Suite Setup` keyword.** In Robot Framework, `Skip If` inside a suite setup marks the suite skipped — all tests are skipped. That works. OK.\n\nBut — the skip mechanism: `Skip If    '${arch}' != 'x86_64' and '${arch}' != 'amd64'` — Robot evaluates with `and` operator. Fine.\n\nHowever, there's a subtlety: the workflow runs the 02 suite on both docker and podman. Both are x86_64 runners, so no skip. OK.\n\n**Issue candidate 22 — the e2e only covers AMD64; the arm64 limit is unit-tested only (Go + shell tests). Acceptable; note in coverage.\n\n**Issue candidate 23 — potential issue in the Go error message: \"(eth%d / ether%d)\" with limit and limit+1. For arm64: \"(eth29 / ether30)\" — matches docs. Good.\n\n**Issue candidate 24 — `dataNICLimit` naming: returns the highest index, docs call it \"maximum data NIC index\". Fine.\n\n**Issue candidate 25 — The check in the launcher rejects `max > 255` but NOT `max > 255` when... wait, on amd64 with bridges, the MAC limit is 255. Covered.\n\n**Issue candidate 26 — Subtle: `[ \"$n\" -gt \"$max\" ]` in watch_links and the eth glob — unchanged.\n\n**Issue candidate 27 — Potential issue: `bridge_eth` for NICs on bridges — the container-side bridging (brN/tapN) is unchanged; bridge numbering by index. Fine.\n\n**Issue candidate 28 — Docs: the \"interface naming\" doc link and `InterfaceHelp` — the kind's `InterfaceHelp` remains \"etherX (where X >= 2) or ethX (where X >= 1)\". The new limit is enforced by CheckInterfaceName errors. Fine.\n\n**Issue candidate 29 — One more: the new `CheckInterfaceName` on arm64: an eth index ≤29 passes, but what about the case where the Go arch check says 255 (amd64 binary) while the launcher is arm64 — documented.\n\n**Issue candidate 30 — Now, an important correctness check on the launcher for amd64 with max in [30, 255] but the bridge count: bridgeN id — QEMU requires bridge ids unique. chrpci1..chrpci11 unique. Fine.\n\n**Issue candidate 31 — `vectors=2`: QEMU requires `vectors` ≥ 2 for virtio-net-pci MSI-X? Setting vectors=2 is valid. But wait — one subtle thing: with `vectors=2`, the virtqueue config vector must be ≤ vectors-1... QEMU sets vector 0 for both rx/tx, vector 1 for config? Actually with vectors=2: vector 0 = rx/tx (shared), vector 1 = config. Valid.\n\n**Issue candidate 32 — Now something I should verify: does the `-device virtio-net` (without `-pci` suffix) accept `bus=` and `addr=` properties? `-device virtio-net` is an alias for virtio-net-pci on PCI machines. Yes, `bus=` and `addr=` are valid properties. Good.\n\n**Issue candidate 33 — IMPORTANT potential issue: on amd64, when `max ≤ 28` (small labs, the overwhelmingly common case), the launcher now adds a PCI bridge for index 1 (slot 1 of bridge 1) — behavior change for EVERY amd64 CHR node, even 1-NIC labs. Existing deployments restart with the new launcher and the NIC moves behind bridge1. As analyzed, ordering is preserved (depth-first enumeration), MACs unchanged → RouterOS keeps config. But is there a risk that SeaBIOS/Windows/guest enumeration differs... RouterOS is Linux-based, PCI enumeration is standard. The PR presumably validated via e2e (01 suite runs with 1 link: ether2 on bridge1). So the 01 e2e covers the common case with the bridge. Good — this is covered by the existing 01 suite.\n\n**Issue candidate 34 — Test `chr_launch_test.go` copyright \"narrowin\" vs \"NetPilot Labs\" in other files — inconsistent copyright header (the repo files say \"Copyright 2026 NetPilot Labs\"). Minor style; other test files? mikrotik_chr_test.go says \"NetPilot Labs\". The new chr_launch_test.go says \"narrowin\". This is a trivial inconsistency; possibly the PR author's handle. I could mention as P4? Hmm, it's cosmetic; the base file mikrotik_chr_test.go already had \"NetPilot Labs\" — the new file deviates. This is the kind of thing maintainers might notice. I'll consider it too trivial; skip or note as coverage note. Actually, it's a legit minor consistency nit — P4 optional. Hmm, the guidelines say don't inflate stylistic preferences. I'll skip it.\n\n**Issue candidate 35 — Now let me think harder about `TestQEMUDataNIC`'s \"old-limit\" naming and `bus: \"2\"` for index 28: _bridge = 27/25+1 = 2 — but the bridge device was emitted at index 26, and index 28's device has bus=chrpci2. Correct.\n\n**Issue candidate 36 — Now the REAL potential issue I want to nail down: `qemu_data_nic` is invoked per NIC and emits the bridge when slot==1 — but only for the FIRST bridge when there are gaps? No — bridges for bridge 2, 3... are emitted when index 26, 51... reach slot 1. All indices 1..max are iterated, so every bridge in range gets emitted. Good.\n\n**Issue candidate 37 — Hmm, one more: what if max < 26 but ≥ 2? Only bridge1 emitted at index 1. Good.\n\n**Issue candidate 38 — What about the mgmt NIC device: it's created BEFORE the loop (line 183) and has no bus → pci.0. The bridges are created after. Fine.\n\n**Issue candidate 39 — A REAL potential issue: `NET` is used with `$NET` unquoted at QEMU invocation, and `qemu_data_nic` output contains the substring `$(...)`? No — printf output is literal. Fine.\n\n**Issue candidate 40 — Now, one more docs/schema check: `clab.schema.json` — no change needed (no topology API change).\n\n**Issue candidate 41 — Now let me think about `check_nic_index` being called with `$max` where max could exceed 255 due to INTFS from CLAB_INTFS being, e.g., \"500\" — Go check would reject during deploy. But if the user sets CLAB_INTFS env manually? That's the containerlab-internal env. Fine.\n\n**Issue candidate 42 — What about `prev` from NICS_FILE > 255 (written by a hypothetical older buggy version)? Rejected at start. Fine.\n\n**Issue candidate 43 — Wait, actually there's one more real consideration: **The arm64 check allows index up to 29 — but the comment says the bus holds \"the disk, management and 29 data NICs\". The `virt` machine's PCIe... on `-M virt`, the PCI bus (pcie.0) has slots... The virt machine's highmem/pcie root bus has 32 slots? With edk2 firmware, devices get slots. 31 devices (disk + mgmt + 29 data) = slots 1..31 — exactly the capacity of a 32-slot bus (0 reserved). Tight but valid. This matches \"at most 29 data NICs before QEMU runs out of slots\". OK.\n\n**Issue candidate 44 — One genuinely questionable behavior: on amd64, `check_nic_index` allows index 255, meaning 11 bridges. QEMU SeaBIOS with 11 bridges — memory for PCI BARs etc. Fine, documented as \"not a guarantee\".\n\nNow, let me also check: **does the launcher handle `PCI_BRIDGES` in `check_nic_index` being called BEFORE `PCI_BRIDGES` is set?** Line 301 is after line 149-155. Fine.\n\n**Issue candidate 45 — Wait, one thing about the shell function test: `TestCheckNICIndex` case \"bridges-zero\": index 0 accepted. OK.\n\n**Issue candidate 46 — Now the remaining piece: the workflow `mikrotik_chr-tests.yml` head vs base — only the matrix addition. Let me quickly read the head workflow fully to be complete. Also verify `r3` references in the 01 suite don't conflict.\n\nLet me also double-check `clab.schema.json` for the mikrotik_chr kind — no schema change needed (interface names are generic strings). Fine.\n\n**Now, let me think about whether there are any REAL findings.** So far everything checks out. Let me dig deeper for actual defects.\n\nPotential defect A: **`qemu_data_nic` emits the bridge only when `_slot` == 1, but `check_nic_index` runs BEFORE the loop — if the NIC set is sparse in the sense that... no, the loop always covers 1..max.\n\nPotential defect B: **The MAC change from `$((i & 255))` to `$i`**: for i in 1..255 identical. But what about `printf '%02x'` with `$i` where i ≥ 256? Not reachable (check_nic_index). But WAIT — there's a subtle path: `check_nic_index` is called with `$max`, which is the max index. The loop runs 1..max. All ≤ max ≤ 255. Good.\n\nPotential defect C: **On arm64, `check_nic_index` checks `\"$1\" -gt 255` first, then `\"$1\" -gt 29`. For index 30..255, the error says \"at most 29 data NICs fit without PCI bridges (eth29 / ether30); index $1 leaves no PCI slot for the disk\". Accurate.\n\nPotential defect D: **Go vs launcher limit mismatch for arm64 in the OTHER direction: Go arm64 limit 29; launcher arm64: PCI_BRIDGES=0 → max 29. Match.\n\nPotential defect E: **What if the containerlab binary is amd64 but runs on an arm64 host (e.g., Rosetta on macOS Docker Desktop — actually that's the emulation case documented). Documented.\n\nPotential defect F: **`strings.TrimPrefix(ifName, \"eth\")` for an endpoint named like \"eth-1\"? Parent check rejects (\"eth-1\" doesn't match `eth[1-9]\\d*$`). OK.\n\nPotential defect G: What about interface names from OTHER kinds of endpoints? Endpoints are veths with mapped names. Fine.\n\nPotential defect H: **The new e2e test never checks r1's ether33 config persisted across restart (the \"Ensure restarting r1 preserves the high port and its configuration\" test runs `High port forwards traffic` which pings from r1 — implicitly verifies ether33 survived restart with its address). Good.\n\nPotential defect I: **Test isolation: `Cleanup` destroys; suite teardown runs cleanup even on failure. Good.\n\nPotential defect J: **The 02 test's \"Wait for r1 and r2 to be healthy\" — r2 60s. In 01, r2 has no startup-config... wait no, in 01 r2 HAS a startup-config (custom credentials). Hmm, and r1 300s. In 02 both have startup configs. The asymmetry mirrors 01; since both boot in parallel and the waits run sequentially (r1's wait absorbs most of the boot time), r2's 60s after r1 healthy is plenty. Fine.\n\nPotential defect K: **The `Deploy ${lab-name} lab` in 02 lacks the `Log ${CURDIR}` of 01 — cosmetic.\n\nPotential defect L: **`Skip If` inside `Suite Setup` — with `Skip`, the suite setup itself is skipped; RF handles it. But note: the `Deploy` test would also be skipped — so the podman job (continue-on-error) unaffected.\n\nPotential defect M: **A REAL issue candidate — the `02-chr-high-ports.clab.yml` uses `startup-config: |` inline strings. Does containerlab support inline startup-config (as opposed to file paths)? The `startup-config` field accepts a string; in the docs, `startup-config` is usually a file path, but inline template strings are supported (it's rendered as a template; if the content looks like a script...). Let me check how StartupConfig is handled: in `default_node.go` `VerifyStartupConfig` and `PreDeploy`, the startup config from the topology is read as a file path... Actually there's support for inline content: `templates.Template` — clab resolves `startup-config` that starts with `#` or contains newlines? Let me check. In clab, `startup-config` can be an inline script — I recall `utils.ReadFileOrPath`... Actually containerlab supports inline configs: \"The startup-config can be provided inline (multi-line string)\". Hmm, I need to verify. The node's StartupConfig is used in PreDeploy: `n.Cfg.StartupConfig` — in vrnetlab-based nodes, `VerifyStartupConfig` checks the file. For mikrotik_chr PreDeploy (VRNode.PreDeploy) — let me check VRNode.PreDeploy to see how StartupConfig is interpreted (file path vs inline). Actually in containerlab, `StartupConfig` from topology is processed by `config.LoadStartupConfig` or in `nodes/default_node.go PreDeploy`: it calls `n.ConfigProvider(...)`? Let me check: in many node kinds, `PreDeploy` does `config.FromNode(...)`. There's a `templates` mechanism: `StartupConfig` content that is not a file path is treated as an inline template rendered with node data. Let me verify quickly by grepping for how StartupConfig is consumed in default_node.go.\n\nActually — the 01 suite uses file paths (r1.rsc). The 02 suite uses inline. If inline weren't supported, the deploy test would fail. Let me check the code path quickly. In `nodes/default_node.go`, there's likely `func (d *DefaultNode) PreDeploy` that renders startup config via `n.ConfigProvider` or `startupConfigAsFile`. Let me grep for \"StartupConfig\" in default_node.go.\n\nLet me also verify the workflow file fully.",
+          "time": {
+            "start": 1792829412710,
+            "end": 1792829497853
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_16cf72200001QyTh9wx0JPFuR7",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV",
+          "text": "Let me verify a few remaining details: how inline `startup-config` is handled, the workflow file, and the base versions for completeness.",
+          "time": {
+            "start": 1792829497856,
+            "end": 1792829497878
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf72205001IolMAyPrKaSogv",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV",
+          "callID": "call_5f1682b627bf4792ba90d00e",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "StartupConfig",
+              "path": "/source/head/nodes",
+              "include": "*.go"
+            },
+            "output": "Found 100 matches (more matches available)\n/source/head/nodes/vyosnetworks_vyos/vyos.go:\n  Line 87: \tn.Cfg.ResStartupConfig = filepath.Join(n.configDir, \"config.boot\")\n\n\n/source/head/nodes/vyosnetworks_vyos/helpers.go:\n  Line 60: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 61: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n  Line 68: \terr := n.GenerateConfig(nodeCfg.ResStartupConfig, currentCfgTemplate)\n\n\n/source/head/nodes/juniper_csrx/csrx_test.go:\n  Line 87: \tif cfg.ResStartupConfig != csrxConfigPath(labDir) {\n\n  Line 88: \t\tt.Fatalf(\"ResStartupConfig = %q, want %q\", cfg.ResStartupConfig, csrxConfigPath(labDir))\n\n  Line 97: func TestCreateCSRXFilesCopiesStartupConfigAndLicense(t *testing.T) {\n\n  Line 117: \t\tStartupConfig: startupConfig,\n\n\n/source/head/nodes/juniper_csrx/csrx.go:\n  Line 210: \tnodeCfg.ResStartupConfig = cfg\n\n  Line 213: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 214: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n\n/source/head/nodes/default_node.go:\n  Line 143: \terr = d.OverwriteNode.VerifyStartupConfig(d.Cfg.LabDir)\n\n  Line 639: // VerifyStartupConfig verifies that startup config files exists on disks.\n\n  Line 640: func (d *DefaultNode) VerifyStartupConfig(topoDir string) error {\n\n  Line 641: \tcfg := d.Config().StartupConfig\n\n  Line 658: // EnforceStartupConfig is explicitly set to true and startup-config points to a file this will\n\n  Line 662: \tif d.Cfg.EnforceStartupConfig && d.Cfg.SuppressStartupConfig {\n\n  Line 665: \tif d.Cfg.EnforceStartupConfig && d.Cfg.StartupConfig == \"\" {\n\n  Line 666: \t\treturn ErrNoStartupConfig\n\n  Line 669: \tif d.Cfg.SuppressStartupConfig {\n\n  Line 674: \tif !d.Cfg.EnforceStartupConfig && clabutils.FileExists(dst) {\n\n  Line 678: \t\tlog.Debug(\"Generating config\", \"node\", d.Cfg.ShortName, \"file\", d.Cfg.StartupConfig)\n\n  Line 707: \tVerifyStartupConfig(topoDir string) error\n\n  Line 724: // LoadStartupConfigFileVr templates a startup-config using the file specified for VM-based nodes in\n\n  Line 727: func LoadStartupConfigFileVr(node Node, configDirName, startupCfgFName string) error {\n\n  Line 733: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 737: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n\n/source/head/nodes/plvision_sonic/plvision_sonic.go:\n  Line 100: \treturn clabnodes.LoadStartupConfigFileVr(n, configDirName, startupCfgFName)\n\n\n/source/head/nodes/dell_sonic/dell_sonic.go:\n  Line 100: \treturn clabnodes.LoadStartupConfigFileVr(n, configDirName, startupCfgFName)\n\n\n/source/head/nodes/arrcus_arcos/arcos.go:\n  Line 71: \thostCfg := n.Cfg.ResStartupConfig\n\n  Line 82: \tn.Cfg.ResStartupConfig = dst\n\n  Line 84: \tif n.Cfg.StartupConfig != \"\" {\n\n  Line 86: \t\treturn clabutils.CopyFile(ctx, n.Cfg.StartupConfig, dst, 0o644)\n\n\n/source/head/nodes/veesix_osvbng/veesix_osvbng.go:\n  Line 67: \tn.Cfg.ResStartupConfig = n.osvbngCfgSrcPath\n\n  Line 68: \tn.Cfg.Binds = append(n.Cfg.Binds, fmt.Sprint(n.Cfg.ResStartupConfig, \":\", osvbngCfgDstPath))\n\n  Line 85: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 86: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n  Line 93: \terr := n.GenerateConfig(n.Cfg.ResStartupConfig, osvbngCfgTpl)\n\n\n/source/head/nodes/cisco_sdwan/cisco_sdwan.go:\n  Line 180: \tif nodeCfg.StartupConfig == \"\" {\n\n  Line 192: \text := strings.ToLower(filepath.Ext(nodeCfg.StartupConfig))\n\n  Line 210: \t\t\tnodeCfg.StartupConfig,\n\n  Line 223: \tif err := clabutils.CopyFile(context.Background(), nodeCfg.StartupConfig, dst,\n\n  Line 226: \t\t\tnodeCfg.StartupConfig, dst, err)\n\n  Line 229: \tlog.Debug(\"Copied startup config\", \"source\", nodeCfg.StartupConfig, \"destination\", dst)\n\n\n/source/head/nodes/fdio_vpp/fdio_vpp.go:\n  Line 42: \t// vppStartupConfigTpl is the template for the vpp startup config itself\n\n  Line 45: \tvppStartupConfigTpl string\n\n  Line 109: \tn.Cfg.ResStartupConfig = n.vppCfgSrcPath\n\n  Line 140: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 141: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n  Line 148: \terr := n.GenerateConfig(n.Cfg.ResStartupConfig, vppCfgTpl)\n\n  Line 154: \terr = n.GenerateConfig(n.vppStartupCfgSrcPath, vppStartupConfigTpl)\n\n\n/source/head/nodes/xrd/xrd.go:\n  Line 156: \tnodeCfg.ResStartupConfig = cfg\n\n  Line 176: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 177: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n  Line 184: \terr := n.GenerateConfig(nodeCfg.ResStartupConfig, currentCfgTemplate)\n\n\n/source/head/nodes/node.go:\n  Line 119: \t// ErrNoStartupConfig indicates that we are supposed to enforce a startup config but none are\n\n  Line 121: \tErrNoStartupConfig = errors.New(\"no startup-config provided\")\n\n  Line 196: \t// VerifyStartupConfig checks for existence of the referenced file and maybe performs additional\n\n  Line 198: \tVerifyStartupConfig(topoDir string) error\n\n\n/source/head/nodes/sros/config.go:\n  Line 73: // Flow: version detection → buildStartupConfig (default + partial) → GenerateConfig(dst, config).\n\n  Line 98: \tisPartial := clabutils.IsPartialConfigFile(n.Cfg.StartupConfig)\n\n  Line 102: \t\tn.Cfg.StartupConfig, \"isPartial\", isPartial)\n\n  Line 104: \tstartupConfig, err := n.buildStartupConfig(isPartial)\n\n  Line 121: // buildStartupConfig returns the full startup config string: either from user file (full config)\n\n  Line 124: func (n *sros) buildStartupConfig(isPartial bool) (string, error) {\n\n  Line 126: \tif n.Cfg.StartupConfig != \"\" && !isPartial {\n\n  Line 127: \t\tc, err := os.ReadFile(n.Cfg.StartupConfig)\n\n  Line 159: \tif !isFullConfigFile(n.Cfg.StartupConfig) {\n\n  Line 292: \tif n.Cfg.StartupConfig != \"\" {\n\n  Line 296: \t\tif clabutils.IsPartialConfigFile(n.Cfg.StartupConfig) && n.isCPM(\"\") {\n\n  Line 300: \t\t\t\t\"source\", n.Cfg.StartupConfig)\n\n  Line 302: \t\t\tr, err := os.Open(n.Cfg.StartupConfig)\n\n  Line 348: // it is intended that the 'c' arg is n.Cfg.StartupConfig.\n\n\n/source/head/nodes/sros/sros.go:\n  Line 571: \t\t\tif !isFullConfigFile(n.Cfg.StartupConfig) {\n\n  Line 1489: \tif isFullConfigFile(n.Cfg.StartupConfig) {\n\n\n/source/head/nodes/vr_c8000v/vr-c8000v.go:\n  Line 99: \tif n.mode == modeZTP && n.Cfg.StartupConfig != \"\" && !n.Cfg.SuppressStartupConfig {\n\n\n/source/head/nodes/sros/sros_test.go:\n  Line 159: func Test_sros_buildStartupConfig(t *testing.T) {\n\n  Line 171: \t\t\tStartupConfig: cfgPath,\n\n  Line 175: \t\tcfg, err := n.buildStartupConfig(false) // full config, not partial\n\n  Line 192: \t\t\tStartupConfig: \"\",\n\n  Line 203: \t\tcfg, err := n.buildStartupConfig(true) // no full config; use default + partial\n\n\n/source/head/nodes/vr_c8000v/vr-c8000v_test.go:\n  Line 213: \t\t\tcfg:      clabtypes.NodeConfig{StartupConfig: \"cfg.txt\"},\n\n  Line 221: \t\t\tcfg:     clabtypes.NodeConfig{NodeType: modeZTP, StartupConfig: \"cfg.txt\"},\n\n  Line 227: \t\t\t\tStartupConfig:         \"cfg.txt\",\n\n  Line 228: \t\t\t\tSuppressStartupConfig: true,\n\n\n/source/head/nodes/c8000/c8000.go:\n  Line 101: \tnodeCfg.ResStartupConfig = cfg\n\n  Line 113: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 114: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n  Line 121: \terr := n.GenerateConfig(nodeCfg.ResStartupConfig, currentCfgTemplate)\n\n\n/source/head/nodes/crpd/crpd.go:\n  Line 190: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 191: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n\n/source/head/nodes/default_node_test.go:\n  Line 524: \t\t\t\tSuppressStartupConfig: true,\n\n  Line 533: \t\t\t\tSuppressStartupConfig: true,\n\n  Line 543: \t\t\t\tSuppressStartupConfig: false,\n\n  Line 553: \t\t\t\tSuppressStartupConfig: false,\n\n  Line 563: \t\t\t\tStartupConfig: \"other\",\n\n  Line 573: \t\t\t\tStartupConfig: \"other\",\n\n  Line 583: \t\t\t\tStartupConfig:        \"other\",\n\n  Line 584: \t\t\t\tEnforceStartupConfig: true,\n\n  Line 594: \t\t\t\tStartupConfig:        \"other\",\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "title": "StartupConfig",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "time": {
+              "start": 1792829497868,
+              "end": 1792829497898
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf7220f001pJgc0yAcljEjMu",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV",
+          "callID": "call_c3d44f0cf00d4eb5baffeec4",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/.github/workflows/mikrotik_chr-tests.yml"
+            },
+            "output": "<path>/source/head/.github/workflows/mikrotik_chr-tests.yml</path>\n<type>file</type>\n<content>\n1: name: mikrotik_chr-tests\n2: \n3: \"on\":\n4:   workflow_call:\n5:     inputs:\n6:       py_ver:\n7:         required: true\n8:         type: string\n9:       uv_ver:\n10:         required: true\n11:         type: string\n12:       runtime:\n13:         type: string\n14:         default: \"docker\"\n15: \n16: jobs:\n17:   mikrotik_chr-tests:\n18:     runs-on: ubuntu-24.04\n19:     timeout-minutes: 20\n20:     strategy:\n21:       matrix:\n22:         test-suite:\n23:           - \"01*.robot\"\n24:           - \"02*.robot\"\n25:     # allow podman job to fail, since it started to fail on github actions\n26:     continue-on-error: ${{ inputs.runtime == 'podman' }}\n27:     steps:\n28:       - name: Checkout\n29:         uses: actions/checkout@v7\n30:         with:\n31:           fetch-depth: 0\n32: \n33:       - uses: actions/download-artifact@v8\n34:         with:\n35:           name: containerlab-tests\n36: \n37:       - name: Move containerlab to usr/bin\n38:         run: sudo mv ./containerlab /usr/bin/containerlab && sudo chown root:root /usr/bin/containerlab && sudo chmod 4755 /usr/bin/containerlab\n39: \n40:       - name: Setup Podman\n41:         if: inputs.runtime == 'podman'\n42:         run: sudo bash ./.github/workflows/install-podman.sh\n43: \n44:       - name: Install uv\n45:         uses: astral-sh/setup-uv@v7\n46:         with:\n47:           # Install a specific version of uv.\n48:           version: ${{ inputs.uv_ver }}\n49:           enable-cache: true\n50: \n51:       - uses: actions/setup-python@v7\n52:         with:\n53:           python-version-file: \"pyproject.toml\"\n54: \n55:       - name: Install the project\n56:         run: uv sync --all-extras --dev\n57: \n58:       - name: Activate virtualenv\n59:         run: |\n60:           . .venv/bin/activate\n61:           echo PATH=$PATH >> $GITHUB_ENV\n62: \n63:       - name: Sanitize test-suite name\n64:         run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n65: \n66:       - name: Run mikrotik_chr tests\n67:         run: |\n68:           bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/16-mikrotik-chr/${{ matrix.test-suite }}\n69: \n70:       # upload test reports as a zip file\n71:       - name: Upload test logs\n72:         uses: actions/upload-artifact@v7\n73:         if: always()\n74:         with:\n75:           name: 16-mikrotik-chr-log-${{ env.TEST_SUITE }}-${{ inputs.runtime }}\n76:           path: ./tests/out/*.html\n77: \n78:       # upload coverage report from unit tests, as they are then\n79:       # merged with e2e tests coverage\n80:       - name: Upload coverage\n81:         uses: actions/upload-artifact@v7\n82:         if: always()\n83:         with:\n84:           name: coverage-mikrotik_chr-tests-${{ env.TEST_SUITE }}-${{ inputs.runtime }}\n85:           path: /tmp/clab-tests/coverage/*\n86:           retention-days: 7\n\n(End of file - total 86 lines)\n</content>",
+            "title": "source/head/.github/workflows/mikrotik_chr-tests.yml",
+            "metadata": {
+              "preview": "name: mikrotik_chr-tests\n\n\"on\":\n  workflow_call:\n    inputs:\n      py_ver:\n        required: true\n        type: string\n      uv_ver:\n        required: true\n        type: string\n      runtime:\n        type: string\n        default: \"docker\"\n\njobs:\n  mikrotik_chr-tests:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20\n    strategy:",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/.github/workflows/mikrotik_chr-tests.yml",
+                "text": "name: mikrotik_chr-tests\n\n\"on\":\n  workflow_call:\n    inputs:\n      py_ver:\n        required: true\n        type: string\n      uv_ver:\n        required: true\n        type: string\n      runtime:\n        type: string\n        default: \"docker\"\n\njobs:\n  mikrotik_chr-tests:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20\n    strategy:\n      matrix:\n        test-suite:\n          - \"01*.robot\"\n          - \"02*.robot\"\n    # allow podman job to fail, since it started to fail on github actions\n    continue-on-error: ${{ inputs.runtime == 'podman' }}\n    steps:\n      - name: Checkout\n        uses: actions/checkout@v7\n        with:\n          fetch-depth: 0\n\n      - uses: actions/download-artifact@v8\n        with:\n          name: containerlab-tests\n\n      - name: Move containerlab to usr/bin\n        run: sudo mv ./containerlab /usr/bin/containerlab && sudo chown root:root /usr/bin/containerlab && sudo chmod 4755 /usr/bin/containerlab\n\n      - name: Setup Podman\n        if: inputs.runtime == 'podman'\n        run: sudo bash ./.github/workflows/install-podman.sh\n\n      - name: Install uv\n        uses: astral-sh/setup-uv@v7\n        with:\n          # Install a specific version of uv.\n          version: ${{ inputs.uv_ver }}\n          enable-cache: true\n\n      - uses: actions/setup-python@v7\n        with:\n          python-version-file: \"pyproject.toml\"\n\n      - name: Install the project\n        run: uv sync --all-extras --dev\n\n      - name: Activate virtualenv\n        run: |\n          . .venv/bin/activate\n          echo PATH=$PATH >> $GITHUB_ENV\n\n      - name: Sanitize test-suite name\n        run: echo \"TEST_SUITE=$(echo ${{ matrix.test-suite }} | tr -d '*')\" >> $GITHUB_ENV\n\n      - name: Run mikrotik_chr tests\n        run: |\n          bash ./tests/rf-run.sh ${{ inputs.runtime }} ./tests/16-mikrotik-chr/${{ matrix.test-suite }}\n\n      # upload test reports as a zip file\n      - name: Upload test logs\n        uses: actions/upload-artifact@v7\n        if: always()\n        with:\n          name: 16-mikrotik-chr-log-${{ env.TEST_SUITE }}-${{ inputs.runtime }}\n          path: ./tests/out/*.html\n\n      # upload coverage report from unit tests, as they are then\n      # merged with e2e tests coverage\n      - name: Upload coverage\n        uses: actions/upload-artifact@v7\n        if: always()\n        with:\n          name: coverage-mikrotik_chr-tests-${{ env.TEST_SUITE }}-${{ inputs.runtime }}\n          path: /tmp/clab-tests/coverage/*\n          retention-days: 7",
+                "lineStart": 1,
+                "lineEnd": 86,
+                "totalLines": 86,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792829497876,
+              "end": 1792829497888
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf7222d001UYsqOGHqqjW47D",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 52894,
+            "input": 7305,
+            "output": 76,
+            "reasoning": 5065,
+            "cache": {
+              "read": 40448,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf72239001tmjRzimdM9wvOu",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829497913,
+          "completed": 1792829514264
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 56415,
+          "input": 56022,
+          "output": 17,
+          "reasoning": 376,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf74b24001CTDVZgP0i6lKMv",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf72239001tmjRzimdM9wvOu"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf74b260015jK6XL2AJRJSBW",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf72239001tmjRzimdM9wvOu",
+          "text": "Now let me check how inline startup-config (multi-line string) is handled. For VRNode, `LoadStartupConfigFileVr` reads `nodeCfg.StartupConfig` as a FILE PATH via os.ReadFile. For mikrotik_chr, PreDeploy calls VRNode.PreDeploy then writes launcher. Let me check mikrotik_chr's PreDeploy — it doesn't write config.auto.rsc directly; the test `TestPreDeployWritesLauncherAndStartupConfig` shows PreDeploy writes config.auto.rsc from StartupConfig — via VRNode.PreDeploy. Let me look at VRNode.PreDeploy in vr_node.go to see how StartupConfig is interpreted (file vs inline).\n\nThe grep showed `LoadStartupConfigFileVr(node Node, configDirName, startupCfgFName string)` at nodes/default_node.go:727 reads `nodeCfg.StartupConfig` via os.ReadFile — treats it as a path. But inline configs... In containerlab, topology parsing: `clabtypes.NodeConfig.StartupConfig` — for inline strings, the topology loader might resolve them earlier. Actually in containerlab, `startup-config` can be an inline multi-line string — I recall clab docs: \"startup-config can be provided as inline content\". How? In `cmd/topo.go` or `types/node_definition.go`, when parsing, there's logic: if the string contains newlines, it's written to a temp file? Let me check `clabutils` or `runtime`... Let me grep for where StartupConfig is set/normalized, e.g., in types or clab.go: \"StartupConfig\" in types/. Actually I recall in containerlab, `node.NewNode` → `ParseStartupConfig`? Let me grep in lab/ or types/ for something like \"inline\".\n\nActually simpler: check `vr_node.go` PreDeploy.",
+          "time": {
+            "start": 1792829508390,
+            "end": 1792829514207
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf761e2001sSpp7w4LTMtyP4",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf72239001tmjRzimdM9wvOu",
+          "callID": "call_c8167d2dedd048e3b4f2620e",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/vr_node.go"
+            },
+            "output": "<path>/source/head/nodes/vr_node.go</path>\n<type>file</type>\n<content>\n1: package nodes\n2: \n3: import (\n4: \t\"context\"\n5: \t\"fmt\"\n6: \t\"os\"\n7: \t\"path/filepath\"\n8: \t\"regexp\"\n9: \t\"strings\"\n10: \t\"time\"\n11: \n12: \t\"github.com/charmbracelet/log\"\n13: \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n14: \tclabexec \"github.com/srl-labs/containerlab/exec\"\n15: \tclablinks \"github.com/srl-labs/containerlab/links\"\n16: \tclabnetconf \"github.com/srl-labs/containerlab/netconf\"\n17: \tclabtypes \"github.com/srl-labs/containerlab/types\"\n18: \tclabutils \"github.com/srl-labs/containerlab/utils\"\n19: )\n20: \n21: var (\n22: \tVMInterfaceRegexp = regexp.MustCompile(`eth[1-9]\\d*$`) // skipcq: GO-C4007\n23: \timageTagRE        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)\n24: )\n25: \n26: type VRNode struct {\n27: \tDefaultNode\n28: \tScrapliPlatformName string\n29: \tConfigDirName       string\n30: \tStartupCfgFName     string\n31: \tCredentials         *Credentials\n32: }\n33: \n34: func NewVRNode(n NodeOverwrites, creds *Credentials, scrapliPlatformName string) *VRNode {\n35: \tvr := &VRNode{}\n36: \n37: \tvr.DefaultNode = *NewDefaultNode(n)\n38: \n39: \tvr.Credentials = creds\n40: \tvr.ScrapliPlatformName = scrapliPlatformName\n41: \n42: \tvr.InterfaceMappedPrefix = \"eth\"\n43: \tvr.InterfaceOffset = 0\n44: \tvr.FirstDataIfIndex = 1\n45: \tvr.ConfigDirName = \"config\"\n46: \tvr.StartupCfgFName = \"startup-config.cfg\"\n47: \n48: \treturn vr\n49: }\n50: \n51: // LinkApplyMode keeps vrnetlab-backed VM nodes on the conservative recreate\n52: // path for apply link changes.\n53: func (vr *VRNode) LinkApplyMode(ctx context.Context) LinkApplyMode {\n54: \treturn vr.ImageLinkApplyMode(ctx, LinkApplyModeRecreate)\n55: }\n56: \n57: // Init stub function.\n58: func (n *VRNode) Init(cfg *clabtypes.NodeConfig, opts ...NodeOption) error {\n59: \treturn nil\n60: }\n61: \n62: // PreDeploy default function: create lab directory, generate certificates, generate startup config\n63: // file.\n64: func (n *VRNode) PreDeploy(_ context.Context, params *PreDeployParams) error {\n65: \tclabutils.CreateDirectory(n.Cfg.LabDir, clabconstants.PermissionsOpen)\n66: \t_, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n67: \tif err != nil {\n68: \t\treturn err\n69: \t}\n70: \treturn LoadStartupConfigFileVr(n, n.ConfigDirName, n.StartupCfgFName)\n71: }\n72: \n73: // AddEndpoint override version maps the endpoint name to an ethX-based name before adding it to the\n74: // node endpoints. Returns an error if the mapping goes wrong.\n75: func (vr *VRNode) AddEndpoint(e clablinks.Endpoint) error {\n76: \tendpointName := e.GetIfaceName()\n77: \t// Slightly modified check: if it doesn't match the VMInterfaceRegexp, pass it to\n78: \t// GetMappedInterfaceName. If it fails, then the interface name is wrong.\n79: \tif vr.InterfaceRegexp != nil && !(VMInterfaceRegexp.MatchString(endpointName)) {\n80: \t\tmappedName, err := vr.OverwriteNode.GetMappedInterfaceName(endpointName)\n81: \t\tif err != nil {\n82: \t\t\treturn fmt.Errorf(\n83: \t\t\t\t\"%q interface name %q could not be mapped to an ethX-based interface name: %w\",\n84: \t\t\t\tvr.Cfg.ShortName,\n85: \t\t\t\te.GetIfaceName(),\n86: \t\t\t\terr,\n87: \t\t\t)\n88: \t\t}\n89: \t\tlog.Debugf(\n90: \t\t\t\"Interface Mapping: Mapping interface %q (ifAlias) to %q (ifName)\",\n91: \t\t\tendpointName,\n92: \t\t\tmappedName,\n93: \t\t)\n94: \t\te.SetIfaceName(mappedName)\n95: \t\te.SetIfaceAlias(endpointName)\n96: \t}\n97: \n98: \tif e.GetNode() == nil {\n99: \t\te.SetNode(vr)\n100: \t}\n101: \n102: \tvr.Endpoints = append(vr.Endpoints, e)\n103: \treturn nil\n104: }\n105: \n106: // CheckInterfaceName checks interface names for generic VM-based nodes.\n107: // Displays InterfaceHelp if the check fails for the expected VM interface regexp.\n108: func (vr *VRNode) CheckInterfaceName() error {\n109: \terr := vr.CheckInterfaceOverlap()\n110: \tif err != nil {\n111: \t\treturn err\n112: \t}\n113: \n114: \tfor _, ep := range vr.Endpoints {\n115: \t\tifName := ep.GetIfaceName()\n116: \t\tif !VMInterfaceRegexp.MatchString(ifName) {\n117: \t\t\treturn fmt.Errorf(\n118: \t\t\t\t\"%q interface name %q does not match the required interface patterns: %q\",\n119: \t\t\t\tvr.Cfg.ShortName,\n120: \t\t\t\tifName,\n121: \t\t\t\tvr.InterfaceHelp,\n122: \t\t\t)\n123: \t\t}\n124: \t}\n125: \n126: \treturn nil\n127: }\n128: \n129: func (n *VRNode) SaveConfig(_ context.Context) (*SaveConfigResult, error) {\n130: \tconfig, err := clabnetconf.GetConfig(n.Cfg.LongName,\n131: \t\tn.Cfg.Credentials.Username,\n132: \t\tn.Cfg.Credentials.Password,\n133: \t\tn.ScrapliPlatformName,\n134: \t)\n135: \tif err != nil {\n136: \t\treturn nil, err\n137: \t}\n138: \n139: \t// Save config to mounted labdir startup config path\n140: \tconfigPath := filepath.Join(n.Cfg.LabDir, n.ConfigDirName, n.StartupCfgFName)\n141: \terr = os.WriteFile(\n142: \t\tconfigPath,\n143: \t\t[]byte(config),\n144: \t\tclabconstants.PermissionsOpen,\n145: \t) // skipcq: GO-S2306\n146: \tif err != nil {\n147: \t\treturn nil, fmt.Errorf(\n148: \t\t\t\"failed to write config by %s path from %s container: %v\",\n149: \t\t\tconfigPath,\n150: \t\t\tn.Cfg.ShortName,\n151: \t\t\terr,\n152: \t\t)\n153: \t}\n154: \tlog.Info(\"Saved configuration to path\", \"nodeName\", n.Cfg.ShortName, \"path\", configPath)\n155: \n156: \treturn &SaveConfigResult{\n157: \t\tConfigPath: configPath,\n158: \t}, nil\n159: }\n160: \n161: // PreStop prepares vrnetlab-specific state before DefaultNode.Stop parks interfaces and stops the\n162: // container.\n163: func (vr *VRNode) PreStop(ctx context.Context) error {\n164: \tpreStopPrepareVrnetlabQcowAlias(ctx, &vr.DefaultNode)\n165: \treturn nil\n166: }\n167: \n168: func preStopPrepareVrnetlabQcowAlias(ctx context.Context, d *DefaultNode) {\n169: \taliasName, ok := vrnetlabQcowAliasName(d.Config().Image)\n170: \tif !ok {\n171: \t\tlog.Debugf(\n172: \t\t\t\"node %q pre-stop vrnetlab qcow alias skipped: unable to infer tag from image %q\",\n173: \t\t\td.Config().ShortName,\n174: \t\t\td.Config().Image,\n175: \t\t)\n176: \t\treturn\n177: \t}\n178: \n179: \tctx, cancel := context.WithTimeout(ctx, 10*time.Second)\n180: \tdefer cancel()\n181: \n182: \t// Some vrnetlab nodes rename the original versioned qcow image after first boot and fail on\n183: \t// subsequent starts when they try to rediscover a versioned qcow filename. If there is exactly\n184: \t// one non-overlay qcow file in / and our alias is absent, create a hardlink alias based on the\n185: \t// image tag.\n186: \tcmd := fmt.Sprintf(\n187: \t\t`alias=\"/%s\"; `+\n188: \t\t\t`[ -e \"$alias\" ] && exit 0; `+\n189: \t\t\t`src=\"\"; `+\n190: \t\t\t`if [ -f /sros.qcow2 ] && [ \"/sros.qcow2\" != \"$alias\" ]; then `+\n191: \t\t\t`src=\"/sros.qcow2\"; `+\n192: \t\t\t`else `+\n193: \t\t\t`set -- /*.qcow2; `+\n194: \t\t\t`if [ \"$1\" != \"/*.qcow2\" ]; then `+\n195: \t\t\t`for f in \"$@\"; do `+\n196: \t\t\t`[ \"$f\" = \"$alias\" ] && continue; `+\n197: \t\t\t`base=\"${f##*/}\"; `+\n198: \t\t\t`case \"$base\" in *overlay*.qcow2) continue ;; esac; `+\n199: \t\t\t`if [ -n \"$src\" ]; then src=\"\"; break; fi; `+\n200: \t\t\t`src=\"$f\"; `+\n201: \t\t\t`done; `+\n202: \t\t\t`fi; `+\n203: \t\t\t`fi; `+\n204: \t\t\t`[ -n \"$src\" ] || exit 0; `+\n205: \t\t\t`ln \"$src\" \"$alias\"`,\n206: \t\taliasName,\n207: \t)\n208: \n209: \texecCmd := clabexec.NewExecCmdFromSlice([]string{\"sh\", \"-lc\", cmd})\n210: \tres, err := d.RunExec(ctx, execCmd)\n211: \tif err != nil {\n212: \t\tlog.Warnf(\n213: \t\t\t\"node %q pre-stop vrnetlab qcow alias preparation failed: %v\",\n214: \t\t\td.Config().ShortName,\n215: \t\t\terr,\n216: \t\t)\n217: \t\treturn\n218: \t}\n219: \n220: \tif res != nil && res.ReturnCode != 0 {\n221: \t\tlog.Warnf(\n222: \t\t\t\"node %q pre-stop vrnetlab qcow alias prep returned code %d (stderr: %s)\",\n223: \t\t\td.Config().ShortName,\n224: \t\t\tres.ReturnCode,\n225: \t\t\tres.Stderr,\n226: \t\t)\n227: \t}\n228: }\n229: \n230: func vrnetlabQcowAliasName(image string) (string, bool) {\n231: \ttag, ok := imageTag(image)\n232: \tif !ok {\n233: \t\treturn \"\", false\n234: \t}\n235: \n236: \treturn \"clab-\" + tag + \".qcow2\", true\n237: }\n238: \n239: func imageTag(image string) (string, bool) {\n240: \tif at := strings.LastIndex(image, \"@\"); at != -1 {\n241: \t\timage = image[:at]\n242: \t}\n243: \n244: \tlastSlash := strings.LastIndex(image, \"/\")\n245: \tlastColon := strings.LastIndex(image, \":\")\n246: \tif lastColon == -1 || lastColon < lastSlash {\n247: \t\treturn \"\", false\n248: \t}\n249: \n250: \ttag := image[lastColon+1:]\n251: \tif tag == \"\" {\n252: \t\treturn \"\", false\n253: \t}\n254: \n255: \tif !imageTagRE.MatchString(tag) {\n256: \t\treturn \"\", false\n257: \t}\n258: \n259: \treturn tag, true\n260: }\n\n(End of file - total 260 lines)\n</content>",
+            "title": "source/head/nodes/vr_node.go",
+            "metadata": {
+              "preview": "package nodes\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"regexp\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabexec \"github.com/srl-labs/containerlab/exec\"\n\tclablinks \"github.com/srl-labs/containerlab/links\"\n\tclabnetconf \"github.com/srl-labs/containerlab/netconf\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/vr_node.go",
+                "text": "package nodes\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"regexp\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabexec \"github.com/srl-labs/containerlab/exec\"\n\tclablinks \"github.com/srl-labs/containerlab/links\"\n\tclabnetconf \"github.com/srl-labs/containerlab/netconf\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n\nvar (\n\tVMInterfaceRegexp = regexp.MustCompile(`eth[1-9]\\d*$`) // skipcq: GO-C4007\n\timageTagRE        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)\n)\n\ntype VRNode struct {\n\tDefaultNode\n\tScrapliPlatformName string\n\tConfigDirName       string\n\tStartupCfgFName     string\n\tCredentials         *Credentials\n}\n\nfunc NewVRNode(n NodeOverwrites, creds *Credentials, scrapliPlatformName string) *VRNode {\n\tvr := &VRNode{}\n\n\tvr.DefaultNode = *NewDefaultNode(n)\n\n\tvr.Credentials = creds\n\tvr.ScrapliPlatformName = scrapliPlatformName\n\n\tvr.InterfaceMappedPrefix = \"eth\"\n\tvr.InterfaceOffset = 0\n\tvr.FirstDataIfIndex = 1\n\tvr.ConfigDirName = \"config\"\n\tvr.StartupCfgFName = \"startup-config.cfg\"\n\n\treturn vr\n}\n\n// LinkApplyMode keeps vrnetlab-backed VM nodes on the conservative recreate\n// path for apply link changes.\nfunc (vr *VRNode) LinkApplyMode(ctx context.Context) LinkApplyMode {\n\treturn vr.ImageLinkApplyMode(ctx, LinkApplyModeRecreate)\n}\n\n// Init stub function.\nfunc (n *VRNode) Init(cfg *clabtypes.NodeConfig, opts ...NodeOption) error {\n\treturn nil\n}\n\n// PreDeploy default function: create lab directory, generate certificates, generate startup config\n// file.\nfunc (n *VRNode) PreDeploy(_ context.Context, params *PreDeployParams) error {\n\tclabutils.CreateDirectory(n.Cfg.LabDir, clabconstants.PermissionsOpen)\n\t_, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn LoadStartupConfigFileVr(n, n.ConfigDirName, n.StartupCfgFName)\n}\n\n// AddEndpoint override version maps the endpoint name to an ethX-based name before adding it to the\n// node endpoints. Returns an error if the mapping goes wrong.\nfunc (vr *VRNode) AddEndpoint(e clablinks.Endpoint) error {\n\tendpointName := e.GetIfaceName()\n\t// Slightly modified check: if it doesn't match the VMInterfaceRegexp, pass it to\n\t// GetMappedInterfaceName. If it fails, then the interface name is wrong.\n\tif vr.InterfaceRegexp != nil && !(VMInterfaceRegexp.MatchString(endpointName)) {\n\t\tmappedName, err := vr.OverwriteNode.GetMappedInterfaceName(endpointName)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"%q interface name %q could not be mapped to an ethX-based interface name: %w\",\n\t\t\t\tvr.Cfg.ShortName,\n\t\t\t\te.GetIfaceName(),\n\t\t\t\terr,\n\t\t\t)\n\t\t}\n\t\tlog.Debugf(\n\t\t\t\"Interface Mapping: Mapping interface %q (ifAlias) to %q (ifName)\",\n\t\t\tendpointName,\n\t\t\tmappedName,\n\t\t)\n\t\te.SetIfaceName(mappedName)\n\t\te.SetIfaceAlias(endpointName)\n\t}\n\n\tif e.GetNode() == nil {\n\t\te.SetNode(vr)\n\t}\n\n\tvr.Endpoints = append(vr.Endpoints, e)\n\treturn nil\n}\n\n// CheckInterfaceName checks interface names for generic VM-based nodes.\n// Displays InterfaceHelp if the check fails for the expected VM interface regexp.\nfunc (vr *VRNode) CheckInterfaceName() error {\n\terr := vr.CheckInterfaceOverlap()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tfor _, ep := range vr.Endpoints {\n\t\tifName := ep.GetIfaceName()\n\t\tif !VMInterfaceRegexp.MatchString(ifName) {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"%q interface name %q does not match the required interface patterns: %q\",\n\t\t\t\tvr.Cfg.ShortName,\n\t\t\t\tifName,\n\t\t\t\tvr.InterfaceHelp,\n\t\t\t)\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc (n *VRNode) SaveConfig(_ context.Context) (*SaveConfigResult, error) {\n\tconfig, err := clabnetconf.GetConfig(n.Cfg.LongName,\n\t\tn.Cfg.Credentials.Username,\n\t\tn.Cfg.Credentials.Password,\n\t\tn.ScrapliPlatformName,\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\t// Save config to mounted labdir startup config path\n\tconfigPath := filepath.Join(n.Cfg.LabDir, n.ConfigDirName, n.StartupCfgFName)\n\terr = os.WriteFile(\n\t\tconfigPath,\n\t\t[]byte(config),\n\t\tclabconstants.PermissionsOpen,\n\t) // skipcq: GO-S2306\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\n\t\t\t\"failed to write config by %s path from %s container: %v\",\n\t\t\tconfigPath,\n\t\t\tn.Cfg.ShortName,\n\t\t\terr,\n\t\t)\n\t}\n\tlog.Info(\"Saved configuration to path\", \"nodeName\", n.Cfg.ShortName, \"path\", configPath)\n\n\treturn &SaveConfigResult{\n\t\tConfigPath: configPath,\n\t}, nil\n}\n\n// PreStop prepares vrnetlab-specific state before DefaultNode.Stop parks interfaces and stops the\n// container.\nfunc (vr *VRNode) PreStop(ctx context.Context) error {\n\tpreStopPrepareVrnetlabQcowAlias(ctx, &vr.DefaultNode)\n\treturn nil\n}\n\nfunc preStopPrepareVrnetlabQcowAlias(ctx context.Context, d *DefaultNode) {\n\taliasName, ok := vrnetlabQcowAliasName(d.Config().Image)\n\tif !ok {\n\t\tlog.Debugf(\n\t\t\t\"node %q pre-stop vrnetlab qcow alias skipped: unable to infer tag from image %q\",\n\t\t\td.Config().ShortName,\n\t\t\td.Config().Image,\n\t\t)\n\t\treturn\n\t}\n\n\tctx, cancel := context.WithTimeout(ctx, 10*time.Second)\n\tdefer cancel()\n\n\t// Some vrnetlab nodes rename the original versioned qcow image after first boot and fail on\n\t// subsequent starts when they try to rediscover a versioned qcow filename. If there is exactly\n\t// one non-overlay qcow file in / and our alias is absent, create a hardlink alias based on the\n\t// image tag.\n\tcmd := fmt.Sprintf(\n\t\t`alias=\"/%s\"; `+\n\t\t\t`[ -e \"$alias\" ] && exit 0; `+\n\t\t\t`src=\"\"; `+\n\t\t\t`if [ -f /sros.qcow2 ] && [ \"/sros.qcow2\" != \"$alias\" ]; then `+\n\t\t\t`src=\"/sros.qcow2\"; `+\n\t\t\t`else `+\n\t\t\t`set -- /*.qcow2; `+\n\t\t\t`if [ \"$1\" != \"/*.qcow2\" ]; then `+\n\t\t\t`for f in \"$@\"; do `+\n\t\t\t`[ \"$f\" = \"$alias\" ] && continue; `+\n\t\t\t`base=\"${f##*/}\"; `+\n\t\t\t`case \"$base\" in *overlay*.qcow2) continue ;; esac; `+\n\t\t\t`if [ -n \"$src\" ]; then src=\"\"; break; fi; `+\n\t\t\t`src=\"$f\"; `+\n\t\t\t`done; `+\n\t\t\t`fi; `+\n\t\t\t`fi; `+\n\t\t\t`[ -n \"$src\" ] || exit 0; `+\n\t\t\t`ln \"$src\" \"$alias\"`,\n\t\taliasName,\n\t)\n\n\texecCmd := clabexec.NewExecCmdFromSlice([]string{\"sh\", \"-lc\", cmd})\n\tres, err := d.RunExec(ctx, execCmd)\n\tif err != nil {\n\t\tlog.Warnf(\n\t\t\t\"node %q pre-stop vrnetlab qcow alias preparation failed: %v\",\n\t\t\td.Config().ShortName,\n\t\t\terr,\n\t\t)\n\t\treturn\n\t}\n\n\tif res != nil && res.ReturnCode != 0 {\n\t\tlog.Warnf(\n\t\t\t\"node %q pre-stop vrnetlab qcow alias prep returned code %d (stderr: %s)\",\n\t\t\td.Config().ShortName,\n\t\t\tres.ReturnCode,\n\t\t\tres.Stderr,\n\t\t)\n\t}\n}\n\nfunc vrnetlabQcowAliasName(image string) (string, bool) {\n\ttag, ok := imageTag(image)\n\tif !ok {\n\t\treturn \"\", false\n\t}\n\n\treturn \"clab-\" + tag + \".qcow2\", true\n}\n\nfunc imageTag(image string) (string, bool) {\n\tif at := strings.LastIndex(image, \"@\"); at != -1 {\n\t\timage = image[:at]\n\t}\n\n\tlastSlash := strings.LastIndex(image, \"/\")\n\tlastColon := strings.LastIndex(image, \":\")\n\tif lastColon == -1 || lastColon < lastSlash {\n\t\treturn \"\", false\n\t}\n\n\ttag := image[lastColon+1:]\n\tif tag == \"\" {\n\t\treturn \"\", false\n\t}\n\n\tif !imageTagRE.MatchString(tag) {\n\t\treturn \"\", false\n\t}\n\n\treturn tag, true\n}",
+                "lineStart": 1,
+                "lineEnd": 260,
+                "totalLines": 260,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1792829514213,
+              "end": 1792829514219
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf762140013YmzWUlh1lqjx1",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf72239001tmjRzimdM9wvOu",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 56415,
+            "input": 56022,
+            "output": 17,
+            "reasoning": 376,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf7621d001IRZ45wlgCS3iNc",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829514269,
+          "completed": 1792829527595
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59939,
+          "input": 2851,
+          "output": 53,
+          "reasoning": 715,
+          "cache": {
+            "read": 56320,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf768f8001y36PM4aCE1KFD5",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7621d001IRZ45wlgCS3iNc"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf768fa001py6Za23btGEsQp",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7621d001IRZ45wlgCS3iNc",
+          "text": "Now, how is an inline (multi-line) `startup-config` handled for mikrotik_chr? `LoadStartupConfigFileVr` (default_node.go:727) reads `nodeCfg.StartupConfig` with `os.ReadFile` — that treats it as a file path. But wait, let me look at `default_node.go` around line 724-760 and how inline startup configs are handled elsewhere. In containerlab, the topology loader normalizes inline startup-config strings into temp files? Let me check `clabutils` or the loader. Actually I recall containerlab's `types.NodeDefinition` → when converting to NodeConfig: `StartupConfig` string. For inline content, containerlab docs say: \"startup-config can be a file path or inline config\" — for inline, the loader (lab/lab.go or topo parse) writes it to... Let me grep for \"inline\" or check `clab/lab` or `utils`... Actually I remember: containerlab supports inline startup-config since some version — handled in `cmd/topo/extract` or in `runtime`? Let me grep for how the default node's `PreDeploy` generates: `d.Cfg.StartupConfig` used in `GenerateConfig` via `templates`? In default_node.go line 660-690: `EnforceStartupConfig`... `log.Debug(\"Generating config\", \"node\", ..., \"file\", d.Cfg.StartupConfig)` then `GenerateConfig` — meaning StartupConfig can be a template string (inline) — `GenerateConfig(dst, template)` reads the template from... Let me look at GenerateConfig — in utils? `clabutils.GenerateConfig(dst, template)`? Actually `n.GenerateConfig` is a method that takes the template content. Hmm, but line 678 says `\"file\", d.Cfg.StartupConfig` and then calls `GenerateConfig(dst, content)`.\n\nThe key question for the 02 test: does VRNode.PreDeploy → LoadStartupConfigFileVr handle an inline multi-line string (with newlines) as a file path? os.ReadFile(\"    /ip address add ...\\n\") would fail with \"no such file or directory\"... unless the topology loader resolves inline configs into files earlier.\n\nLet me check `LoadStartupConfigFileVr`: line 727-740: \n```go\nfunc LoadStartupConfigFileVr(node Node, configDirName, startupCfgFName string) error {\n\tnodeCfg := node.Config()\n\tnodeCfg.ResStartupConfig = ...\n\tif nodeCfg.StartupConfig != \"\" {\n\t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\t\t...\n\t}\n\t...\n}\n```\n\nHmm — but wait, for mikrotik_chr, the startup config lands at `<labdir>/ftpboot/config.auto.rsc`. In the test `TestPreDeployWritesLauncherAndStartupConfig`, `StartupConfig: startup` where startup is a file path. And PreDeploy writes it. So VRNode.PreDeploy handles file paths.\n\nNow, does the topology loader convert inline strings to temp files? Let me check `clabutils.ReadFile` or the `startup-config` parsing in types. In containerlab, there's `startup-config` handling in `cmd/topo.go`/`types/node_definition.go`: I believe there is `clabutils.FileExists` logic in `ParseStartupConfig`? Let me grep for \"StartupConfig\" in the whole repo excluding nodes to find the loader normalization.",
+          "time": {
+            "start": 1792829516026,
+            "end": 1792829526957
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_16cf793b0001w7NE12AszQyPbm",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7621d001IRZ45wlgCS3iNc",
+          "text": "Let me check how inline (multi-line) `startup-config` values are normalized by the loader, since the new test uses inline scripts.",
+          "time": {
+            "start": 1792829526960,
+            "end": 1792829527588
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf795f4001MSyELyZYfpVF39",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7621d001IRZ45wlgCS3iNc",
+          "callID": "call_3c2ada98d1a140c8942c9ce8",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "StartupConfig",
+              "include": "*.go"
+            },
+            "output": "Found 100 matches (more matches available)\n/source/head/types/types.go:\n  Line 206: \tStartupConfig string `json:\"startup-config,omitempty\"`\n\n  Line 211: \tEnforceStartupConfig bool `json:\"enforce-startup-config,omitempty\"`\n\n  Line 214: \tSuppressStartupConfig bool `json:\"suppress-startup-config,omitempty\"`\n\n  Line 222: \tResStartupConfig string            `json:\"startup-config-abs-path,omitempty\"`\n\n\n/source/head/types/topo_paths.go:\n  Line 253: // StartupConfigDownloadFileAbsPath returns the absolute path to the startup-config file\n\n  Line 255: func (t *TopoPaths) StartupConfigDownloadFileAbsPath(node, postfix string) string {\n\n\n/source/head/types/topology_test.go:\n  Line 58: \t\t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 120: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 178: \t\t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 233: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 287: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 328: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 372: \t\t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 434: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 490: \t\t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 538: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 594: \t\t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 642: \t\t\t\tStartupConfig: \"test_data/config.cfg\",\n\n  Line 757: \t\tconfig := item.input.GetNodeStartupConfig(\"node1\")\n\n  Line 759: \t\twantedConfig := item.want[\"node1\"].StartupConfig\n\n\n/source/head/types/topology.go:\n  Line 528: func (t *Topology) GetNodeStartupConfig(nodeName string) string {\n\n  Line 532: \t\tfunc(node *NodeDefinition) string { return node.StartupConfig },\n\n  Line 533: \t\tfunc(group *NodeDefinition) string { return group.StartupConfig },\n\n  Line 534: \t\tfunc(kind *NodeDefinition) string { return kind.StartupConfig },\n\n  Line 535: \t\tfunc(defaults *NodeDefinition) string { return defaults.StartupConfig },\n\n  Line 552: func (t *Topology) GetNodeEnforceStartupConfig(nodeName string) bool {\n\n  Line 556: \t\tfunc(node *NodeDefinition) *bool { return node.EnforceStartupConfig },\n\n  Line 557: \t\tfunc(group *NodeDefinition) *bool { return group.EnforceStartupConfig },\n\n  Line 558: \t\tfunc(kind *NodeDefinition) *bool { return kind.EnforceStartupConfig },\n\n  Line 559: \t\tfunc(defaults *NodeDefinition) *bool { return defaults.EnforceStartupConfig },\n\n  Line 565: func (t *Topology) GetNodeSuppressStartupConfig(nodeName string) bool {\n\n  Line 569: \t\tfunc(node *NodeDefinition) *bool { return node.SuppressStartupConfig },\n\n  Line 570: \t\tfunc(group *NodeDefinition) *bool { return group.SuppressStartupConfig },\n\n  Line 571: \t\tfunc(kind *NodeDefinition) *bool { return kind.SuppressStartupConfig },\n\n  Line 572: \t\tfunc(defaults *NodeDefinition) *bool { return defaults.SuppressStartupConfig },\n\n\n/source/head/types/node_definition.go:\n  Line 59: \tStartupConfig         string            `yaml:\"startup-config,omitempty\"`\n\n  Line 61: \tEnforceStartupConfig  *bool             `yaml:\"enforce-startup-config,omitempty\"`\n\n  Line 62: \tSuppressStartupConfig *bool             `yaml:\"suppress-startup-config,omitempty\"`\n\n\n/source/head/core/config_test.go:\n  Line 1019: \t\t\tsuppress := c.Nodes[tc.node].Config().SuppressStartupConfig\n\n  Line 1027: func TestStartupConfigInit(t *testing.T) {\n\n  Line 1062: \t\t\tif c.Nodes[tc.node].Config().StartupConfig != filepath.Join(cwd, tc.want) {\n\n  Line 1064: \t\t\t\t\tfilepath.Join(cwd, tc.want), c.Nodes[tc.node].Config().StartupConfig)\n\n\n/source/head/core/config.go:\n  Line 417: \terr = c.processStartupConfig(nodeCfg)\n\n  Line 422: \tnodeCfg.EnforceStartupConfig = c.Config.Topology.GetNodeEnforceStartupConfig(\n\n  Line 425: \tnodeCfg.SuppressStartupConfig = c.Config.Topology.GetNodeSuppressStartupConfig(\n\n  Line 473: // processStartupConfig processes the raw path of the startup-config as it is defined in the\n\n  Line 475: // As a result the `nodeCfg.StartupConfig` will be set to an absPath of the startup config file.\n\n  Line 476: func (c *CLab) processStartupConfig(nodeCfg *clabtypes.NodeConfig) error {\n\n  Line 479: \tp := r.Replace(c.Config.Topology.GetNodeStartupConfig(nodeCfg.ShortName))\n\n  Line 494: \tnodeCfg.StartupConfig = clabutils.ResolvePath(p, c.TopoPaths.TopologyFileDir())\n\n\n/source/head/labruntime/clabernetes/files.go:\n  Line 35: \tinlineStartupConfigMountPath = \"/clabernetes/startup-config.partial.cfg\"\n\n  Line 154: \t\t\tif err := stageStartupConfig(\n\n  Line 320: func stageStartupConfig(\n\n  Line 330: \tstartupConfig := config.Topology.GetNodeStartupConfig(nodeName)\n\n  Line 341: \t\tnodeDefinition.StartupConfig = inlineStartupConfigMountPath\n\n  Line 349: \t\t\tinlineStartupConfigMountPath,\n\n  Line 355: \tresolvedStartupConfig, files, err := resolveNodeFileReference(\n\n  Line 362: \tif resolvedStartupConfig != startupConfig {\n\n  Line 368: \t\tnodeDefinition.StartupConfig = resolvedStartupConfig\n\n\n/source/head/labruntime/clabernetes/clabernetes_test.go:\n  Line 2108: func TestStageTopologyLocalFilesResolvesStartupConfigMagicVariables(t *testing.T) {\n\n  Line 2143: \tif got := config.Topology.Nodes[\"r1\"].StartupConfig; got != \"configs/r1.partial.cfg\" {\n\n\n/source/head/labruntime/clabernetes/files_test.go:\n  Line 33: \t\t{\"embedded startup\", content, \"\", inlineStartupConfigMountPath},\n\n  Line 44: \t\t\t\t\t\tStartupConfig: tt.startupConfig,\n\n  Line 68: \t\t\t\tgotPath = config.Topology.Nodes[\"r1\"].StartupConfig\n\n  Line 92: \t\tinlineStartupConfigMountPath,\n\n\n/source/head/nodes/vyosnetworks_vyos/vyos.go:\n  Line 87: \tn.Cfg.ResStartupConfig = filepath.Join(n.configDir, \"config.boot\")\n\n\n/source/head/nodes/vyosnetworks_vyos/helpers.go:\n  Line 60: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 61: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n  Line 68: \terr := n.GenerateConfig(nodeCfg.ResStartupConfig, currentCfgTemplate)\n\n\n/source/head/nodes/juniper_csrx/csrx_test.go:\n  Line 87: \tif cfg.ResStartupConfig != csrxConfigPath(labDir) {\n\n  Line 88: \t\tt.Fatalf(\"ResStartupConfig = %q, want %q\", cfg.ResStartupConfig, csrxConfigPath(labDir))\n\n  Line 97: func TestCreateCSRXFilesCopiesStartupConfigAndLicense(t *testing.T) {\n\n  Line 117: \t\tStartupConfig: startupConfig,\n\n\n/source/head/nodes/juniper_csrx/csrx.go:\n  Line 210: \tnodeCfg.ResStartupConfig = cfg\n\n  Line 213: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 214: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n\n/source/head/nodes/default_node.go:\n  Line 143: \terr = d.OverwriteNode.VerifyStartupConfig(d.Cfg.LabDir)\n\n  Line 639: // VerifyStartupConfig verifies that startup config files exists on disks.\n\n  Line 640: func (d *DefaultNode) VerifyStartupConfig(topoDir string) error {\n\n  Line 641: \tcfg := d.Config().StartupConfig\n\n  Line 658: // EnforceStartupConfig is explicitly set to true and startup-config points to a file this will\n\n  Line 662: \tif d.Cfg.EnforceStartupConfig && d.Cfg.SuppressStartupConfig {\n\n  Line 665: \tif d.Cfg.EnforceStartupConfig && d.Cfg.StartupConfig == \"\" {\n\n  Line 666: \t\treturn ErrNoStartupConfig\n\n  Line 669: \tif d.Cfg.SuppressStartupConfig {\n\n  Line 674: \tif !d.Cfg.EnforceStartupConfig && clabutils.FileExists(dst) {\n\n  Line 678: \t\tlog.Debug(\"Generating config\", \"node\", d.Cfg.ShortName, \"file\", d.Cfg.StartupConfig)\n\n  Line 707: \tVerifyStartupConfig(topoDir string) error\n\n  Line 724: // LoadStartupConfigFileVr templates a startup-config using the file specified for VM-based nodes in\n\n  Line 727: func LoadStartupConfigFileVr(node Node, configDirName, startupCfgFName string) error {\n\n  Line 733: \tif nodeCfg.StartupConfig != \"\" {\n\n  Line 737: \t\tc, err := os.ReadFile(nodeCfg.StartupConfig)\n\n\n/source/head/nodes/plvision_sonic/plvision_sonic.go:\n  Line 100: \treturn clabnodes.LoadStartupConfigFileVr(n, configDirName, startupCfgFName)\n\n\n/source/head/nodes/dell_sonic/dell_sonic.go:\n  Line 100: \treturn clabnodes.LoadStartupConfigFileVr(n, configDirName, startupCfgFName)\n\n\n/source/head/nodes/arrcus_arcos/arcos.go:\n  Line 71: \thostCfg := n.Cfg.ResStartupConfig\n\n  Line 82: \tn.Cfg.ResStartupConfig = dst\n\n  Line 84: \tif n.Cfg.StartupConfig != \"\" {\n\n  Line 86: \t\treturn clabutils.CopyFile(ctx, n.Cfg.StartupConfig, dst, 0o644)\n\n\n/source/head/nodes/veesix_osvbng/veesix_osvbng.go:\n  Line 67: \tn.Cfg.ResStartupConfig = n.osvbngCfgSrcPath\n\n  Line 68: \tn.Cfg.Binds = append(n.Cfg.Binds, fmt.Sprint(n.Cfg.ResStartupConfig, \":\", osvbngCfgDstPath))\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "title": "StartupConfig",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "time": {
+              "start": 1792829527546,
+              "end": 1792829527572
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf79627001uvaxBkw7gr8IYm",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7621d001IRZ45wlgCS3iNc",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 59939,
+            "input": 2851,
+            "output": 53,
+            "reasoning": 715,
+            "cache": {
+              "read": 56320,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf7963100103HSYKRsKOsgtT",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829527601,
+          "completed": 1792829530780
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62386,
+          "input": 2343,
+          "output": 27,
+          "reasoning": 112,
+          "cache": {
+            "read": 59904,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf79d02001ry2bJK22uoNoHL",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7963100103HSYKRsKOsgtT"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf79d04001dnSpnuENWv1izt",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7963100103HSYKRsKOsgtT",
+          "text": "Key: `core/config.go` line 473-494: `processStartupConfig` — \"processes the raw path of the startup-config as it is defined in the [topology]... As a result the `nodeCfg.StartupConfig` will be set to an absPath of the startup config file.\"\n\nLet me read that function to see whether inline (multi-line) startup-config is supported — it may write the inline content to a file, or it may just treat it as a path (which would fail for multi-line content).",
+          "time": {
+            "start": 1792829529348,
+            "end": 1792829530754
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf7a285001c01wIMJtazBAVC",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7963100103HSYKRsKOsgtT",
+          "callID": "call_f23edbc42d48461d8cf6f985",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/config.go",
+              "limit": 50,
+              "offset": 460
+            },
+            "output": "<path>/source/head/core/config.go</path>\n<type>file</type>\n<content>\n460: \tif err != nil {\n461: \t\treturn nil, err\n462: \t}\n463: \n464: \tnodeCfg.Labels = c.Config.Topology.GetNodeLabels(nodeCfg.ShortName)\n465: \n466: \tnodeCfg.Config = c.Config.Topology.GetNodeConfigDispatcher(nodeCfg.ShortName)\n467: \n468: \tc.processNodeExecs(nodeCfg)\n469: \n470: \treturn nodeCfg, nil\n471: }\n472: \n473: // processStartupConfig processes the raw path of the startup-config as it is defined in the\n474: // topology file. It handles remote files, local files and embedded configs.\n475: // As a result the `nodeCfg.StartupConfig` will be set to an absPath of the startup config file.\n476: func (c *CLab) processStartupConfig(nodeCfg *clabtypes.NodeConfig) error {\n477: \t// replace __clabNodeName__ magic var in startup-config path with node short name\n478: \tr := c.magicVarReplacer(nodeCfg.ShortName)\n479: \tp := r.Replace(c.Config.Topology.GetNodeStartupConfig(nodeCfg.ShortName))\n480: \n481: \tvar err error\n482: \tp, err = clabutils.ProcessDownloadableAndEmbeddedFile(\n483: \t\tcontext.Background(),\n484: \t\tnodeCfg.ShortName,\n485: \t\tp,\n486: \t\t\"embedded.partial.cfg\",\n487: \t\tc.TopoPaths,\n488: \t)\n489: \tif err != nil {\n490: \t\treturn err\n491: \t}\n492: \n493: \t// resolve the startup config path to an abs path\n494: \tnodeCfg.StartupConfig = clabutils.ResolvePath(p, c.TopoPaths.TopologyFileDir())\n495: \n496: \treturn nil\n497: }\n498: \n499: // processNodeLicense materializes the license file reference from the topology file.\n500: func (c *CLab) processNodeLicense(nodeCfg *clabtypes.NodeConfig) error {\n501: \tp := c.Config.Topology.GetNodeLicense(nodeCfg.ShortName)\n502: \tif p == \"\" {\n503: \t\treturn nil\n504: \t}\n505: \n506: \tvar err error\n507: \tp, err = clabutils.ProcessDownloadableAndEmbeddedFile(\n508: \t\tcontext.Background(),\n509: \t\tnodeCfg.ShortName,\n\n(Showing lines 460-509 of 1082. Use offset=510 to continue.)\n</content>",
+            "title": "source/head/core/config.go",
+            "metadata": {
+              "preview": "\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tnodeCfg.Labels = c.Config.Topology.GetNodeLabels(nodeCfg.ShortName)\n\n\tnodeCfg.Config = c.Config.Topology.GetNodeConfigDispatcher(nodeCfg.ShortName)\n\n\tc.processNodeExecs(nodeCfg)\n\n\treturn nodeCfg, nil\n}\n\n// processStartupConfig processes the raw path of the startup-config as it is defined in the\n// topology file. It handles remote files, local files and embedded configs.\n// As a result the `nodeCfg.StartupConfig` will be set to an absPath of the startup config file.\nfunc (c *CLab) processStartupConfig(nodeCfg *clabtypes.NodeConfig) error {\n\t// replace __clabNodeName__ magic var in startup-config path with node short name\n\tr := c.magicVarReplacer(nodeCfg.ShortName)\n\tp := r.Replace(c.Config.Topology.GetNodeStartupConfig(nodeCfg.ShortName))",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/config.go",
+                "text": "\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tnodeCfg.Labels = c.Config.Topology.GetNodeLabels(nodeCfg.ShortName)\n\n\tnodeCfg.Config = c.Config.Topology.GetNodeConfigDispatcher(nodeCfg.ShortName)\n\n\tc.processNodeExecs(nodeCfg)\n\n\treturn nodeCfg, nil\n}\n\n// processStartupConfig processes the raw path of the startup-config as it is defined in the\n// topology file. It handles remote files, local files and embedded configs.\n// As a result the `nodeCfg.StartupConfig` will be set to an absPath of the startup config file.\nfunc (c *CLab) processStartupConfig(nodeCfg *clabtypes.NodeConfig) error {\n\t// replace __clabNodeName__ magic var in startup-config path with node short name\n\tr := c.magicVarReplacer(nodeCfg.ShortName)\n\tp := r.Replace(c.Config.Topology.GetNodeStartupConfig(nodeCfg.ShortName))\n\n\tvar err error\n\tp, err = clabutils.ProcessDownloadableAndEmbeddedFile(\n\t\tcontext.Background(),\n\t\tnodeCfg.ShortName,\n\t\tp,\n\t\t\"embedded.partial.cfg\",\n\t\tc.TopoPaths,\n\t)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// resolve the startup config path to an abs path\n\tnodeCfg.StartupConfig = clabutils.ResolvePath(p, c.TopoPaths.TopologyFileDir())\n\n\treturn nil\n}\n\n// processNodeLicense materializes the license file reference from the topology file.\nfunc (c *CLab) processNodeLicense(nodeCfg *clabtypes.NodeConfig) error {\n\tp := c.Config.Topology.GetNodeLicense(nodeCfg.ShortName)\n\tif p == \"\" {\n\t\treturn nil\n\t}\n\n\tvar err error\n\tp, err = clabutils.ProcessDownloadableAndEmbeddedFile(\n\t\tcontext.Background(),\n\t\tnodeCfg.ShortName,",
+                "lineStart": 460,
+                "lineEnd": 509,
+                "totalLines": 1082,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792829530761,
+              "end": 1792829530775
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf7a299001NCO1MoZ6LDlvwk",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7963100103HSYKRsKOsgtT",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 62386,
+            "input": 2343,
+            "output": 27,
+            "reasoning": 112,
+            "cache": {
+              "read": 59904,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf7a2a3001D2XKZzmft8xzLH",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829530787,
+          "completed": 1792829537751
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 63075,
+          "input": 33548,
+          "output": 37,
+          "reasoning": 50,
+          "cache": {
+            "read": 29440,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf7ba4a001AMvZWMoa3VTiz3",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7a2a3001D2XKZzmft8xzLH"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_16cf7ba4c001QgzhqDwonguABx",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7a2a3001D2XKZzmft8xzLH",
+          "text": "`ProcessDownloadableAndEmbeddedFile` — \"embedded configs\" — let me check that function: it likely handles multi-line content by writing it to a file (embedded). Let me check `clabutils.ProcessDownloadableAndEmbeddedFile`.",
+          "time": {
+            "start": 1792829536844,
+            "end": 1792829537729
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf7bdc3001cWWfA271tEjp78",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7a2a3001D2XKZzmft8xzLH",
+          "callID": "call_46da688e42dc4b3bb9d63a04",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/utils",
+              "pattern": "func ProcessDownloadableAndEmbeddedFile|func IsEmbedded|embedded"
+            },
+            "output": "Found 11 matches\n/source/head/utils/file_test.go:\n  Line 308: \tt.Run(\"embedded file\", func(t *testing.T) {\n\n  Line 316: \t\t\t\"embedded.lic\",\n\n  Line 323: \t\twantPath := filepath.Join(paths.dir, \"node1-embedded.lic\")\n\n  Line 330: \t\t\tt.Fatalf(\"failed to read embedded file: %v\", err)\n\n  Line 333: \t\t\tt.Fatalf(\"embedded file content diff: %s\", diff)\n\n  Line 345: \t\t\t\"embedded.lic\",\n\n  Line 370: \t\t\t\"embedded.lic\",\n\n\n/source/head/utils/file.go:\n  Line 854: // DownloadFilesInterface describes topology paths needed to materialize embedded/downloaded files.\n\n  Line 860: // ProcessDownloadableAndEmbeddedFile materializes embedded content or supported download URLs and\n\n  Line 862: func ProcessDownloadableAndEmbeddedFile(\n\n  Line 880: \t\tlog.Debugf(\"%q of node %q is an embedded blob\", fileRef, nodeName)\n",
+            "title": "func ProcessDownloadableAndEmbeddedFile|func IsEmbedded|embedded",
+            "metadata": {
+              "matches": 11,
+              "truncated": false
+            },
+            "time": {
+              "start": 1792829537735,
+              "end": 1792829537746
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf7bdd4001A7H7cRsQL1qdqm",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7a2a3001D2XKZzmft8xzLH",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 63075,
+            "input": 33548,
+            "output": 37,
+            "reasoning": 50,
+            "cache": {
+              "read": 29440,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf7bddf001LAzCArWIEiso4C",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829537759,
+          "completed": 1792829543871
+        },
+        "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-6Htmvv",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 63329,
+          "input": 63301,
+          "output": 27,
+          "reasoning": 1,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_16cf7d4db001y5XBF77OYnukd4",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7bddf001LAzCArWIEiso4C"
+        },
+        {
+          "type": "tool",
+          "id": "prt_16cf7d5a4001uUScaxdp8Ta1I9",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7bddf001LAzCArWIEiso4C",
+          "callID": "call_657a149daad943cda316d4ab",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/utils/file.go",
+              "limit": 75,
+              "offset": 854
+            },
+            "output": "<path>/source/head/utils/file.go</path>\n<type>file</type>\n<content>\n854: // DownloadFilesInterface describes topology paths needed to materialize embedded/downloaded files.\n855: type DownloadFilesInterface interface {\n856: \tClabTmpDir() string\n857: \tDownloadFileTmpAbsPath(nodeName string, filenamePostfix string) string\n858: }\n859: \n860: // ProcessDownloadableAndEmbeddedFile materializes embedded content or supported download URLs and\n861: // returns a local path. Local file references are returned unchanged.\n862: func ProcessDownloadableAndEmbeddedFile(\n863: \tctx context.Context,\n864: \tnodeName,\n865: \tfileRef,\n866: \tfilenamePostfix string,\n867: \tpaths DownloadFilesInterface,\n868: ) (string, error) {\n869: \tisEmbeddedFile := strings.Count(fileRef, \"\\n\") >= 1\n870: \tisDownloadableFile := IsDownloadableURL(fileRef)\n871: \n872: \tif !isEmbeddedFile && !isDownloadableFile {\n873: \t\treturn fileRef, nil\n874: \t}\n875: \n876: \tCreateDirectory(paths.ClabTmpDir(), clabconstants.PermissionsDirDefault)\n877: \n878: \tswitch {\n879: \tcase isEmbeddedFile:\n880: \t\tlog.Debugf(\"%q of node %q is an embedded blob\", fileRef, nodeName)\n881: \n882: \t\tdstFileAbsPath := paths.DownloadFileTmpAbsPath(nodeName, filenamePostfix)\n883: \t\tif err := CreateFile(dstFileAbsPath, fileRef); err != nil {\n884: \t\t\treturn \"\", err\n885: \t\t}\n886: \n887: \t\treturn dstFileAbsPath, nil\n888: \n889: \tcase isDownloadableFile:\n890: \t\tfname := FilenameForURL(ctx, fileRef)\n891: \t\tdstFileAbsPath := paths.DownloadFileTmpAbsPath(nodeName, fname)\n892: \n893: \t\tlog.Debugf(\"Fetching %q for node %q storing at %q\", fileRef, nodeName, dstFileAbsPath)\n894: \n895: \t\tout, cleanup, err := CreateFileWithPermissions(\n896: \t\t\tdstFileAbsPath,\n897: \t\t\tclabconstants.PermissionsDirDefault,\n898: \t\t)\n899: \t\tif err != nil {\n900: \t\t\treturn \"\", err\n901: \t\t}\n902: \t\tdefer cleanup()\n903: \n904: \t\tif err := CopyFileContents(ctx, fileRef, out); err != nil {\n905: \t\t\treturn \"\", err\n906: \t\t}\n907: \n908: \t\treturn dstFileAbsPath, nil\n909: \t}\n910: \n911: \treturn fileRef, nil\n912: }\n913: \n914: // customHostKeyCallback returns a host-key callback that warns on missing or mismatching\n915: // known_hosts entries but does not block the SSH-based download.\n916: func customHostKeyCallback(knownHostsFiles ...string) ssh.HostKeyCallback {\n917: \tvar useFiles []string\n918: \tfor _, file := range knownHostsFiles {\n919: \t\tif !FileExists(file) {\n920: \t\t\tlog.Debugf(\"known_hosts file %s does not exist.\", file)\n921: \t\t\tcontinue\n922: \t\t}\n923: \t\tuseFiles = append(useFiles, file)\n924: \t}\n925: \n926: \tknownHostsFileCallback, err := knownhosts.New(useFiles...)\n927: \tif err != nil {\n928: \t\tlog.Debugf(\"error loading known_hosts files %q\", strings.Join(knownHostsFiles, \", \"))\n\n(Showing lines 854-928 of 1038. Use offset=929 to continue.)\n</content>",
+            "title": "source/head/utils/file.go",
+            "metadata": {
+              "preview": "// DownloadFilesInterface describes topology paths needed to materialize embedded/downloaded files.\ntype DownloadFilesInterface interface {\n\tClabTmpDir() string\n\tDownloadFileTmpAbsPath(nodeName string, filenamePostfix string) string\n}\n\n// ProcessDownloadableAndEmbeddedFile materializes embedded content or supported download URLs and\n// returns a local path. Local file references are returned unchanged.\nfunc ProcessDownloadableAndEmbeddedFile(\n\tctx context.Context,\n\tnodeName,\n\tfileRef,\n\tfilenamePostfix string,\n\tpaths DownloadFilesInterface,\n) (string, error) {\n\tisEmbeddedFile := strings.Count(fileRef, \"\\n\") >= 1\n\tisDownloadableFile := IsDownloadableURL(fileRef)\n\n\tif !isEmbeddedFile && !isDownloadableFile {\n\t\treturn fileRef, nil",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/utils/file.go",
+                "text": "// DownloadFilesInterface describes topology paths needed to materialize embedded/downloaded files.\ntype DownloadFilesInterface interface {\n\tClabTmpDir() string\n\tDownloadFileTmpAbsPath(nodeName string, filenamePostfix string) string\n}\n\n// ProcessDownloadableAndEmbeddedFile materializes embedded content or supported download URLs and\n// returns a local path. Local file references are returned unchanged.\nfunc ProcessDownloadableAndEmbeddedFile(\n\tctx context.Context,\n\tnodeName,\n\tfileRef,\n\tfilenamePostfix string,\n\tpaths DownloadFilesInterface,\n) (string, error) {\n\tisEmbeddedFile := strings.Count(fileRef, \"\\n\") >= 1\n\tisDownloadableFile := IsDownloadableURL(fileRef)\n\n\tif !isEmbeddedFile && !isDownloadableFile {\n\t\treturn fileRef, nil\n\t}\n\n\tCreateDirectory(paths.ClabTmpDir(), clabconstants.PermissionsDirDefault)\n\n\tswitch {\n\tcase isEmbeddedFile:\n\t\tlog.Debugf(\"%q of node %q is an embedded blob\", fileRef, nodeName)\n\n\t\tdstFileAbsPath := paths.DownloadFileTmpAbsPath(nodeName, filenamePostfix)\n\t\tif err := CreateFile(dstFileAbsPath, fileRef); err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\n\t\treturn dstFileAbsPath, nil\n\n\tcase isDownloadableFile:\n\t\tfname := FilenameForURL(ctx, fileRef)\n\t\tdstFileAbsPath := paths.DownloadFileTmpAbsPath(nodeName, fname)\n\n\t\tlog.Debugf(\"Fetching %q for node %q storing at %q\", fileRef, nodeName, dstFileAbsPath)\n\n\t\tout, cleanup, err := CreateFileWithPermissions(\n\t\t\tdstFileAbsPath,\n\t\t\tclabconstants.PermissionsDirDefault,\n\t\t)\n\t\tif err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\t\tdefer cleanup()\n\n\t\tif err := CopyFileContents(ctx, fileRef, out); err != nil {\n\t\t\treturn \"\", err\n\t\t}\n\n\t\treturn dstFileAbsPath, nil\n\t}\n\n\treturn fileRef, nil\n}\n\n// customHostKeyCallback returns a host-key callback that warns on missing or mismatching\n// known_hosts entries but does not block the SSH-based download.\nfunc customHostKeyCallback(knownHostsFiles ...string) ssh.HostKeyCallback {\n\tvar useFiles []string\n\tfor _, file := range knownHostsFiles {\n\t\tif !FileExists(file) {\n\t\t\tlog.Debugf(\"known_hosts file %s does not exist.\", file)\n\t\t\tcontinue\n\t\t}\n\t\tuseFiles = append(useFiles, file)\n\t}\n\n\tknownHostsFileCallback, err := knownhosts.New(useFiles...)\n\tif err != nil {\n\t\tlog.Debugf(\"error loading known_hosts files %q\", strings.Join(knownHostsFiles, \", \"))",
+                "lineStart": 854,
+                "lineEnd": 928,
+                "totalLines": 1038,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1792829543851,
+              "end": 1792829543863
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_16cf7d5bb001o6JXT4d6MMfUQL",
+          "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+          "messageID": "msg_16cf7bddf001LAzCArWIEiso4C",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 63329,
+            "input": 63301,
+            "output": 27,
+            "reasoning": 1,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_16cf7d5c8001niaAdDeM2PnO1L",
+        "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
+        "time": {
+          "created": 1792829543880
         },
         "parentID": "msg_16cf4ddb7001HVVqwbzKtbqNWd",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -3184,18 +3827,18 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_16cf5d5640019pJBshy5MU6fjb",
+          "id": "prt_16cf7fb3e001hcCPbC2f4sY82u",
           "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
-          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV"
+          "messageID": "msg_16cf7d5c8001niaAdDeM2PnO1L"
         },
         {
           "type": "reasoning",
-          "id": "prt_16cf5d566001d7FIFs3E98B6Jz",
+          "id": "prt_16cf7fb400012wjk9x8FRt9KoY",
           "sessionID": "ses_e931037edffefVhRYNcnYJGDUf",
-          "messageID": "msg_16cf5a794001h8g1X5N6an0NDV",
+          "messageID": "msg_16cf7d5c8001niaAdDeM2PnO1L",
           "text": "",
           "time": {
-            "start": 1792829412710
+            "start": 1792829553472
           }
         }
       ]
