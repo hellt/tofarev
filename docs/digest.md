@@ -18,7 +18,9 @@ A program can be 800 kB, which is larger than the 100,000-token context window. 
 4. **Write.** OpenCode receives the caller instructions as the system prompt, followed by the selected items. Smaller programs go to this step whole.
 5. **Check.** Deterministic code produces the final Markdown. The model cannot change these checks.
 
-The write step uses one OpenCode agent. Its only tool is `webfetch`, for the best-effort enrichment that the caller prompt asks for. The agent has no file, shell, or search tools. The writer instructions limit fetches to `page:` and `pdf:` URLs from the selected items. These instructions are a model control, not a network control. If OpenCode returns no usable digest, one tool-free call writes from the program text.
+Before the write step, ToFaRev reads the PDFs that the program links. The targets are the `pdf:` links of every item in a single pass, or of the selected items in a staged run. The extracted text goes to the writer in a SOURCE TEXT section after the program. See [PDF sources](#pdf-sources).
+
+The write step uses one OpenCode agent. Its only tool is `webfetch`, for `page:` links of items without source text. The agent has no file, shell, or search tools. The writer instructions limit fetches to `page:` URLs from the selected items. These instructions are a model control, not a network control. If OpenCode returns no usable digest, one tool-free call writes from the program text.
 
 ## Checks
 
@@ -32,11 +34,23 @@ The check step does these operations:
 
 Notes, counts, and the stage statistics go into `result.json` next to `digest.md`.
 
+## PDF sources
+
+OpenCode cannot give these models PDF text. In OpenCode 1.19, `webfetch` decodes PDF bytes as text. In OpenCode 2.2, `webfetch` rejects PDFs, and the `read` tool sends the raw PDF to the model. Models behind the OpenAI-compatible Token Factory API cannot use a raw PDF. ToFaRev therefore extracts the text itself:
+
+1. A child process fetches each PDF. The child environment holds only `PATH`, so it has no inference key or token. PDFs are untrusted input.
+2. The child accepts only `https` URLs with a DNS name. It rejects IP literals, `localhost`, and internal names. Each redirect is checked again.
+3. The child requires a `%PDF-` header, stops at 25 MiB, and reads at most 60 pages with pdf.js 6. pdf.js 6 has no `eval` code path, and fonts are not loaded.
+4. The writer receives at most 400,000 characters of source text, shared among the PDFs that could be read, with at most 20,000 characters for each PDF.
+5. If `TAVILY_API_KEY` is set, links that the child cannot read go to [Tavily Extract](https://docs.tavily.com/documentation/api-reference/endpoint/extract) from the parent process. Use this for sites that block data-center addresses, such as USENIX from GitHub-hosted runners. The parent does not parse PDFs.
+
+A note in `result.json` gives the number of PDFs read and the reasons for failures. The stats include `sources` and `sourceFailures`.
+
 ## Budgets
 
 The run shares one inference proxy and the [runtime limits](runtime.md). The default deadline is 30 minutes, and the job timeout is 45 minutes. Near the deadline, the proxy removes tools and requests an immediate answer. Each stage call has one repair attempt when its JSON is invalid. A failed shortlist batch adds a note and its items are not considered. A failed selection call gives the first 40 shortlisted items, ordered by tier, to the writer.
 
-Output is capped at 16,384 tokens, including reasoning. If digests end without `## Themes`, set `"reasoningEffort":"low"` in `trusted_config`.
+The output limit includes reasoning tokens. With the review defaults (100,000 context, 16,384 output), a model that reasons at length can reach the output limit before it finishes the digest. OpenCode then compacts the session, and the digest is written from a summary. For digests, set larger limits in `trusted_config`, for example `{"limits":{"contextTokens":500000,"outputTokens":65536,"requestBytes":16777216}}`. Do not set limits above the context window of the model.
 
 ## Caller workflow
 

@@ -47,7 +47,8 @@ test('digest workflow pins dependencies, reads only the caller prompt and confin
   const workflow = parse(await readFile('.github/workflows/digest.yml', 'utf8'));
   assert.deepEqual(Object.keys(workflow.jobs), ['digest']);
   assert.deepEqual(workflow.permissions, { contents: 'read' });
-  assert.deepEqual(Object.keys(workflow.on.workflow_call.secrets), ['TOFAREV_API_KEY']);
+  assert.deepEqual(Object.keys(workflow.on.workflow_call.secrets), ['TOFAREV_API_KEY', 'TAVILY_API_KEY']);
+  assert.equal(workflow.on.workflow_call.secrets.TAVILY_API_KEY.required, false);
   const steps = workflow.jobs.digest.steps as any[];
   for (const step of steps) {
     if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);
@@ -84,4 +85,12 @@ test('review workflow exposes the live link before completion and preserves the 
     await assert.rejects(run('/bin/bash', ['-e', '-c', await readFile('scripts/watch-review.sh', 'utf8')], { cwd: work, env }), (e: any) => e.code === 7 && e.stdout.includes('OpenCode session capture ready.'));
     assert.equal((await readFile(path.join(work, '.work/reviewer.exit'), 'utf8')).trim(), '7');
   } finally { await rm(work, { recursive: true, force: true }); }
+});
+test('a requested model reaches the review container only through an environment variable', async () => {
+  const workflow = parse(await readFile('.github/workflows/review.yml', 'utf8'));
+  assert.equal(workflow.jobs.prepare.outputs.model, '${{ steps.prepare.outputs.model }}');
+  const step = workflow.jobs.review.steps.find((s: any) => s.name === 'Run isolated reviewer');
+  assert.equal(step.env.TOFAREV_MODEL, '${{ needs.prepare.outputs.model }}');
+  assert.ok(step.run.includes('--env TOFAREV_MODEL '));
+  assert.ok(!step.run.includes('${{'), 'no expression is interpolated into the script');
 });

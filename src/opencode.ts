@@ -11,6 +11,7 @@ import { ResultSchema, type ReviewOutput, ManifestSchema, validateLocations } fr
 import { formatInlineCode, renderSessionReview } from './report.js';
 import { startSession } from './sharing.js';
 import { SessionSnapshotSchema } from './session.js';
+import { type CatalogModel, fetchCatalog, selectModel } from './models.js';
 
 export const root = fileURLToPath(new URL('../../', import.meta.url));
 export async function policyText() { return readFile(path.join(root, 'prompts/containerlab-review.md'), 'utf8'); }
@@ -23,25 +24,25 @@ export function parseReviewResult(text: string) {
   return ResultSchema.parse(JSON.parse(last ? last[1]! : text));
 }
 
-export function reviewerConfig(c: Config, source: string, system: string, endpoint: string) {
+export function reviewerConfig(c: Config, source: string, system: string, endpoint: string, model: string = MODEL) {
   // With a fresh non-Git working directory OpenCode uses / as its worktree.
   // Read permissions match paths relative to that worktree.
   const access = { '*': 'deny', [`${source.slice(1)}/*`]: 'allow' };
   const permission = { '*': 'deny', read: access, grep: 'allow', glob: 'allow',
     external_directory: { '*': 'deny', [source]: 'allow', [`${source}/*`]: 'allow' } };
-  return agentConfig(c, system, endpoint, permission, 'Containerlab review only');
+  return agentConfig(c, system, endpoint, permission, 'Containerlab review only', model);
 }
 
 // One dedicated primary agent named `tofarev`; default agents, project config,
 // plugins and MCP servers stay disabled. Each caller chooses the tool permissions.
-export function agentConfig(c: Config, system: string, endpoint: string, permission: Record<string, unknown>, description: string) {
+export function agentConfig(c: Config, system: string, endpoint: string, permission: Record<string, unknown>, description: string, model: string = MODEL) {
   return { $schema: 'https://opencode.ai/config.json', autoupdate: false,
-    enabled_providers: ['tofarev'], model: `tofarev/${MODEL}`, small_model: `tofarev/${MODEL}`,
+    enabled_providers: ['tofarev'], model: `tofarev/${model}`, small_model: `tofarev/${model}`,
     plugin: [], mcp: {}, lsp: false, formatter: false, instructions: [],
     compaction: { auto: true, prune: false }, permission,
     provider: { tofarev: { npm: '@ai-sdk/openai-compatible', name: 'Nebius Token Factory',
       options: { baseURL: endpoint, apiKey: 'local-proxy', timeout: c.limits.durationMs },
-      models: { [MODEL]: { name: MODEL, tool_call: true, limit: { context: c.limits.contextTokens, output: c.limits.outputTokens } } } } },
+      models: { [model]: { name: model, tool_call: true, limit: { context: c.limits.contextTokens, output: c.limits.outputTokens } } } } },
     agent: { tofarev: { mode: 'primary', description, prompt: system,
       ...(c.limits.turns ? { steps: Math.max(1, c.limits.turns - 2) } : {}), permission }, title: { disable: true }, summary: { disable: true },
       build: { disable: true }, plan: { disable: true }, explore: { disable: true }, general: { disable: true } },
@@ -51,7 +52,8 @@ export function agentConfig(c: Config, system: string, endpoint: string, permiss
 // Only the proxy has the real key. It bounds requests and any explicit call cap;
 // OpenCode receives a disposable placeholder credential for the loopback endpoint.
 export async function inferenceProxy(c: Config, key: string, transport: typeof fetch = fetch,
-  finalize: (reason: 'deadline' | 'call allowance') => string = reason => `The review ${reason} is nearly exhausted. Finalize now with the Markdown review followed by JSON, using supported findings already investigated. Do not call tools. Set coverage.complete=false and describe unfinished scope in coverage.notes.\n${contract}`) {
+  finalize: (reason: 'deadline' | 'call allowance') => string = reason => `The review ${reason} is nearly exhausted. Finalize now with the Markdown review followed by JSON, using supported findings already investigated. Do not call tools. Set coverage.complete=false and describe unfinished scope in coverage.notes.\n${contract}`,
+  model: string = MODEL) {
   let turns = 0, finalized = false; let failure: string | null = null; const controller = new AbortController();
   const started = Date.now();
   const deadline = setTimeout(() => { failure = 'Reviewer deadline reached.'; controller.abort(); }, c.limits.durationMs);
@@ -67,7 +69,7 @@ export async function inferenceProxy(c: Config, key: string, transport: typeof f
         if (bytes > c.limits.requestBytes) return reject(400, 'Inference request byte limit exceeded.');
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      if (body.model !== MODEL || !Array.isArray(body.messages)) return reject(400, 'Unexpected inference model or input.');
+      if (body.model !== model || !Array.isArray(body.messages)) return reject(400, 'Unexpected inference model or input.');
       turns++;
       if (c.limits.turns !== undefined && turns > c.limits.turns) return reject(400, 'Model turn budget exceeded.');
       const deadlineNear = Date.now() - started >= c.limits.durationMs - Math.min(180_000, c.limits.durationMs / 3);
@@ -125,9 +127,9 @@ export function cliEnvironment(working: string, cfg: string): NodeJS.ProcessEnv 
   };
 }
 
-export async function runCli(executable: string, working: string, cfg: string, message: string, duration: number, sessionId?: string, endpoint?: string): Promise<{ text: string; failed: boolean; sessionId?: string }> {
+export async function runCli(executable: string, working: string, cfg: string, message: string, duration: number, sessionId?: string, endpoint?: string, model: string = MODEL): Promise<{ text: string; failed: boolean; sessionId?: string }> {
   return new Promise(resolve => {
-    const child = spawn(executable, ['run', '--pure', '--format', 'json', '--agent', 'tofarev', '--model', `tofarev/${MODEL}`,
+    const child = spawn(executable, ['run', '--pure', '--format', 'json', '--agent', 'tofarev', '--model', `tofarev/${model}`,
       ...(sessionId ? ['--session', sessionId] : []), ...(endpoint ? ['--attach', endpoint] : [])], {
       cwd: working, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: cliEnvironment(working, cfg),
     });
@@ -157,23 +159,28 @@ export async function runCli(executable: string, working: string, cfg: string, m
   });
 }
 
-export async function review(source: string, c: Config, options: { transport?: typeof fetch; executable?: string; key?: string; sessionDirectory?: string } = {}): Promise<ReviewOutput> {
+export async function review(source: string, c: Config, options: { transport?: typeof fetch; executable?: string; key?: string; sessionDirectory?: string;
+  model?: string; catalog?: CatalogModel[] } = {}): Promise<ReviewOutput> {
   source = await realpath(source);
   const key = options.key ?? apiKey();
+  // The requested model (from the PR comment) or the trusted default.
+  const selected = await selectModel(c.model, options.model, key, options.catalog ?? (() => fetchCatalog(key)));
+  if ('error' in selected) return { result: null, notes: [], failed: true, modelError: selected.error };
+  const model = selected.id;
   const working = await mkdtemp(path.join(os.tmpdir(), 'tofarev-review-'));
-  const proxy = await inferenceProxy(c, key, options.transport);
+  const proxy = await inferenceProxy(c, key, options.transport, undefined, model);
   const started = Date.now();
   let shared: Awaited<ReturnType<typeof startSession>>;
   const sessionDirectory = options.sessionDirectory ?? process.env.TOFAREV_SESSION_DIR;
   let captureTimer: ReturnType<typeof setInterval> | undefined;
   let capture: Promise<void> = Promise.resolve();
   let finishCapture: (() => Promise<void>) | undefined;
-  let best: ReviewOutput = { result: null, notes: [], failed: true };
+  let best: ReviewOutput = { result: null, notes: [], failed: true, model };
   try {
     const manifest = ManifestSchema.parse(JSON.parse(await readFile(path.join(source, 'manifest.json'), 'utf8')));
     const cfg = path.join(working, 'opencode.json');
     await mkdir(path.join(working, 'config'), { recursive: true });
-    await writeFile(cfg, JSON.stringify(reviewerConfig(c, source, `${await policyText()}\n\n${contract}`, proxy.endpoint)));
+    await writeFile(cfg, JSON.stringify(reviewerConfig(c, source, `${await policyText()}\n\n${contract}`, proxy.endpoint, model)));
     const intro = `Review the read-only PR snapshot at ${source}.\nRead standards.json and its referenced rules, then diff.txt and relevant head/ and base/ files. Track all ${manifest.changed.length} changed paths from the diff. Complete checks for each changed path and relevant callers, tests, docs, and schema before finalizing. Source-only review can be complete without executing tests; disclose that limitation. Use read offsets for truncated output and group independent tool calls. Use glob/grep for surrounding code. Return the trusted result schema.\nHead: ${manifest.head}. Comparison base: ${manifest.mergeBase}. Target base: ${manifest.base}.\nGitHub permalink roots: head=https://github.com/${c.repository}/blob/${manifest.head}/; base=https://github.com/${c.repository}/blob/${manifest.mergeBase}/.\nSnapshot incomplete: ${manifest.incomplete}. The full inventory and omission details are in manifest.json; consult it when needed. ${manifest.incomplete ? 'Report incomplete coverage.' : ''}`;
     const executable = options.executable ?? path.join(root, `node_modules/opencode-${process.platform}-${process.arch}/bin/opencode`);
     if (c.shareSessions) {
@@ -208,12 +215,12 @@ export async function review(source: string, c: Config, options: { transport?: t
       if (remaining <= 0 || proxy.failure) break;
       const run = await runCli(executable, working, cfg, attempt && sessionId
         ? 'Your previous output was invalid. Use your existing investigation, recheck any invalid locations, and return the complete Markdown review followed by a final fenced JSON result matching the system schema. Do not restart the review.'
-        : intro, remaining, sessionId, shared?.endpoint);
+        : intro, remaining, sessionId, shared?.endpoint, model);
       sessionId = run.sessionId;
       try {
         const parsed = parseReviewResult(shared ? await shared.resultText() : run.text);
         const validated = validateLocations(parsed, manifest);
-        best = { result: formatInlineCode(validated), notes: [], failed: false };
+        best = { result: formatInlineCode(validated), notes: [], failed: false, model };
         if (run.failed) best.notes.push('Reviewer execution ended before normal completion.');
         if (validated.findings.length === parsed.findings.length || attempt === 1) break;
       } catch { best.notes.push('Reviewer did not return a valid result.'); }

@@ -2,19 +2,20 @@
 
 The CLI reads `TOFAREV_CONFIG` only when explicitly set to a trusted JSON file. Production defaults are `srl-labs/containerlab` (repository ID `290960521`), commenters `hellt`, `flosch62`, `kaelemc`, and App slug `tofarev`. Never load this file from a PR. A sandbox installation must supply its own repository name and numeric ID; keep the same three-user allowlist unless deliberately testing another trusted configuration.
 
-All settings are validated; unknown keys are errors. Model and endpoint are fixed to `zai-org/GLM-5.3-Flash` and `https://api.tokenfactory.nebius.com/v1`.
+All settings are validated; unknown keys are errors. The endpoint is fixed to `https://api.tokenfactory.nebius.com/v1`. The `model` setting selects the default model; see [model selection](models.md).
 
 | Setting | Default / maximum |
 | --- | --- |
+| `model` | `zai-org/GLM-5.3-Flash`; an exact ID, or a Kimi, GLM or DeepSeek selector such as `glm 5.3` |
 | `limits.durationMs` | 1800000 (30 minutes) |
 | `shareSessions` | false in the CLI; true in the generated public-repository caller |
 | `sessionPages.repository` | `hellt/tofarev`; publishes to its `gh-pages` branch |
 | `sessionPages.intervalSeconds` | 120; accepts 60–900 seconds |
 | `reasoningEffort` | `high`; accepts `low`, `high`, or `max` |
 | `limits.turns` | Unset: no call cap. Optional explicit cap: 1–1000 calls. |
-| `limits.contextTokens` | 100000 (OpenCode compaction window, not provider capacity) |
-| `limits.requestBytes` | 2097152 (HTTP request body bytes, independent of token count) |
-| `limits.outputTokens` | 16384 (room for Markdown review plus JSON) |
+| `limits.contextTokens` | 100000; maximum 1000000 (OpenCode compaction window, not provider capacity) |
+| `limits.requestBytes` | 2097152; maximum 16777216 (HTTP request body bytes, independent of token count) |
+| `limits.outputTokens` | 16384; maximum 131072 (room for Markdown review plus JSON; includes reasoning tokens) |
 | `limits.blobBytes` | 1048576 |
 | `limits.snapshotBytes` | 104857600 |
 | `limits.diffBytes` | 250000 |

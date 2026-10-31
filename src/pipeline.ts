@@ -65,7 +65,7 @@ export async function publish(prepared: unknown, output: unknown, c: Config, api
   let currentHead: string | undefined;
   try { currentHead = (await api.pull(r.repository, r.pr)).head.sha; }
   catch { notes.push('Unable to check whether newer commits are present.'); }
-  const rendered = renderReport(r, value.result, p.manifest, { notes, currentHead, maxBytes: c.limits.reportBytes,
+  const rendered = renderReport(r, value.result, p.manifest, { notes, currentHead, maxBytes: c.limits.reportBytes, model: value.model, modelError: value.modelError,
     sessionUrl: c.shareSessions ? value.sessionUrl ?? retainedSessionUrl : undefined, sharingEnabled: c.shareSessions,
     sessionSyncPending: Boolean(value.sessionSyncPending || (c.shareSessions && retainedSessionUrl && !value.sessionUrl)) });
   await api.update(r.repository, p.commentId, rendered.body);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ModelId, Selector } from './models.js';
 
 export const Sha = z.string().regex(/^[a-f0-9]{40}$/);
 export const Repo = z.string().max(201).regex(/^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/);
@@ -10,6 +11,7 @@ export const RequestSchema = z.strictObject({
   repositoryId: z.number().int().positive(), pr: z.number().int().positive(), triggerId: z.number().int().positive(),
   head: Sha.nullable(), base: Sha.nullable(), mergeBase: Sha.nullable(),
   policy: z.string().regex(/^[a-f0-9]{64}$/),
+  model: Selector.optional(),
   runUrl: z.string().max(512).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+$/),
   state: z.enum(['running', 'completed', 'partial', 'failed']),
 });
@@ -41,7 +43,7 @@ export const ManifestSchema = z.strictObject({
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
 export const SessionUrl = z.string().max(512).regex(/^https:\/\/(?:opncd\.ai\/(?:s|share)\/[A-Za-z0-9_-]+|[a-zA-Z0-9-]+\.github\.io\/[\w.-]+\/sessions\/\d+\/\d+-\d+\/)$/);
-export const ReviewOutputSchema = z.strictObject({ result: ResultSchema.nullable(), notes: z.array(z.string().max(2000)).max(100), failed: z.boolean(), sessionUrl: SessionUrl.optional(), sessionSyncPending: z.boolean().optional() });
+export const ReviewOutputSchema = z.strictObject({ result: ResultSchema.nullable(), notes: z.array(z.string().max(2000)).max(100), failed: z.boolean(), sessionUrl: SessionUrl.optional(), sessionSyncPending: z.boolean().optional(), model: ModelId.optional(), modelError: z.string().max(2000).optional() });
 export type ReviewOutput = z.infer<typeof ReviewOutputSchema>;
 
 export function validateLocations(result: Result, manifest: Manifest): Result {

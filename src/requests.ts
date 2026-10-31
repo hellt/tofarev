@@ -2,19 +2,30 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { GitHub, GitHubError, type Comment } from './github.js';
 import { RequestSchema, type Request, Sha, SessionUrl } from './types.js';
+import { Selector } from './models.js';
 
 const Event = z.object({ action: z.literal('created'), repository: z.object({ id: z.number().int(), full_name: z.string() }),
   issue: z.object({ number: z.number().int().positive(), pull_request: z.object({}).passthrough() }),
   comment: z.object({ id: z.number().int().positive(), body: z.string(), user: z.object({ login: z.string(), type: z.literal('User') }) }) });
-export type Admission = { repository: string; repositoryId: number; pr: number; triggerId: number; key: string; author: string };
+export type Admission = { repository: string; repositoryId: number; pr: number; triggerId: number; key: string; author: string; model?: string };
+// `/tofarev review` alone, or with one `model=<selector>` on the same line.
+export function parseCommand(body: string): { model?: string } | null {
+  const m = body.trim().match(/^\/tofarev review(?:[ \t]+model[ \t]*=[ \t]*(?:"([^"\n]*)"|'([^'\n]*)'|([^\n]*)))?$/);
+  if (!m) return null;
+  const raw = (m[1] ?? m[2] ?? m[3])?.trim();
+  if (raw === undefined) return {};
+  const model = Selector.safeParse(raw);
+  return model.success ? { model: model.data } : null;
+}
 export function admit(event: unknown, eventName: string, c: Config): Admission | null {
   const parsed = Event.safeParse(event); if (eventName !== 'issue_comment' || !parsed.success) return null;
   const e = parsed.data;
   if (e.repository.full_name !== c.repository || e.repository.id !== c.repositoryId ||
-    e.comment.body.trim() !== '/tofarev review' ||
+    !parseCommand(e.comment.body) ||
     !c.allowedUsers.some(u => u.toLowerCase() === e.comment.user.login.toLowerCase())) return null;
+  const { model } = parseCommand(e.comment.body)!;
   return { repository: c.repository, repositoryId: c.repositoryId, pr: e.issue.number,
-    triggerId: e.comment.id, key: `${c.repositoryId}:${e.comment.id}`, author: e.comment.user.login };
+    triggerId: e.comment.id, key: `${c.repositoryId}:${e.comment.id}`, author: e.comment.user.login, ...(model ? { model } : {}) };
 }
 export function marker(request: Request): string { return `<!-- tofarev:v1:${Buffer.from(JSON.stringify(RequestSchema.parse(request))).toString('base64')} -->`; }
 export function parseMarker(comment: Comment, c: Config, a: Admission): Request | null {
@@ -48,7 +59,7 @@ export function statusBody(r: Request, message: string, sessionUrl?: string) {
 }
 export async function beginRequest(api: GitHub, c: Config, a: Admission, policy: string, runUrl: string) {
   const trigger = await api.comment(a.repository, a.triggerId);
-  if (trigger.user.type !== 'User' || trigger.user.login !== a.author || trigger.body.trim() !== '/tofarev review' ||
+  if (trigger.user.type !== 'User' || trigger.user.login !== a.author || parseCommand(trigger.body)?.model !== a.model ||
     trigger.issue_url !== `https://api.github.com/repos/${a.repository}/issues/${a.pr}`) return null;
   const existing = await findRequest(api, c, a);
   if (existing && ['completed', 'partial'].includes(existing.request.state)) return { ...existing, skip: true };
@@ -62,8 +73,9 @@ export async function beginRequest(api: GitHub, c: Config, a: Admission, policy:
   } catch (e) { if (e instanceof GitHubError && e.status === 404) failed = true; else throw e; }
   const request = RequestSchema.parse({ version: 1, key: a.key, repository: a.repository, repositoryId: a.repositoryId,
     pr: a.pr, triggerId: a.triggerId, head, base, mergeBase: existing?.request.mergeBase ?? null,
-    policy, runUrl, state: failed ? 'failed' : 'running' });
-  const body = statusBody(request, failed ? 'Review could not proceed: the pull request is closed or unavailable.' : 'Review queued.');
+    policy, runUrl, state: failed ? 'failed' : 'running', ...(a.model ? { model: a.model } : {}) });
+  const body = statusBody(request, failed ? 'Review could not proceed: the pull request is closed or unavailable.'
+    : a.model ? `Review queued with requested model \`${a.model}\`.` : 'Review queued.');
   if (existing) { await api.update(a.repository, existing.commentId, body); return { request, commentId: existing.commentId, skip: failed }; }
   for (let attempt = 0; ; attempt++) {
     try { const comment = await api.create(a.repository, a.pr, body); return { request, commentId: comment.id, skip: failed }; }

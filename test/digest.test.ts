@@ -110,7 +110,7 @@ test('finalized digests carry canonical metadata, program-only links and checked
 test('digest-files writes the validated digest and fails closed on a failed result', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tofarev-digest-files-'));
   const run = promisify(execFile);
-  const stats = { mode: 'single-pass', items: 2, batches: 0, shortlisted: 0, selected: 2, picks: 1, calls: 1, linksRemoved: 0, unverifiedHeadings: 0, seconds: 3 };
+  const stats = { mode: 'single-pass', items: 2, batches: 0, shortlisted: 0, selected: 2, picks: 1, calls: 1, linksRemoved: 0, unverifiedHeadings: 0, seconds: 3, sources: 0, sourceFailures: 0 };
   try {
     await writeFile(path.join(dir, 'ok.json'), JSON.stringify({ version: 1, key: 'netdev-0x1a', markdown: '# Digest\n', failed: false, notes: [], stats }));
     await run(process.execPath, ['dist/src/cli.js', 'digest-files', path.join(dir, 'ok.json'), path.join(dir, 'out')]);

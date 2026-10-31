@@ -29,14 +29,16 @@ async function main() {
       if (!arg) throw new Error('Preparation directory required');
       const p = await prepare(await event(), process.env.GITHUB_EVENT_NAME ?? '', c, api(), arg,
         `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`);
-      await output('ready', String(!!p?.ready)); console.log(JSON.stringify({ ready: !!p?.ready }));
+      await output('ready', String(!!p?.ready)); await output('model', p?.request.model ?? '');
+      console.log(JSON.stringify({ ready: !!p?.ready, model: p?.request.model ?? null }));
       if (p && !p.ready) process.exitCode = 1;
       break;
     }
     case 'review': {
       if (!arg) throw new Error('Source directory required');
       let result;
-      try { result = await review(arg, c); }
+      // TOFAREV_MODEL carries the selector from the PR comment (validated again by the resolver).
+      try { result = await review(arg, c, { model: process.env.TOFAREV_MODEL || undefined }); }
       catch { result = { result: null, failed: true, notes: ['Reviewer initialization failed; check model access and TOFAREV_API_KEY.'] }; }
       console.log(JSON.stringify(result));
       if (result.failed) process.exitCode = 1;

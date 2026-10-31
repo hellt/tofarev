@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+// Default model. Trusted configuration may set `model`, and an allowed
+// commenter may request another (see models.ts).
 export const MODEL = 'zai-org/GLM-5.3-Flash';
 export const ENDPOINT = 'https://api.tokenfactory.nebius.com/v1';
 export const OPENCODE_VERSION = '1.19.3';
@@ -9,6 +11,8 @@ export const ConfigSchema = z.strictObject({
   repositoryId: z.number().int().positive().default(290960521),
   allowedUsers: z.array(z.string().regex(/^[\w-]+$/)).min(1).default(['hellt', 'flosch62', 'kaelemc']),
   appSlug: z.string().regex(/^[a-z0-9-]+$/).default('tofarev'),
+  // An exact id (used as is) or a selector resolved against the catalog.
+  model: z.string().trim().min(1).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9 ._/:-]*$/).default(MODEL),
   shareSessions: z.boolean().default(false),
   sessionPages: z.strictObject({
     repository: z.string().max(201).regex(/^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/).default('hellt/tofarev'),
@@ -18,9 +22,9 @@ export const ConfigSchema = z.strictObject({
   limits: z.strictObject({
     durationMs: z.number().int().min(1000).max(1_800_000).default(1_800_000),
     turns: z.number().int().min(1).max(1000).optional(),
-    contextTokens: z.number().int().min(1024).max(100_000).default(100_000),
-    requestBytes: z.number().int().min(1024).max(2_097_152).default(2_097_152),
-    outputTokens: z.number().int().min(512).max(16_384).default(16_384),
+    contextTokens: z.number().int().min(1024).max(1_000_000).default(100_000),
+    requestBytes: z.number().int().min(1024).max(16_777_216).default(2_097_152),
+    outputTokens: z.number().int().min(512).max(131_072).default(16_384),
     blobBytes: z.number().int().min(1).max(1_048_576).default(1_048_576),
     snapshotBytes: z.number().int().min(1).max(104_857_600).default(104_857_600),
     diffBytes: z.number().int().min(1).max(250_000).default(250_000),

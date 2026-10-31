@@ -89,3 +89,28 @@ test('large programs are staged before OpenCode writes, and an empty writer gets
     assert.ok(out.markdown!.includes('[page](https://netdevconf.info/0x1A/sessions/talk/1.html)'));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('the writer gets text extracted from linked PDFs by the isolated worker', { timeout: 90_000 }, async () => {
+  const { pdfFixture } = await import('./pdf.test.js');
+  const { readSources } = await import('../src/pdf.js');
+  const slides = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/pdf' }); res.end(pdfFixture('SLIDE-EVIDENCE: T1 outage hit 25 percent of QPs')); });
+  await new Promise<void>(r => slides.listen(0, '127.0.0.1', r));
+  const pdf = `http://127.0.0.1:${(slides.address() as { port: number }).port}/deck.pdf`;
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tofarev-digest-pdf-'));
+  try {
+    const file = path.join(dir, 'prompt.md');
+    await writeFile(file, promptText(`## Session type: talk\n\n${item(1).replace('page:', `pdf: ${pdf} | page:`)}\n\n${item(2)}\n\n${item(3)}`));
+    let seen = '';
+    const out = await digest(file, config({ limits: { durationMs: 60_000 } }), { key: 'fake', today: '2026-10-31',
+      readSources: reqs => readSources(reqs, { allowLoopback: true }),
+      transport: (async (_u: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)); seen = JSON.stringify(body.messages);
+        assert.ok(body.tools.every((t: any) => ['webfetch', 'invalid'].includes(t.function.name)));
+        return sse({ role: 'assistant', content: `${digestText('https://netdevconf.info/0x1A/sessions/talk/1.html')}` });
+      }) as typeof fetch });
+    assert.equal(out.failed, false, JSON.stringify(out.notes));
+    assert.ok(seen.includes('SOURCE TEXT') && seen.includes('SLIDE-EVIDENCE: T1 outage hit 25 percent of QPs'));
+    assert.equal(out.stats.sources, 1); assert.equal(out.stats.sourceFailures, 0);
+    assert.ok(out.notes.some(n => n.includes('read 1 of 1 linked PDFs')));
+  } finally { slides.close(); await rm(dir, { recursive: true, force: true }); }
+});

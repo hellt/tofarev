@@ -23,6 +23,9 @@ on:
     secrets:
       TOFAREV_API_KEY:
         required: true
+      TAVILY_API_KEY:
+        description: Optional Tavily key. Linked PDFs that cannot be fetched directly are sent to Tavily Extract.
+        required: false
 permissions:
   contents: read
 jobs:
@@ -71,13 +74,14 @@ jobs:
       - name: Run isolated digest writer
         env:
           TOFAREV_API_KEY: ${{ secrets.TOFAREV_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
         run: |
           set +e
           docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 3g --cpus 2 \
             --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --tmpfs /home/node:rw,nosuid,nodev,size=256m,uid=1000,gid=1000 \
             --mount type=bind,src="$PWD/.work/source",dst=/source,readonly \
             --mount type=bind,src="$PWD/.work/config.json",dst=/config.json,readonly \
-            --env TOFAREV_API_KEY --env TOFAREV_CONFIG=/config.json \
+            --env TOFAREV_API_KEY --env TAVILY_API_KEY --env TOFAREV_CONFIG=/config.json \
             tofarev-reviewer digest /source/prompt.md > .work/result.json
           echo "Digest writer exited with status $?."
       - name: Validate and write digest files

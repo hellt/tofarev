@@ -134,3 +134,13 @@ test('session links resolve unique filenames and reject ambiguous or out-of-rang
   const ambiguous = renderSessionReview(r, result, { ...manifest, files: [...manifest.files, file, { ...file, path: 'other/config.clab.yml' }] });
   assert.ok(!ambiguous.includes(link));
 });
+
+test('reports name the model, and a model that cannot be resolved is explained above the fold', () => {
+  const result = { version: 1 as const, findings: [finding], coverage: { complete: true, notes: [] } };
+  const done = renderReport(r, result, manifest, { model: 'zai-org/GLM-5.3' }).body;
+  assert.match(done, /Reviewed \[a{12}\]\(https:\/\/github\.com\/srl-labs\/containerlab\/commit\/a{40}\) with `zai-org\/GLM-5\.3` · /);
+  const failed = renderReport(r, null, manifest, { modelError: 'Model `glm 9` matches no Kimi, GLM or DeepSeek model with tool calling on Token Factory. Available: `zai-org/GLM-5.3`.' }).body;
+  const banner = failed.indexOf('This is not a clean review.'), reason = failed.indexOf('Model <code>glm 9</code> matches no');
+  assert.ok(banner > 0 && reason > banner && reason < failed.indexOf('<details>'), failed);
+  assert.throws(() => renderReport(r, result, manifest, { model: 'evil` [x](y)' }));
+});
