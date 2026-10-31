@@ -1,4 +1,4 @@
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { config } from './config.js';
 import { GitHub } from './github.js';
@@ -10,6 +10,7 @@ import { consumerWorkflow } from './consumer.js';
 import { evaluate, probe } from './evaluation.js';
 import { publishSession } from './pages.js';
 import { ReviewOutputSchema, SessionUrl } from './types.js';
+import { DigestOutputSchema, digest, failedDigest } from './digest.js';
 
 async function output(key: string, value: string) {
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
@@ -70,11 +71,30 @@ async function main() {
       console.log(JSON.stringify(result));
       break;
     }
+    case 'digest': {
+      if (!arg) throw new Error('Prompt file required');
+      let result;
+      try { result = await digest(arg, c); }
+      catch { result = failedDigest('Digest writer initialization failed; check the prompt file, model access and TOFAREV_API_KEY.'); }
+      console.log(JSON.stringify(result));
+      if (result.failed) process.exitCode = 1;
+      break;
+    }
+    case 'digest-files': {
+      if (!arg || !extra) throw new Error('Digest result and output directory required');
+      const result = DigestOutputSchema.parse(await readJson(arg, 2_000_000));
+      await mkdir(extra, { recursive: true });
+      await writeFile(path.join(extra, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
+      if (result.markdown) await writeFile(path.join(extra, 'digest.md'), result.markdown);
+      console.log(JSON.stringify({ key: result.key, failed: result.failed, notes: result.notes, stats: result.stats }, null, 2));
+      if (result.failed || !result.markdown) process.exitCode = 1;
+      break;
+    }
     case 'preview': console.log(exampleReport(arg)); break;
     case 'consumer': process.stdout.write(consumerWorkflow(arg ?? '', extra ?? '')); break;
     case 'probe': console.log(JSON.stringify(await probe(), null, 2)); break;
     case 'evaluate': console.log(JSON.stringify(await evaluate(arg), null, 2)); break;
-    default: throw new Error('Usage: tofarev admit|prepare DIR|review SOURCE|publish PREP RESULT [SESSION]|publish-session SNAPSHOT|progress PREP SESSION|preview [MODE]|consumer OWNER/REPO SHA|probe|evaluate');
+    default: throw new Error('Usage: tofarev admit|prepare DIR|review SOURCE|publish PREP RESULT [SESSION]|publish-session SNAPSHOT|progress PREP SESSION|digest PROMPT|digest-files RESULT DIR|preview [MODE]|consumer OWNER/REPO SHA|probe|evaluate');
   }
 }
 main().catch(() => { console.error(process.argv[2] === 'probe' || process.argv[2] === 'evaluate' ? 'Live check failed: require TOFAREV_LIVE=1, TOFAREV_API_KEY, access to zai-org/GLM-5.3-Flash, tool calling and valid structured output.' : 'ToFaRev operation failed. Check configuration, credentials and workflow artifacts; no successful publication is claimed.'); process.exitCode = 1; });

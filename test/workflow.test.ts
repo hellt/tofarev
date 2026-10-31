@@ -43,6 +43,27 @@ test('workflow pins dependencies and confines credentials to their jobs and step
   for (const key of Object.keys(consumer.jobs.review.secrets)) assert.ok(workflow.on.workflow_call.secrets[key]);
   assert.throws(() => consumerWorkflow('owner/tofarev', 'main'));
 });
+test('digest workflow pins dependencies, reads only the caller prompt and confines the inference key', async () => {
+  const workflow = parse(await readFile('.github/workflows/digest.yml', 'utf8'));
+  assert.deepEqual(Object.keys(workflow.jobs), ['digest']);
+  assert.deepEqual(workflow.permissions, { contents: 'read' });
+  assert.deepEqual(Object.keys(workflow.on.workflow_call.secrets), ['TOFAREV_API_KEY']);
+  const steps = workflow.jobs.digest.steps as any[];
+  for (const step of steps) {
+    if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);
+    if (step.uses?.startsWith('actions/checkout')) assert.equal(step.with['persist-credentials'], false);
+    assert.equal(JSON.stringify(step).includes('secrets.'), step.name === 'Run isolated digest writer', step.name);
+  }
+  assert.ok(steps[0].name.startsWith('Validate'));
+  const prompt = steps.find(s => s.name === 'Check out the caller prompt');
+  assert.equal(prompt.with['sparse-checkout'], 'prompts/${{ inputs.key }}.md');
+  assert.equal(prompt.with.ref, '${{ inputs.source_ref }}');
+  const run = JSON.stringify(steps.find(s => s.name === 'Run isolated digest writer'));
+  for (const flag of ['--read-only', '--cap-drop ALL', 'no-new-privileges', 'dst=/source,readonly', 'dst=/config.json,readonly', ' digest /source/prompt.md']) assert.ok(run.includes(flag), flag);
+  assert.ok(!run.includes('docker.sock') && !run.includes('GITHUB_TOKEN'));
+  assert.equal(steps.at(-1).if, 'always()');
+  assert.equal(steps.at(-1).with.name, 'tofarev-digest-${{ inputs.key }}');
+});
 test('golden report previews match deterministic renderer', async () => {
   for (const mode of ['findings', 'empty', 'partial', 'stale', 'failed', 'shared']) {
     assert.equal(await readFile(`docs/examples/${mode}.md`, 'utf8'), exampleReport(mode) + '\n');

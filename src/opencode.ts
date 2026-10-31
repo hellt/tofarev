@@ -12,7 +12,7 @@ import { formatInlineCode, renderSessionReview } from './report.js';
 import { startSession } from './sharing.js';
 import { SessionSnapshotSchema } from './session.js';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
+export const root = fileURLToPath(new URL('../../', import.meta.url));
 export async function policyText() { return readFile(path.join(root, 'prompts/containerlab-review.md'), 'utf8'); }
 export async function policyHash() { return createHash('sha256').update(await policyText()).digest('hex'); }
 export const contract = `First provide a complete, readable Markdown review: a summary table ordered P0-P4, details for each finding (location, problem, trigger, impact, correction), and honest coverage notes. Use headings, complete sentences, and inline code for symbols, filenames, commands, environment variables, and configuration keys. Include a diagram only when useful. Describe the same findings as the JSON.\nThen emit the machine result in one FINAL fenced json block matching this schema, with no text after it:\n${JSON.stringify(z.toJSONSchema(ResultSchema))}\nPriorities: P0 catastrophic/severe security blocker; P1 high-impact merge blocker; P2 correctness/reliability defect; P3 minor defect; P4 optional actionable improvement.\nUse revision 'base' for removed lines (the comparison merge base), 'head' otherwise. Diagrams use plain flowchart edges or sequenceDiagram participants/messages only. Use inline code in JSON text fields when referring to symbols. Use the supplied immutable GitHub link roots in Markdown file references, with URL-encoded paths and #Lstart-Lend anchors. Do not put publishing metadata or URLs in the JSON.`;
@@ -29,6 +29,12 @@ export function reviewerConfig(c: Config, source: string, system: string, endpoi
   const access = { '*': 'deny', [`${source.slice(1)}/*`]: 'allow' };
   const permission = { '*': 'deny', read: access, grep: 'allow', glob: 'allow',
     external_directory: { '*': 'deny', [source]: 'allow', [`${source}/*`]: 'allow' } };
+  return agentConfig(c, system, endpoint, permission, 'Containerlab review only');
+}
+
+// One dedicated primary agent named `tofarev`; default agents, project config,
+// plugins and MCP servers stay disabled. Each caller chooses the tool permissions.
+export function agentConfig(c: Config, system: string, endpoint: string, permission: Record<string, unknown>, description: string) {
   return { $schema: 'https://opencode.ai/config.json', autoupdate: false,
     enabled_providers: ['tofarev'], model: `tofarev/${MODEL}`, small_model: `tofarev/${MODEL}`,
     plugin: [], mcp: {}, lsp: false, formatter: false, instructions: [],
@@ -36,7 +42,7 @@ export function reviewerConfig(c: Config, source: string, system: string, endpoi
     provider: { tofarev: { npm: '@ai-sdk/openai-compatible', name: 'Nebius Token Factory',
       options: { baseURL: endpoint, apiKey: 'local-proxy', timeout: c.limits.durationMs },
       models: { [MODEL]: { name: MODEL, tool_call: true, limit: { context: c.limits.contextTokens, output: c.limits.outputTokens } } } } },
-    agent: { tofarev: { mode: 'primary', description: 'Containerlab review only', prompt: system,
+    agent: { tofarev: { mode: 'primary', description, prompt: system,
       ...(c.limits.turns ? { steps: Math.max(1, c.limits.turns - 2) } : {}), permission }, title: { disable: true }, summary: { disable: true },
       build: { disable: true }, plan: { disable: true }, explore: { disable: true }, general: { disable: true } },
   };
@@ -44,7 +50,8 @@ export function reviewerConfig(c: Config, source: string, system: string, endpoi
 
 // Only the proxy has the real key. It bounds requests and any explicit call cap;
 // OpenCode receives a disposable placeholder credential for the loopback endpoint.
-export async function inferenceProxy(c: Config, key: string, transport: typeof fetch = fetch) {
+export async function inferenceProxy(c: Config, key: string, transport: typeof fetch = fetch,
+  finalize: (reason: 'deadline' | 'call allowance') => string = reason => `The review ${reason} is nearly exhausted. Finalize now with the Markdown review followed by JSON, using supported findings already investigated. Do not call tools. Set coverage.complete=false and describe unfinished scope in coverage.notes.\n${contract}`) {
   let turns = 0, finalized = false; let failure: string | null = null; const controller = new AbortController();
   const started = Date.now();
   const deadline = setTimeout(() => { failure = 'Reviewer deadline reached.'; controller.abort(); }, c.limits.durationMs);
@@ -67,7 +74,7 @@ export async function inferenceProxy(c: Config, key: string, transport: typeof f
       if (deadlineNear || (c.limits.turns !== undefined && turns >= Math.max(1, c.limits.turns - 2))) {
         finalized = true;
         delete body.tools; delete body.tool_choice;
-        body.messages.push({ role: 'system', content: `The review ${deadlineNear ? 'deadline' : 'call allowance'} is nearly exhausted. Finalize now with the Markdown review followed by JSON, using supported findings already investigated. Do not call tools. Set coverage.complete=false and describe unfinished scope in coverage.notes.\n${contract}` });
+        body.messages.push({ role: 'system', content: finalize(deadlineNear ? 'deadline' : 'call allowance') });
       }
       body.max_tokens = Math.min(Number(body.max_tokens) || c.limits.outputTokens, c.limits.outputTokens);
       body.reasoning_effort = c.reasoningEffort;

@@ -26,5 +26,6 @@ Requires Node.js 24.20.0. Docker is used for the production reviewer. No server 
 - [Runtime isolation and compatibility](docs/runtime.md)
 - [Reports and previews](docs/reports.md)
 - [Live model probe and prompt evaluation](docs/evaluation.md)
+- [Conference digests](docs/digest.md)
 
 Local implementation does not install a GitHub App or activate reviews in Containerlab. The existing `TOFAREV_API_KEY` repository secret is the inference secret used by the consumer workflow.

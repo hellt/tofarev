@@ -24,3 +24,5 @@ Use these component names consistently:
 - OpenCode: the agent runtime inside the review container.
 - Token Factory: the Nebius service that runs the model.
 - Source snapshot: the selected source files prepared from recorded Git revisions.
+- Digest workflow: the reusable workflow that writes a conference digest.
+- Digest writer: the `digest` CLI command that runs in the review container.
