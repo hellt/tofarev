@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3",
-  "updatedAt": "2026-10-31T18:45:50.953Z",
-  "state": "running",
+  "updatedAt": "2026-10-31T18:46:32.166Z",
+  "state": "completed",
   "info": {
     "id": "ses_e6cb98a0fffe1a90hyttNW8QgS",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 45656,
-      "output": 342,
-      "reasoning": 10301,
+      "input": 48809,
+      "output": 3221,
+      "reasoning": 19632,
       "cache": {
-        "read": 152000,
+        "read": 331712,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793472230896,
-      "updated": 1793472315044
+      "updated": 1793472392121
     }
   },
   "messages": [
@@ -1196,7 +1196,8 @@
         "id": "msg_19347be8f001Ci3qb6SliavOZ3",
         "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
         "time": {
-          "created": 1793472315023
+          "created": 1793472315023,
+          "completed": 1793472357072
         },
         "parentID": "msg_193467cc0001KGE4MDCE3h67k2",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -1209,14 +1210,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 62675,
+          "input": 2284,
+          "output": 53,
+          "reasoning": 6322,
           "cache": {
-            "read": 0,
+            "read": 54016,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -1230,12 +1233,291 @@
           "id": "prt_19347c547001aimFZ1SqDoyKzF",
           "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
           "messageID": "msg_19347be8f001Ci3qb6SliavOZ3",
-          "text": "",
+          "text": "go-cmp is already a direct dependency. Good.\n\nNow let me think hard about whether there's any actual defect in the new script or tests worth reporting.\n\nRe-examine the interposers' `mv` function for the backup stage detection:\n\n```sh\nmv() {\n    local stage=publish\n    [ \"${@: -1}\" != \"$FRR_TEST_VTYSH.containerlab\" ] || stage=backup\n    [ \"$FRR_TEST_FAULT\" != \"$stage\" ] || return 91\n    command mv \"$@\" || return $?\n    frr_probe \"$stage\"\n}\n```\n\nIf fault=backup, the first `mv` returns 91 → set -e exits → trap removes backup_tmp → /usr/bin/vtysh.containerlab never created. Test asserts Stat IsNotExist. Good.\n\nBut wait — there's a subtle issue: when fault=backup, the script exits due to set -e after `mv` returns 91. But `[ \"$FRR_TEST_FAULT\" != \"$stage\" ] || return 91` — that's fine.\n\nNow, one important detail: the wrapper's `assertCallable` in fault=write/chmod/publish cases: after failed install on FIRST install (no prior wrapper), /usr/bin/vtysh is still the original. Good.\n\nNow the interesting scenario: fault=publish on FIRST install: wrapper_tmp written+chmodded, then mv fails → trap removes wrapper_tmp. /usr/bin/vtysh = original. Good.\n\nThen retry: `[ ! -f vtysh.containerlab ]` — exists (backup succeeded). Skip backup. Wrapper: mktemp, printf, chmod, mv → success. Probes... fine.\n\nNow — one more check on the interposer `cp` for fault=copy (non-interrupted): writes 'partial copy' to last arg (backup_tmp), returns 91. set -e → exit → trap rm backup_tmp. Good, assertNoTemporaryFiles passes.\n\nNow, is there any issue where `set -e` doesn't trigger on `cp` failure because... `cp -p ...` is a simple command, set -e applies. Good.\n\nOK so the script and tests look correct. Now let me think about maintainability/clarity issues per the standards.\n\nPotential findings:\n\n1. **P4: `cp -p` drops extended attributes/ACLs that `mv` preserved** — base used `mv` (the original inode), head uses `cp -p` (mode/owner/timestamp only). If a distribution's vtysh carried file capabilities or ACLs, the backup would lose them. vtysh from FRR Debian package doesn't set caps; impact speculative. Hmm. Is it worth reporting? The instruction says report only supported, useful findings; don't inflate speculative concerns. I could include as P4 with clear framing. Actually, GNU cp by default preserves... Actually for regular `cp`, ACLs/xattrs are not preserved (unless -a/--preserve=xattr). -p preserves mode, ownership, timestamps only. So it is a real semantic regression relative to `mv`, though low practical impact for vtysh. I'll report as P4 with honest caveat.\n\nHmm, wait — actually there's something stronger. Let me reconsider: is there any case in production where the backup restore matters? `vtysh.containerlab` is only used by the wrapper. Losing xattrs on the backup only matters if the original had them. Low.\n\n2. **The `--` inconsistency**: `cp -p \"/usr/bin/vtysh\" \"$backup_tmp\"` lacks `--` while mv uses it. Purely cosmetic; skip.\n\n3. **Leftover temp files after SIGKILL accumulate** — accepted by test; P4 at most. Probably skip or mention in coverage.\n\n4. **Test duplicate helper logic**: the new test file duplicates the runtime-mock exec harness from `frr_test.go` (TestPostDeployConfigSaveWrapper's DoAndReturn with ReplaceAll of /usr/bin and etcFRR). Duplication across two test files — the karpathy/ponytail rules say reuse existing helpers. This is a P4 maintainability point: the mock-exec harness (replace paths + run bash) is duplicated in `frr_save_wrapper_test.go` and `frr_test.go`; a shared helper would avoid drift. But careful: \"Do not recommend an abstraction merely to remove superficially similar code.\" The two harnesses differ (fault injection, probes, ExitError handling). The duplication is modest (the DoAndReturn body ~25 lines vs ~30 lines with differences: error handling, interposers). I'd rate this weak; maybe skip or P4. Hmm. They share the path-rewriting logic; a helper `rewritePaths` would be small. I think it's a legitimate P4 note but minor. Given \"Return only supported, useful findings,\" I might include it as P4. Let me weigh: the two DoAndReturn implementations diverge meaningfully (error handling paths). The shared part is the 3-line ReplaceAll loop. Marginal. I'll skip it — or include as P4? I'll skip; risk of noise.\n\n5. **Docs**: any user-visible change? The fix changes failure/resilience behavior of an internal wrapper. docs/manual/kinds/frr.md doesn't document the wrapper internals. No doc change needed. Release note: this is a bug fix in a recently introduced kind (0.80/0.81/0.82). Should it have a release-note entry? The release-note-review rule only triggers on changes under docs/rn/. The PR doesn't add one. Given the frr kind is brand new (released in 0.80), a fix to it might merit a note in the unreleased 0.82.md... Actually 0.82 might already be released (today's date Oct 2026; 0.82 exists). The rule says treat published release notes as immutable and recommend moving new content to the next unreleased note. The PR didn't add a release note. Is a release note required for every bug fix? Not documented in the rules I have. I'll put a coverage note rather than a finding... Actually, hmm. The instruction for docs check: \"check that added, changed, deprecated, or removed user-visible behavior is reflected in relevant docs.\" This is a bug-fix with no user-visible doc surface. I'll note it in coverage.\n\n6. **A more careful correctness check on the interposers' `printf` fault**: When fault=write, function returns 91 BUT the output 'partial wrapper' goes to stdout of the redirected printf — fine. But there's a subtlety: the shell's builtin printf inside function via `builtin printf 'partial wrapper'` — its stdout is the redirect of the call site. Fine.\n\n7. **What about `frr_probe` writing to $FRR_TEST_OUTPUT**: `\"$FRR_TEST_VTYSH\" -b 'two words' > \"$FRR_TEST_OUTPUT\"` — overwrites each time. Fine.\n\n8. Now, one thing I should double-check: **the wrapper test asserts `want` includes exactly one \"copy:0\" but `cp` probe is called even on the second iteration?** No: second iteration skips the if. Good.\n\n9. **Check `TestConfigSaveWrapperReinstallationFailure` for fault=chmod**: after first successful install, /usr/bin/vtysh = wrapper (published). fault=chmod on second install: mktemp, printf succeeds (fault only checks =write; FRR_TEST_FAULT=chmod so printf function passes through to builtin), chmod returns 91 → set -e exit → trap rm wrapper_tmp. Working wrapper unchanged. assertNoTemporaryFiles. Good.\n\nBut wait — in fault=chmod, the printf function: `[ \"$FRR_TEST_FAULT\" = write ]` false → `builtin printf \"$@\"` → writes full wrapper. Then chmod fails. Trap removes. Good.\n\n10. **One more possible issue with the production script**: `chmod 755` — if the wrapper needs to be owned by root: fine.\n\n11. **Now, the deeper question: is `mv -f -- \"$wrapper_tmp\" \"/usr/bin/vtysh\"` guaranteed atomic such that a concurrent vtysh exec never sees a missing file?** rename(2) is atomic. Good.\n\n12. **Is there a window where /usr/bin/vtysh.containerlab doesn't exist but /usr/bin/vtysh was already replaced by a wrapper from a PREVIOUS install, and now the backup is re-created from... wait!** Critical scenario: \n\n- Install #1: backup created from original, wrapper published. State: vtysh=wrapper, vtysh.containerlab=original. Good.\n- Container recreated? No.\n- Install #2: `[ ! -f vtysh.containerlab ]` false → skip. Wrapper republished. Fine.\n\nBut what about this: **the container's /usr/bin is NOT persisted across container recreation.** On `containerlab deploy -r` (recreate), new container from image: vtysh=original, no backup. PostDeploy runs again. Fine.\n\nWhat about **container restart**: filesystem persists, wrapper persists. Fine.\n\n13. Hmm, what about the scenario the base test cared about: \"Reinstalling must retain the binary, rather than wrapping the wrapper.\" Head preserves this via the `[ ! -f ]` check. Fine.\n\n14. **Now — the one scenario that changed semantics: what if `/usr/bin/vtysh.containerlab` exists but `/usr/bin/vtysh` is the wrapper, and the user wants to re-install... fine.\n\n15. What about **PostDeploy running on a node where the image lacks /usr/bin/vtysh entirely** (some frr-like image)? cp fails → error, same as base mv. Fine.\n\n16. Now, is there a problem with **`mktemp` creating the temp file inside /usr/bin — mktemp template must not end with anything after X's; fine. But some mktemp implementations (BusyBox) require the template's X's at the end and at least 3 X's — 6 X's at end. Fine.\n\n17. GNU mktemp creates with 0600. After `cp -p`, mode becomes source's. Good — that's why `chmod 755` isn't needed on the backup.\n\nWait, actually — does `cp -p` copy the source's mode onto the existing dest? Yes: cp -p preserves mode (applies chmod on dest). For an existing dest file, cp opens O_TRUNC and then applies mode/owner/times. Good.\n\n18. Now the **P4 about xattrs** — I'll include it, carefully worded.\n\nActually hold on. Let me reconsider one more potential real bug: **the trap's `rm -f -- \"$backup_tmp\" \"$wrapper_tmp\"` runs on normal exit too, including SUCCESS.** After successful backup mv, $backup_tmp points to a now-nonexistent path (renamed) — rm -f fine. After successful wrapper mv, $wrapper_tmp nonexistent — fine. Good.\n\n19. **Another possible issue: `set -e` + `mktemp` failing → trap rm both (empty/other) → exit with mktemp's status.** Error message from mktemp goes to stderr, captured in result error. Fine.\n\n20. Now let me look at the **frr-tests.yml CI workflow** — does it run the Go unit tests? Not necessary.\n\n21. One more thought on the test harness: `args := append([]string(nil), cmd.GetCmd()...)` then modifies indices 2 and 4 — assumes exactly 5 elements (\"bash\",\"-c\",script,\"--\",wrapper). If GetCmd returns exactly that, fine. NewExecCmdFromSlice preserves order. Good.\n\n22. **Wait — there's a subtle issue in the fault tests**: `if err := f.install(t); err == nil || !strings.Contains(err.Error(), \"router1\")`. For fault=copy-interrupted, process killed by KILL → ExitError → res.SetReturnCode(-1)... wait, `exit.ExitCode()` for a signal-killed process returns -1. Then installConfigSaveWrapper: `result.GetReturnCode() != 0` → error message includes node name. Good. But if err from CombinedOutput is NOT ExitError (e.g., context deadline), returns nil, err → error wrapped with node name. Good.\n\nHmm wait, actually: when the process is killed by SIGKILL, Go's exec returns an *exec.ExitError, and CombinedOutput returns err non-nil. `exit.ExitCode()` returns -1 (signal). SetReturnCode(-1). Then GetReturnCode() != 0 → error path. Good.\n\nBut subtle: with `kill -KILL $$` — does bash report anything? The shell dies; out contains \"partial copy\"? cp function wrote to the file, not stdout. out likely empty. Fine.\n\n23. Now — **one more important check: `install()` uses `t.Context()` with 5s timeout; `exec.CommandContext(ctx, ...)` with ctx — fine.\n\n24. Now think about whether the new test **exercises the `/etc/frr/frr.conf` chown/chmod inside the wrapper**? The wrapper's -w case does chown %d:%d /etc/frr/frr.conf → replaced with configDir. assertCallable only tests non-w path. The pre-existing frr_test.go covers -w. Fine.\n\n25. Now — a thought about **the probe assertion being brittle**: `want` exactly matches probes; deterministic. Fine.\n\n26. Let me reconsider the **`cp -p` ownership preservation failure mode** once more, because if GNU cp exits nonzero when unable to preserve ownership, and the exec runs as root — moot. The frr kind's whole wrapper mechanism requires root (chown in wrapper). So fine.\n\n27. Now — what about **SELinux/AppArmor** contexts on the copied backup? cp -p doesn't preserve SELinux xattr; the wrapper execs the backup binary — under container runtime, label transitions... Docker default applies its own labels; the binary's own SELinux context is irrelevant inside the container (most images have no SELinux labels). Skip.\n\nSo overall, the change looks solid. Findings candidates:\n\nA. P4: `cp -p` backup loses extended attributes (e.g., file capabilities, ACLs) that the base `mv` preserved verbatim. Suggest `cp -a` (which preserves xattrs and links) or note the ceiling with a `ponytail:` comment. Actually `cp -a` = -dR --preserve=all. For a single file, `cp -a` preserves mode/ownership/timestamps/xattrs. That's a one-character-ish change. Hmm, but is this \"demonstrated impact\"? The vtysh binary in FRR images doesn't carry file caps. It's a speculative concern. The instruction says don't inflate speculative optimizations into blocking defects — P4 is \"optional actionable improvement,\" so it fits. But is it useful? It's a real semantic difference with a concrete correction (`cp -a`). I'll include as P4.\n\nHmm, wait. Actually, let me reconsider: is it even true that GNU cp -p doesn't preserve xattrs? Yes: by default cp preserves only mode, ownership, timestamps (with -p); xattrs require --preserve=xattr (or -a). BusyBox cp -p preserves mode/timestamps/ownership only, no xattrs at all. So on BusyBox (if the FRR image uses BusyBox — it doesn't, it's Debian) the point is moot anyway. Debian coreutils: xattrs lost. Low impact. P4.\n\nB. P4: duplicated exec-mock harness across the two frr test files. I decided marginal. Let me look at how much is truly duplicated: the DoAndReturn body including path rewriting. The differences: new test handles ExitError→return code; old test t.Fatalf on error. The shared core: `args := append(...); for _, i := range []int{2,4} {ReplaceAll}`. ~5 lines. Not worth a finding per \"do not recommend abstraction merely to remove superficially similar code\". Skip.\n\nC. Documentation: nothing user-visible to document. Skip.\n\nD. Schema: no change needed. Skip.\n\nE. What about the **leftover temp accumulation after SIGKILL** — deliberate, tested. Mention in coverage notes, not a finding.\n\nF. Hmm — one thing I haven't checked: **is `installConfigSaveWrapper` idempotent with respect to a pre-existing PARTIAL `/usr/bin/vtysh.containerlab`**? Can a partial `vtysh.containerlab` ever exist? Only via atomic mv of a fully-copied temp — no. Via external tools? No. Good.\n\nG. What about the **`.containerlab` suffix colliding with the test fixture's `f.path + \".containerlab\"`**? Fine.\n\nH. One more: **the wrapper content `$1` passed through bash `-c` script as positional arg — the wrapper contains double quotes and `$*`, `$@`** — passed as a single argument, safe from expansion at the exec boundary; but inside the script, `printf '%s\\n' \"$1\"` — $1 is a single arg, no re-expansion. Good. Unchanged from base anyway.\n\nI. Now — **could the wrapper contain characters that break `chmod 755`?** No, chmod applies to wrapper_tmp.\n\nJ. Let me also double check `nodes/frr` has no other callers of `installConfigSaveWrapper` — only PostDeploy. And is PostDeploy called multiple times in production? `deploy` and `redeploy`/`recover`? PostDeploy is called once per deploy; but `containerlab deploy` on an existing lab (idempotent redeploy?) calls PostDeploy again — hence \"repeated PostDeploy calls\". Fine.\n\nK. Now, hmm, let me reconsider one potential REAL issue: **the script uses `bash` but the interposer functions use `local` — fine under bash.** Production script: runs under bash (exec \"bash\" \"-c\"). `trap ... EXIT` fine in bash.\n\nL. What about **`set -e` and the `if` condition** — fine.\n\nM. Now think about **whether `printf '%s\\n' \"$1\" > \"$wrapper_tmp\"` could fail partway (ENOSPC) leaving a partial wrapper that then gets chmodded and mv'd?** If printf fails (ENOSPC), set -e exits before chmod/mv. Good — that's exactly the \"write\" fault test. The base version had the same property.\n\nN. What about **the wrapper being published with mode 755 but the exec running under bash `sh`?** Fine.\n\nO. Another check: **`mv -f -- \"$wrapper_tmp\" \"/usr/bin/vtysh\"` when /usr/bin/vtysh is currently executing** — rename over running binary is allowed (ETXTBSY only for write-open). Good.\n\nSo the only substantive finding I have is the P4 xattr one. Let me also reconsider whether the comment \"CHANGE:\" prefix in source comments is appropriate — the PR comments say \"CHANGE: FRR can execute vtysh during PostDeploy...\" — a \"CHANGE:\" marker in committed code is a review-response artifact, not a durable comment. That's a legit P4 style/clarity finding: the comments read as PR-revision notes (\"CHANGE:\") rather than durable documentation, and they'd confuse future readers. Per karpathy \"surgical changes\" — the comment should describe behavior, not the change history. This is a fair, concrete P4: the `CHANGE:` prefixes in `nodes/frr/frr.go` (line 271) and `frr_save_wrapper_test.go` (line 25) should be dropped/rewritten as durable comments. Yes, I'll include that.\n\nAlso, hmm — let me double check the comment correctness: \"Preserve the original backup across sequential PostDeploy calls.\" The base also preserved it (mv + if-check). The comment is about the whole behavior. Fine once CHANGE: removed.\n\nNow, let me reconsider the copy-vs-move tradeoff once more from the \"why not just mv with a temp\" angle: could they have done `cp -p` to temp and mv — that's what they did; alternative: `ln` + `mv`? A hard link would preserve everything and be atomic: `ln /usr/bin/vtysh tmp && mv -f tmp /usr/bin/vtysh.containerlab`. But hardlink means the backup shares inode with original — then when the wrapper replaces /usr/bin/vtysh via rename, the backup still points at the original inode. Actually that works and preserves everything. But cp is simpler to reason about. Skip.\n\nNow — let me also verify there's no issue with **`mktemp` and the test's `temporaryFiles` check for the `backup` fault**: trap removed backup_tmp; wrapper_tmp never created. assertNoTemporaryFiles passes.\n\nAnd for fault=publish (first install): wrapper_tmp removed by trap. Good.\n\nNow let me also sanity check the **want probe list against the fault-free path when /usr/bin/vtysh.containerlab already exists at fixture creation** — fixture creates only `vtysh`, not the backup. First install: cp+mv backup. Second: skip. Matches want.\n\nOne more: **frr_probe runs `\"$FRR_TEST_VTYSH\" -b 'two words'` — during the copy probe, /usr/bin/vtysh is still the original → prints args. During backup probe: same. During chmod probe: /usr/bin/vtysh is still the original (wrapper not yet published). During publish probe: /usr/bin/vtysh is now the wrapper → wrapper case \"$*\" = \"-b two words\" → not -w → exec vtysh.containerlab → original.** All produce \"-b\\ntwo words\\n\" in FRR_TEST_OUTPUT (overwritten). Fine.\n\nHmm wait — during the `publish` probe, the mv function calls frr_probe AFTER `command mv` succeeded. But the shell function `mv` — the redirect... fine.\n\nAlso — **during the `chmod` probe**, /usr/bin/vtysh is the original; fine.\n\nNow — is there a risk that frr_probe's invocation of the original binary while the final mv is about to happen... no race, single-threaded.\n\nOK. Let me also double-check `assertCallable` after fault=copy: /usr/bin/vtysh untouched (cp failed before anything). Fine.\n\nNow, one more scan of the production script for **the missing case: `/usr/bin/vtysh` itself is already the wrapper but `/usr/bin/vtysh.containerlab` is missing** (e.g., user deleted the backup, or a previous base-version behavior?). If backup missing but vtysh=wrapper: script would `cp -p /usr/bin/vtysh → backup` — backing up the WRAPPER, then republish wrapper. Then the wrapper would exec the wrapper... infinite? Let's trace: wrapper execs \"/usr/bin/vtysh.containerlab\" which now contains the wrapper → wrapper's -w case: exec vtysh.containerlab -w → wrapper again → infinite recursion! Can this state occur? /usr/bin/vtysh is wrapper + backup missing. How? Someone deletes vtysh.containerlab; or the container image is updated in-place? Or a user's image build removes it? Edge case, pre-existing in base too (base: if ! -f backup → mv vtysh (wrapper) → backup; same recursion). So pre-existing, not worsened. Actually, in base the same recursion hazard exists. Not introduced by this PR. Could note as coverage note. Actually with head, the cp approach makes this slightly different but equally broken. Pre-existing; skip per \"Focus on issues introduced or materially worsened by this PR.\"\n\nNow, one FINAL careful look for a real bug in the new test file: \n\nLine 109: `for _, i := range []int{2, 4}` — indexes 2 (script) and 4 (wrapper). Correct.\n\nLine 116: `process.WaitDelay = time.Second` — handles the SIGKILL case (child processes?). Fine.\n\nLine 148: `if err != nil || string(out) != \"-b\\ntwo words\\n\"` — the original fixture script prints \"$@\" → \"-b two words\" → output \"-b\\ntwo words\\n\". Good.\n\nLine 205 want list — as analyzed.\n\nLine 216: `err == nil || !strings.Contains(err.Error(), \"router1\")` — for fault=copy-interrupted, err from install: RunExec returns res with returncode -1 → error message \"failed to install config save wrapper on node %q: %s\" with empty stderr → contains \"router1\". Good.\n\nLine 223: `os.Stat(f.path + \".containerlab\"); !os.IsNotExist(err)` — if the file exists, err==nil → !IsNotExist(nil)=true → Fatalf. Good. If not exists, IsNotExist(err)=true → !true=false → no failure. Good.\n\nLine 232-234: for copy-interrupted skip assertNoTemporaryFiles. Good.\n\nLine 236-239: leftovers must be non-empty for copy-interrupted. Good.\n\nLine 241: clear fault; retry. For fault=copy-interrupted retry: `[ ! -f vtysh.containerlab ]` true → new mktemp (new name), cp (real), mv publish. Leftover partial temp remains untouched (different random name) — assertion: `got != leftovers` fails only if changed; new temp file was created and renamed away, so directory listing changes? Wait: the new temp file is created and then moved to vtysh.containerlab — it's removed from listing. The leftover stays. So listing after = leftover only = same as before. Good, passes.\n\nHmm wait, but actually the assertion is `got != leftovers` → t.Errorf. got == leftovers → no error. Good.\n\nLine 291-299: same check in the else-if — redundant with lines 248-256? Look: lines 248-249: `if fault != \"copy-interrupted\" { f.assertNoTemporaryFiles(t) }` else `if got := ...; got != leftovers { t.Errorf(\"retry changed abandoned temporary files...\") }`. And lines 291-299 do the same thing AGAIN — wait, let me re-read the file. Lines 246-256:\n\n```\nf.assertCallable(t)\nf.assertBackup(t)\nif fault != \"copy-interrupted\" {\n    f.assertNoTemporaryFiles(t)\n} else if got := f.temporaryFiles(t); got != leftovers {\n    t.Errorf(\"retry changed abandoned temporary files: before=%q after=%q\", leftovers, got)\n}\n```\n\nThat's lines 246-256 in the read output (file lines 246-256). And TestConfigSaveWrapperReinstallationFailure lines 283-289 has `f.assertCallable; f.assertBackup; f.assertNoTemporaryFiles`. Wait, in my earlier read of the head test file, lines 246-256 are within InstallationFailureAndRetry, and 283-289 in ReinstallationFailure. Let me re-check: the read showed:\n\n```\n246:\t\t\tf.assertCallable(t)\n247:\t\t\tf.assertBackup(t)\n248:\t\t\tif fault != \"copy-interrupted\" {\n249:\t\t\t\tf.assertNoTemporaryFiles(t)\n250:\t\t\t} else if got := f.temporaryFiles(t); got != leftovers {\n251:\t\t\t\tt.Errorf(\n252:\t\t\t\t\t\"retry changed abandoned temporary files: before=%q after=%q\",\n253:\t\t\t\t\tleftovers,\n254:\t\t\t\t\tgot,\n255:\t\t\t\t)\n256:\t\t\t}\n```\n\nand ReinstallationFailure at 261+. Yes — I misread earlier; there's no duplication. Good.\n\nSo the diff.txt line numbers correspond: diff hunk shows `+\t\t} else if got := f.temporaryFiles(t); got != leftovers {` etc. Consistent.\n\nNow — the final check on the metadata test: `if os.Geteuid() == 0 { os.Chown(...) }` — chown to 12345:12346; as root, cp -p preserves. As non-root, the fixture file is owned by the test user; cp -p as the same user preserves. Good.\n\n`before.Mode() != after.Mode()` — os.FileMode includes perm bits + type; cp -p sets same mode. Good.\n\nModTime whole-second via Chtimes; cp -p preserves mtime. BusyBox note: comment says image's BusyBox cp — wait, comment says \"The image's BusyBox cp preserves timestamps at whole-second precision\" — the test runs on the HOST, not in the image. The comment is about why they set a whole-second timestamp. Slightly odd comment (\"The image's\") but explains the choice. Fine.\n\nNow let me also verify the **tests run as root concern**: In CI, tests run as non-root typically. Fine.\n\nNow — any Go formatting issues? The diff shows normal gofmt formatting. The `t.Errorf(\"backup mode/time changed: before=%v %v after=%v %v\",` — line length fine. gofmt: the arguments are aligned; looks fine.\n\nOne more consideration: **`strings.Fields(string(data))` for probes** — probes file contains lines \"copy:0\\nbackup:0\\n...\" → Fields splits. Fine.\n\nNow, are there any lint concerns: `golangci-lint` — `for range 2` requires Go 1.22+; check go.mod go directive.\n\nLet me check go.mod's go version quickly. Also check that `etcFRR` is used in the test (yes, line 111).\n\nLet me check go.mod go directive.",
           "time": {
-            "start": 1793472316743
+            "start": 1793472316743,
+            "end": 1793472356912
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_193486235001P6V07Vc8iU9q01",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_19347be8f001Ci3qb6SliavOZ3",
+          "callID": "call_a4da9f006b2a49f9bab41c4e",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/go.mod",
+              "limit": 15
+            },
+            "output": "<path>/source/head/go.mod</path>\n<type>file</type>\n<content>\n1: module github.com/srl-labs/containerlab\n2: \n3: go 1.26.0\n4: \n5: require (\n6: \tcharm.land/fang/v2 v2.0.1\n7: \tgithub.com/awalterschulze/gographviz v2.0.3+incompatible\n8: \tgithub.com/beevik/etree v1.8.0\n9: \tgithub.com/bramvdbogaerde/go-scp v1.6.1\n10: \tgithub.com/brunoga/deep v1.3.1\n11: \tgithub.com/charmbracelet/bubbles v1.0.0\n12: \tgithub.com/charmbracelet/bubbletea v1.3.10\n13: \tgithub.com/charmbracelet/lipgloss v1.1.0\n14: \tgithub.com/charmbracelet/log v1.0.0\n15: \tgithub.com/charmbracelet/x/term v0.2.2\n\n(Showing lines 1-15 of 281. Use offset=16 to continue.)\n</content>",
+            "title": "source/head/go.mod",
+            "metadata": {
+              "preview": "module github.com/srl-labs/containerlab\n\ngo 1.26.0\n\nrequire (\n\tcharm.land/fang/v2 v2.0.1\n\tgithub.com/awalterschulze/gographviz v2.0.3+incompatible\n\tgithub.com/beevik/etree v1.8.0\n\tgithub.com/bramvdbogaerde/go-scp v1.6.1\n\tgithub.com/brunoga/deep v1.3.1\n\tgithub.com/charmbracelet/bubbles v1.0.0\n\tgithub.com/charmbracelet/bubbletea v1.3.10\n\tgithub.com/charmbracelet/lipgloss v1.1.0\n\tgithub.com/charmbracelet/log v1.0.0\n\tgithub.com/charmbracelet/x/term v0.2.2",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/go.mod",
+                "text": "module github.com/srl-labs/containerlab\n\ngo 1.26.0\n\nrequire (\n\tcharm.land/fang/v2 v2.0.1\n\tgithub.com/awalterschulze/gographviz v2.0.3+incompatible\n\tgithub.com/beevik/etree v1.8.0\n\tgithub.com/bramvdbogaerde/go-scp v1.6.1\n\tgithub.com/brunoga/deep v1.3.1\n\tgithub.com/charmbracelet/bubbles v1.0.0\n\tgithub.com/charmbracelet/bubbletea v1.3.10\n\tgithub.com/charmbracelet/lipgloss v1.1.0\n\tgithub.com/charmbracelet/log v1.0.0\n\tgithub.com/charmbracelet/x/term v0.2.2",
+                "lineStart": 1,
+                "lineEnd": 15,
+                "totalLines": 281,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793472356922,
+              "end": 1793472356931
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1934862b8001p3PZKRHbeOpW56",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_19347be8f001Ci3qb6SliavOZ3",
+          "callID": "call_5e4eb41498ec4c00934b8aa5",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes/frr",
+              "pattern": "func \\(n \\*frr\\) PostDeploy|installConfigSaveWrapper"
+            },
+            "output": "Found 4 matches\n/source/head/nodes/frr/frr.go:\n  Line 249: func (n *frr) PostDeploy(ctx context.Context, _ *clabnodes.PostDeployParams) error {\n\n  Line 262: \treturn n.installConfigSaveWrapper(ctx)\n\n  Line 265: func (n *frr) installConfigSaveWrapper(ctx context.Context) error {\n\n\n/source/head/nodes/frr/frr_save_wrapper_test.go:\n  Line 136: \treturn n.installConfigSaveWrapper(ctx)\n",
+            "title": "func \\(n \\*frr\\) PostDeploy|installConfigSaveWrapper",
+            "metadata": {
+              "matches": 4,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793472357054,
+              "end": 1793472357064
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1934862cb0014CEY7jyJb9iNtb",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_19347be8f001Ci3qb6SliavOZ3",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 62675,
+            "input": 2284,
+            "output": 53,
+            "reasoning": 6322,
+            "cache": {
+              "read": 54016,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1934862d6001TAmNfAle0qKoAN",
+        "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+        "time": {
+          "created": 1793472357078,
+          "completed": 1793472359915
+        },
+        "parentID": "msg_193467cc0001KGE4MDCE3h67k2",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-uiDyjC",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 63280,
+          "input": 601,
+          "output": 61,
+          "reasoning": 154,
+          "cache": {
+            "read": 62464,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1934869f0001oJsZSpaRje05wj",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_1934862d6001TAmNfAle0qKoAN"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1934869f20013JAhk3oueE4z78",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_1934862d6001TAmNfAle0qKoAN",
+          "text": "Go 1.26 — `for range 2` fine.\n\nNow let me double check the mock runtime interface signature: `rt.EXPECT().Exec(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(ctx, _ string, cmd *clabexec.ExecCmd) (*clabexec.ExecResult, error))` — matches existing pattern in frr_test.go. Good.\n\nLet me also verify `clabexec.ExecCmd.GetCmd` and `NewExecResult(cmd)` usage matches existing code. frr_test.go uses `clabexec.NewExecResult(cmd)` at line 596. Good. `res.SetReturnCode` / `SetStdErr` — do these exist? Check exec package.",
+          "time": {
+            "start": 1793472358898,
+            "end": 1793472359826
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_193486d94001Mn02aq4SJMDCgd",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_1934862d6001TAmNfAle0qKoAN",
+          "callID": "call_9c2457dc695f4b62a595e4ca",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/exec",
+              "pattern": "func .*(SetReturnCode|SetStdErr|GetReturnCode|NewExecResult)"
+            },
+            "output": "Found 4 matches\n/source/head/exec/exec.go:\n  Line 75: func NewExecResult(op *ExecCmd) *ExecResult {\n\n  Line 136: func (e *ExecResult) GetReturnCode() int {\n\n  Line 140: func (e *ExecResult) SetReturnCode(rc int) {\n\n  Line 168: func (e *ExecResult) SetStdErr(data []byte) {\n",
+            "title": "func .*(SetReturnCode|SetStdErr|GetReturnCode|NewExecResult)",
+            "metadata": {
+              "matches": 4,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793472359833,
+              "end": 1793472359842
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_193486dd5001QLVX2risxLUpcQ",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_1934862d6001TAmNfAle0qKoAN",
+          "callID": "call_5a0dd640210c45eb8456a2f0",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes",
+              "pattern": "SetReturnCode|SetStdErr\\("
+            },
+            "output": "Found 6 matches\n/source/head/nodes/sonic/sonic_test.go:\n  Line 156: \t\t\t\tres.SetReturnCode(1)\n\n  Line 157: \t\t\t\tres.SetStdErr([]byte(\"no such device\"))\n\n\n/source/head/nodes/host/host.go:\n  Line 117: \texecResult.SetReturnCode(cmd.ProcessState.ExitCode())\n\n  Line 119: \texecResult.SetStdErr(errBuf.Bytes())\n\n\n/source/head/nodes/frr/frr_save_wrapper_test.go:\n  Line 121: \t\t\t\t\tres.SetReturnCode(exit.ExitCode())\n\n  Line 122: \t\t\t\t\tres.SetStdErr(out)\n",
+            "title": "SetReturnCode|SetStdErr\\(",
+            "metadata": {
+              "matches": 6,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793472359898,
+              "end": 1793472359910
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_193486de7001wwGBPllKJ69200",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_1934862d6001TAmNfAle0qKoAN",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 63280,
+            "input": 601,
+            "output": 61,
+            "reasoning": 154,
+            "cache": {
+              "read": 62464,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_193486df0001eHicXdIFm9EMO8",
+        "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+        "time": {
+          "created": 1793472359920,
+          "completed": 1793472392107
+        },
+        "parentID": "msg_193467cc0001KGE4MDCE3h67k2",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-uiDyjC",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69120,
+          "input": 268,
+          "output": 2765,
+          "reasoning": 2855,
+          "cache": {
+            "read": 63232,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_193487511001xR2Jdd3qamNTqN",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_193486df0001eHicXdIFm9EMO8"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_193487513001HBoJEPHnoNH8qY",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_193486df0001eHicXdIFm9EMO8",
+          "text": "All API usages check out.\n\nNow, one more consideration about the frr PostDeploy flow in production: does `PostDeploy` get called concurrently for multiple nodes? Each node runs its own exec in its own container — the script is per-container, no cross-node race. Within a single container, PostDeploy runs once (or twice in the existing test). Fine.\n\nLet me now also double check the frr-tests.yml workflow to see if the kind is CI-tested — not needed.\n\nOne more potential finding to consider: the **probe-based test depends on shell function shadowing of `cp`, `mv`, `printf`, `chmod`** — these shadow only within the install script's shell since interposers are prepended to args[2]. But wait — the script executed is `bash -c <interposers+script> -- <wrapper>`. The wrapper itself is only invoked by frr_probe via exec of the file — fresh process, no functions. Good.\n\nAlso: the `printf` function shadows printf — but the production script has no other printf usage. Fine.\n\nAlso `kill -KILL $$` — kills the whole bash; `process.WaitDelay` handles pipes. Good.\n\nNow — decide final findings:\n\n1. P4: `cp -p` backup loses extended attributes/ACLs/file capabilities that the base `mv` preserved. Location: nodes/frr/frr.go lines 278-282 (head). Correction: use `cp -a` (preserves mode/ownership/timestamps plus xattrs) or add a `ponytail:` ceiling comment. Impact: if a distribution's `vtysh` carries file capabilities or ACLs, the backup at `/usr/bin/vtysh.containerlab` would lack them, and the wrapper-exec'd binary could lose those properties. Trigger: an image whose `vtysh` has such attributes. Honest framing: speculative for current FRR images.\n\nHmm, actually — let me reconsider whether to include this. \"Return only supported, useful findings.\" The difference is real and the correction is concrete and tiny. P4 fits. Include.\n\n2. P4: `CHANGE:` comment prefixes read as review-session notes rather than durable comments (frr.go line 271-273, test line 25-26). Correction: rewrite as durable comments describing behavior, drop the `CHANGE:` marker. Is this \"useful\"? It's a real maintainability/clarity nit. P4. Include? The docs say \"flag confusing control flow or naming when you can explain a concrete maintenance or correctness cost.\" The cost: future readers see \"CHANGE:\" without a referenced change; comments like \"Preserve the original backup across sequential PostDeploy calls\" duplicate what the code shows but with change-log framing. Mild. I'll include as P4.\n\nHmm, is it too stylistic? \"Do not inflate stylistic preferences\" — but CHANGE: markers in committed code are genuinely noise. I'll keep it as a single P4.\n\n3. Anything else? Let me think about the **test duplication with frr_test.go's TestPostDeployConfigSaveWrapper** — I decided skip. But actually, there's overlap in a different sense: `TestPostDeployConfigSaveWrapper` (frr_test.go) exercises PostDeploy end-to-end (with addSSHKeys/setPassword mocked via no creds), while the new tests call installConfigSaveWrapper directly. They're complementary. Fine.\n\n4. Wait — one more genuine check: in the new test's `install()`, `rt.EXPECT().Exec(...)` without `.Times()`: gomock's default is exactly once. Each `install()` creates a fresh controller, so 1 call per controller. Good. But `TestConfigSaveWrapperInstallationFailureAndRetry` calls install twice → two controllers → each expects one Exec. Good.\n\n5. Coverage of `GetRealUserIDs`: in tests, `GetRealUserIDs()` runs on the host — works without root (returns current uid/gid). Fine.\n\n6. Now — one more potential issue in the production script that I should double check: **`printf '%s\\n' \"$1\"` when the wrapper contains a trailing `%`?** The wrapper is passed as an argument, not format. Fine.\n\n7. And **the wrapper's `chown %d:%d`** — Sprintf with uid/gid ints. Fine.\n\nLet me also quickly scan the docs check: does docs/manual/kinds/frr.md mention the wrapper or `/usr/bin/vtysh.containerlab`? Earlier grep of head for \"vtysh.containerlab\" showed only frr.go and the test — docs don't mention it. So no doc updates needed; the behavior is internal. Good.\n\nSchema check: no topology API change. Good.\n\nOne more idea: is there a **race between PostDeploy's wrapper install and `SaveConfig`** (clab save runs `vtysh -c ...`)? The wrapper handles non -w args via exec. During install, /usr/bin/vtysh is always valid. Fine — that's the fix's purpose.\n\nAlso, let me reconsider the first test's name/coverage: \"RemainsExecutableDuringInstall\" with probes between operations — good, it's the smallest runnable check per ponytail? It's actually a fairly elaborate test file (332 lines) for an install script. Ponytail says \"non-trivial logic leaves ONE runnable check behind... no fixtures\" — hmm, \"no frameworks, no fixtures\" refers to test infrastructure for the check. This test file has a fixture (saveWrapperFixture) and fault-injection interposers. Is this overengineering per Karpathy \"Simplicity First\"? The fault matrix (6 faults × retry) is thorough. Is it excessive? The changed code is a shell script with atomicity requirements; the tests model real failure modes. I think it's justified — the script's failure modes are exactly what the tests cover. I won't flag over-testing; it's within reason for concurrent-execution-critical code. Though 332 lines for ~13 lines of script is a lot; but the pre-existing frr_test.go already had the PostDeploy wrapper test. The new file covers failure/retry paths that the base didn't. Reasonable. Skip.\n\nActually, hold on — one thing worth double-checking: **the fault-injection tests create the fault via shell functions shadowing, but they don't model the real interruption vector the fix targets.** The real fix's motivation is FRR executing vtysh concurrently (watchfrr at container start) while PostDeploy swaps the binary. The probe mechanism models that. Good.\n\nNow, let me reconsider a possible **P3**: In `TestConfigSaveWrapperRemainsExecutableDuringInstall`, `f.install(t)` is called, then `assertNoTemporaryFiles`. But the trap uses `rm -f -- \"$backup_tmp\" \"$wrapper_tmp\"` — what if bash's `rm` is not found (PATH)? In the test env, fine.\n\nOne more: the interposers redefine `cp`, `mv`, `printf`, `chmod` — but the install script calls `mktemp`, which is not interposed — fine.\n\nI think I'm also obligated to check: **does the `trap` in the production script interact with `bash -c` and the `--` arg?** No.\n\nAlright — also check the **`.cursor/rules/karpathy-guidelines.mdc`** application: the change is surgical, reuses existing patterns. Fine.\n\nFinal decision on findings:\n- P4: xattr/ACL preservation loss in the backup copy (`cp -p` vs `mv`).\n- P4: `CHANGE:` comment markers are session artifacts.\n\nHmm, let me reconsider the first one's validity once more. Base: `mv \"/usr/bin/vtysh\" \"/usr/bin/vtysh.containerlab\"` — renames the original file, preserving EVERYTHING (xattrs, caps, ACLs, inode). Head: `cp -p` — preserves mode/ownership/timestamps only. So the backup may differ. Then the wrapper execs the backup. If the original had `security.capability` xattr (file caps), the copy lacks them → vtysh might fail to run privileged operations. FRR's vtysh: Debian package sets no caps on vtysh (frr uses frr group permissions). So impact is latent. P4, clearly framed as conditional. Also note: `cp -a` would cover it and costs nothing.\n\nActually wait — would `cp -a` alone fix xattr preservation? GNU cp -a = -dR --preserve=all, includes xattr. Yes. BusyBox cp -a doesn't preserve xattrs (BusyBox lacks xattr support in cp in most configs). But the FRR image is Debian. Suggest `cp -a`.\n\nHmm, one wrinkle: `cp -a` on an existing destination file created by mktemp — same semantics as -p for existing files. Fine.\n\nNow, also double-check: is there any chance the maintainers intentionally chose `cp -p` because the temp file already exists (mktemp) and cp would otherwise fail? `cp` onto existing file works. OK.\n\nLet me also think about whether `cp -p` vs `cp` matters for the case where /usr/bin/vtysh is a **symlink** (e.g., to /usr/lib/frr/vtysh)? Debian FRR: /usr/bin/vtysh is a real binary, not symlink. But if it were a symlink, `cp -p` follows it (copies target content) whereas `mv` renames the symlink. Then the backup would be a regular file instead of a symlink — wrapper would exec the real binary content — still functional. Slight difference; base `mv` preserved the symlink. Edge; fold into the same P4 finding? Could mention symlink semantics too. I'll mention briefly.\n\nNow, one more scan for P3-level issues in the test file... \n\nActually, wait. Let me reconsider one thing about the interposer's `mv` fault=backup case and `set -e`: `[ \"$FRR_TEST_FAULT\" != \"$stage\" ] || return 91` — when the bracket is false, the `||` returns 0 overall... no: `[ ... ] || return 91` — if bracket false → return 91 executes → function returns 91 → set -e triggers. Good.\n\nAnd fault=publish on the SECOND mv — stage=publish, return 91 → set -e exit. Good.\n\nAnd what about fault=backup also matching the second mv's stage? stage for second mv: last arg is f.path (not .containerlab) → publish. FRR_TEST_FAULT=backup ≠ publish → proceeds. Good.\n\nOne more potential edge in the interposer: `[ \"${@: -1}\" != ... ]` with only one arg? mv always has 2+ args here. Fine.\n\nNow the coverage notes:\n- Reviewed the changed script semantics line-by-line; traced callers (PostDeploy only), the existing PostDeploy wrapper test in frr_test.go, docs (no user-visible doc surface), schema (no topology API change), go.mod deps (go-cmp already direct).\n- Did not execute tests or the container flow; source-only review.\n- Fault=copy-interrupted leftovers in /usr/bin are accepted by design (asserted); noted.\n- Release notes: PR adds none; fix is to behavior introduced in 0.80's frr kind — maintainers may want an entry in the next unreleased release note (rule only triggers on docs/rn changes, so noted as coverage, not a finding). Hmm — actually should this be a P4 finding? The release-note-review rule only mandates inspection when the PR touches docs/rn/. Since it doesn't, no requirement. Coverage note only.\n\nWait, actually let me reconsider whether to also verify the second test's ReinstallationFailure assertion `after, err := os.ReadFile(f.path); if err != nil || string(after) != string(before)` — for fault=write: printf failed → wrapper_tmp removed by trap → /usr/bin/vtysh unchanged. Good. fault=chmod: same. fault=publish: mv failed → unchanged. Good.\n\nAlright. Also — should I flag that the new test file's fault tests would be affected by gomock controller cleanup when install returns error before...? No.\n\nOne last check: **`t.Context()`** — Go 1.24+ testing.T.Context. Go 1.26. Fine. And it's already used in frr_test.go? frr_test.go uses context.Background() in places; t.Context() available. Fine.\n\nLet me also double check `time` import used (line 133, 145, 303) and `syscall` (line 327). All used. `os/exec`, `path/filepath`, `strings`, `context`, `os`, `testing` used. `cmp`, `gomock`, mocks, clabexec, clabtypes used. Good — no unused imports.\n\nNow write the review. Permalinks:\nhead root: https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/\n- frr.go script: lines 271-286 → #L271-L286.\n- test comment: frr_save_wrapper_test.go lines 25-26 → #L25-L26.\n\nSeverity summary table with the two P4s.\n\nCoverage complete = true (source-only).\n\nJSON: findings array with the two P4s; coverage notes.",
+          "time": {
+            "start": 1793472361747,
+            "end": 1793472380004
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_19348bc69001fUFA2jPj93Eeyt",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_193486df0001eHicXdIFm9EMO8",
+          "text": "# Code Review: `frr` config-save wrapper installation hardening\n\n## Scope\n\nThis PR changes two files:\n\n- [`nodes/frr/frr.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L265-L305) — rewrites the `installConfigSaveWrapper` install script: the original `vtysh` binary is now backed up with `cp -p` into a `mktemp` file and published with an atomic `mv`, so `/usr/bin/vtysh` stays callable while the backup and wrapper are prepared; temporary files are cleaned by an `EXIT` trap.\n- [`nodes/frr/frr_save_wrapper_test.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr_save_wrapper_test.go#L1-L332) (new) — fault-injection and concurrency tests for the installer script.\n\n## Summary of findings\n\n| Priority | Count | Titles |\n| --- | --- | --- |\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 2 | `cp -p` backup drops attributes that the base `mv` preserved; `CHANGE:` comment markers are review-session artifacts |\n\nThe core change is correct. I traced the script end to end: the `[ ! -f /usr/bin/vtysh.containerlab ]` check is unchanged, so re-install does not wrap the wrapper (`TestPostDeployWrapper` in `frr_test.go` still covers that). The backup is published by `mv` from a `mktemp` file, so a partially copied backup can never appear at `/usr/bin/vtysh.containerlab`; the wrapper is likewise published by atomic rename after it is fully written and chmodded. On the happy path `/usr/bin/vtysh` is never absent — `cp` leaves the original in place until the final `mv -f -- \"$wrapper_tmp\" \"/usr/bin/vtysh\"` replaces it by rename, which fixes the base window where `watchfrr`-spawned `vtysh -w` would have hit a missing binary. The `EXIT` trap cleans both temporaries, and `mktemp`/`cp -p`/`mv -f --`/`chmod` are all available in the Debian-based FRR images (and BusyBox equivalents where present). The test harness correctly rewrites the `/usr/bin` and `etcFRR` placeholders in both the script (`args[2]`) and the wrapper (`args[4]`), and every fault path (`copy`, `copy-interrupted`, `backup`, `write`, `chmod`, `publish`) asserts the right post-state, including that a `SIGKILL`ed copy leaves no published backup.\n\n## Findings\n\n### P4 — `cp -p` backup loses attributes that the base `mv` preserved verbatim\n\n**Location:** [`nodes/frr/frr.go`, lines 271-282](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L271-L282)\n\n**Problem:** The base script moved the original binary itself (`mv \"/usr/bin/vtysh\" \"/usr/bin/vtysh.containerlab\"`), so the backup was the same inode with every attribute intact. The new script copies it with `cp -p`, which preserves only mode, ownership, and timestamps. Extended attributes — file capabilities (`security.capability`), ACLs, and SELinux labels — are not preserved by `cp -p` (GNU `cp` needs `--preserve=all`/`-a`), and a symlinked `vtysh` would additionally be dereferenced into a regular file.\n\n**Trigger:** Only if a distribution's `vtysh` binary carries file capabilities, ACLs, or is a symlink. The current FRR containerlab and release images do not set capabilities on `vtysh`, so this is latent, not demonstrated on today's images.\n\n**Impact:** The wrapper `exec`s `/usr/bin/vtysh.containerlab`, so any lost capability or ACL would apply to every wrapped `vtysh -w` invocation on such an image.\n\n**Correction:** Change `cp -p` to `cp -a` (a one-token change that also preserves xattrs) or, if the reduction is accepted deliberately, mark it with a `ponytail:` comment naming the ceiling as the repository's rules require for known tradeoffs.\n\n### P4 — `CHANGE:` comment prefixes are review-session artifacts, not durable comments\n\n**Location:** [`nodes/frr/frr.go`, lines 271-273](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L271-L273) and [`nodes/frr/frr_save_wrapper_test.go`, lines 25-26](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr_save_wrapper_test.go#L25-L26)\n\n**Problem:** The comments added by this PR begin with `CHANGE:`, which reads as a note addressed to a specific review iteration rather than documentation for future readers. The underlying content is otherwise good — for example, \"FRR can execute vtysh during PostDeploy. Keep its path available while preparing the original backup\" is exactly the durable rationale the code needs.\n\n**Trigger:** Every future reader of `installConfigSaveWrapper` or the test file encounters the marker with no change to relate it to once the PR merges.\n\n**Impact:** Minor reader confusion and comment churn in future diffs; no functional effect.\n\n**Correction:** Drop the `CHANGE:` prefixes and keep the explanatory text as-is, both in `frr.go` and in `frr_save_wrapper_test.go`.\n\n## Coverage notes\n\n- Coverage is source-only: I inspected the changed script, both revisions of `nodes/frr/frr.go`, the new test file, the pre-existing `TestPostDeployConfigSaveWrapper` in `nodes/frr/frr_test.go`, `docs/manual/kinds/frr.md` (no mention of the wrapper internals, so no doc update is required for this internal fix), and `schemas/clab.schema.json` (no topology API surface is touched, so no schema change applies). I did not execute the tests or run the container flow, so test-passing and runtime behavior are unverified; this review is based on static analysis.\n- Dependencies check out: `github.com/google/go-cmp/cmp` is already a direct dependency in `go.mod`, and `go.uber.org/mock/gomock`, `SetReturnCode`/`SetStdErr`/`NewExecResult` all match existing usage in `exec/exec.go` and other node tests. `go 1.26.0` supports the `for range 2` loop.\n- Leftover `vtysh.containerlab.XXXXXX` / `vtysh.wrapper.XXXXXX` files in `/usr/bin` after a `SIGKILL`ed install are accepted by design and asserted by the retry test; they accumulate only across interrupted attempts and never become the backup, so I did not raise a finding for them.\n- The pre-existing hazard that a missing `vtysh.containerlab` alongside an already-wrapped `vtysh` would back up the wrapper (leading to wrapper self-execution) exists identically in the base and was not worsened by this PR; it is not reported as a PR defect.\n- No release-note entry was added. The `.cursor/rules/release-note-review.mdc` rule only mandates inspection when the PR changes files under `docs/rn/`, which this one does not, so I did not raise a finding; maintainers may still want a note in the next unreleased release notes for the concurrency fix to the 0.80-era `frr` kind.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`cp -p` backup drops attributes that the base `mv` preserved\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/frr/frr.go\",\n        \"start\": 271,\n        \"end\": 282\n      },\n      \"problem\": \"The base script published the backup with `mv`, so `/usr/bin/vtysh.containerlab` was the original inode with every attribute intact. The new script builds the backup with `cp -p`, which preserves only mode, ownership, and timestamps; extended attributes such as file capabilities (`security.capability`) and ACLs are not preserved by `cp -p`, and a symlinked `vtysh` would additionally be dereferenced into a regular file.\",\n      \"trigger\": \"Only an image whose `vtysh` binary carries file capabilities, ACLs, or is a symlink. The current FRR containerlab and release images do not set capabilities on `vtysh`, so the impact is latent on today's images.\",\n      \"impact\": \"The installed wrapper `exec`s `/usr/bin/vtysh.containerlab`, so any lost capability or ACL would apply to every wrapped `vtysh -w` invocation on such an image.\",\n      \"suggestion\": \"Replace `cp -p` with `cp -a`, which preserves mode, ownership, timestamps, and xattrs at the same cost, or keep `cp -p` and mark the deliberate tradeoff with a `ponytail:` comment naming the ceiling.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`CHANGE:` comment markers are review-session artifacts\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/frr/frr.go\",\n        \"start\": 271,\n        \"end\": 273\n      },\n      \"problem\": \"The comments introduced by this PR in `nodes/frr/frr.go` and `nodes/frr/frr_save_wrapper_test.go` begin with `CHANGE:`, which addresses a specific review iteration rather than future readers. The explanatory text itself is accurate and useful.\",\n      \"trigger\": \"Every future reader of `installConfigSaveWrapper` or the new test file encounters the marker with no change to relate it to once the PR merges.\",\n      \"impact\": \"Minor reader confusion and avoidable comment churn in future diffs; no functional effect.\",\n      \"suggestion\": \"Drop the `CHANGE:` prefixes in `nodes/frr/frr.go` lines 271-273 and `nodes/frr/frr_save_wrapper_test.go` lines 25-26 and keep the remaining explanatory text unchanged.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: the changed install script in `nodes/frr/frr.go`, the new `nodes/frr/frr_save_wrapper_test.go`, the pre-existing `TestPostDeployConfigSaveWrapper` in `nodes/frr/frr_test.go`, `docs/manual/kinds/frr.md`, and `schemas/clab.schema.json` were inspected; no tests or containers were executed, so runtime behavior is unverified.\",\n      \"The atomicity design was traced statically: the backup is published by `mv` from a `mktemp` file and the wrapper likewise, `/usr/bin/vtysh` is never absent on the happy path, and the `EXIT` trap cleans both temporaries.\",\n      \"Dependencies and APIs check out: `github.com/google/go-cmp/cmp` is already a direct dependency in `go.mod`, and `NewExecResult`/`SetReturnCode`/`SetStdErr` match existing usage in `exec/exec.go`.\",\n      \"Leftover `vtysh.containerlab.XXXXXX` and `vtysh.wrapper.XXXXXX` files after a `SIGKILL`ed install are accepted by design and asserted by the retry test; they never become the backup, so no finding was raised.\",\n      \"The pre-existing hazard of backing up an already-wrapped `vtysh` when `vtysh.containerlab` is missing exists identically in the base and was not worsened by this PR.\",\n      \"No release-note entry was added; `.cursor/rules/release-note-review.mdc` only mandates inspection for changes under `docs/rn/`, which this PR does not touch, so this is noted only as a possible maintainer follow-up.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793472380009,
+            "end": 1793472392099
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19348eba7001iiGIFsZcF0Ttdc",
+          "sessionID": "ses_e6cb98a0fffe1a90hyttNW8QgS",
+          "messageID": "msg_193486df0001eHicXdIFm9EMO8",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 69120,
+            "input": 268,
+            "output": 2765,
+            "reasoning": 2855,
+            "cache": {
+              "read": 63232,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - `cp -p` backup drops attributes that the base `mv` preserved** | [nodes/frr/frr.go:271-282](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L271-L282) |\n| **P4 - `CHANGE:` comment markers are review-session artifacts** | [nodes/frr/frr.go:271-273](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L271-L273) |\n\n## P4 - `cp -p` backup drops attributes that the base `mv` preserved\n\n**Location:** [nodes/frr/frr.go:271-282](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L271-L282)\n\n**Problem:** The base script published the backup with `mv`, so `/usr/bin/vtysh.containerlab` was the original inode with every attribute intact. The new script builds the backup with `cp -p`, which preserves only mode, ownership, and timestamps; extended attributes such as file capabilities &#40;`security.capability`&#41; and ACLs are not preserved by `cp -p`, and a symlinked `vtysh` would additionally be dereferenced into a regular file.\n\n**Trigger:** Only an image whose `vtysh` binary carries file capabilities, ACLs, or is a symlink. The current FRR containerlab and release images do not set capabilities on `vtysh`, so the impact is latent on today&#39;s images.\n\n**Impact:** The installed wrapper `exec`s `/usr/bin/vtysh.containerlab`, so any lost capability or ACL would apply to every wrapped `vtysh -w` invocation on such an image.\n\n**Suggested correction:** Replace `cp -p` with `cp -a`, which preserves mode, ownership, timestamps, and xattrs at the same cost, or keep `cp -p` and mark the deliberate tradeoff with a `ponytail:` comment naming the ceiling.\n\n\n## P4 - `CHANGE:` comment markers are review-session artifacts\n\n**Location:** [nodes/frr/frr.go:271-273](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L271-L273)\n\n**Problem:** The comments introduced by this PR in [`nodes/frr/frr.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L1-L1) and [`nodes/frr/frr_save_wrapper_test.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr_save_wrapper_test.go#L1-L1) begin with `CHANGE:`, which addresses a specific review iteration rather than future readers. The explanatory text itself is accurate and useful.\n\n**Trigger:** Every future reader of `installConfigSaveWrapper` or the new test file encounters the marker with no change to relate it to once the PR merges.\n\n**Impact:** Minor reader confusion and avoidable comment churn in future diffs; no functional effect.\n\n**Suggested correction:** Drop the `CHANGE:` prefixes in [`nodes/frr/frr.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L1-L1) lines 271-273 and [`nodes/frr/frr_save_wrapper_test.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr_save_wrapper_test.go#L1-L1) lines 25-26 and keep the remaining explanatory text unchanged.\n\n\n## Coverage\n\n- Source-only review&#58; the changed install script in [`nodes/frr/frr.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr.go#L1-L1), the new [`nodes/frr/frr_save_wrapper_test.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr_save_wrapper_test.go#L1-L1), the pre-existing `TestPostDeployConfigSaveWrapper` in [`nodes/frr/frr_test.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/nodes/frr/frr_test.go#L1-L1), [`docs/manual/kinds/frr.md`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/docs/manual/kinds/frr.md#L1-L1), and [`schemas/clab.schema.json`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/schemas/clab.schema.json#L1-L1) were inspected; no tests or containers were executed, so runtime behavior is unverified.\n- The atomicity design was traced statically&#58; the backup is published by `mv` from a `mktemp` file and the wrapper likewise, `/usr/bin/vtysh` is never absent on the happy path, and the `EXIT` trap cleans both temporaries.\n- Dependencies and APIs check out&#58; `github.com/google/go-cmp/cmp` is already a direct dependency in [`go.mod`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/go.mod#L1-L1), and `NewExecResult`/`SetReturnCode`/`SetStdErr` match existing usage in [`exec/exec.go`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/exec/exec.go#L1-L1).\n- Leftover `vtysh.containerlab.XXXXXX` and `vtysh.wrapper.XXXXXX` files after a `SIGKILL`ed install are accepted by design and asserted by the retry test; they never become the backup, so no finding was raised.\n- The pre-existing hazard of backing up an already-wrapped `vtysh` when `vtysh.containerlab` is missing exists identically in the base and was not worsened by this PR.\n- No release-note entry was added; [`.cursor/rules/release-note-review.mdc`](https://github.com/srl-labs/containerlab/blob/7d2236b24bf6dcdd313993b4d8b4029e6d2a18e3/.cursor/rules/release-note-review.mdc#L1-L1) only mandates inspection for changes under `docs/rn/`, which this PR does not touch, so this is noted only as a possible maintainer follow-up.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`cp -p` backup drops attributes that the base `mv` preserved\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/frr/frr.go\",\n        \"start\": 271,\n        \"end\": 282\n      },\n      \"problem\": \"The base script published the backup with `mv`, so `/usr/bin/vtysh.containerlab` was the original inode with every attribute intact. The new script builds the backup with `cp -p`, which preserves only mode, ownership, and timestamps; extended attributes such as file capabilities (`security.capability`) and ACLs are not preserved by `cp -p`, and a symlinked `vtysh` would additionally be dereferenced into a regular file.\",\n      \"trigger\": \"Only an image whose `vtysh` binary carries file capabilities, ACLs, or is a symlink. The current FRR containerlab and release images do not set capabilities on `vtysh`, so the impact is latent on today's images.\",\n      \"impact\": \"The installed wrapper `exec`s `/usr/bin/vtysh.containerlab`, so any lost capability or ACL would apply to every wrapped `vtysh -w` invocation on such an image.\",\n      \"suggestion\": \"Replace `cp -p` with `cp -a`, which preserves mode, ownership, timestamps, and xattrs at the same cost, or keep `cp -p` and mark the deliberate tradeoff with a `ponytail:` comment naming the ceiling.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`CHANGE:` comment markers are review-session artifacts\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/frr/frr.go\",\n        \"start\": 271,\n        \"end\": 273\n      },\n      \"problem\": \"The comments introduced by this PR in `nodes/frr/frr.go` and `nodes/frr/frr_save_wrapper_test.go` begin with `CHANGE:`, which addresses a specific review iteration rather than future readers. The explanatory text itself is accurate and useful.\",\n      \"trigger\": \"Every future reader of `installConfigSaveWrapper` or the new test file encounters the marker with no change to relate it to once the PR merges.\",\n      \"impact\": \"Minor reader confusion and avoidable comment churn in future diffs; no functional effect.\",\n      \"suggestion\": \"Drop the `CHANGE:` prefixes in `nodes/frr/frr.go` lines 271-273 and `nodes/frr/frr_save_wrapper_test.go` lines 25-26 and keep the remaining explanatory text unchanged.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: the changed install script in `nodes/frr/frr.go`, the new `nodes/frr/frr_save_wrapper_test.go`, the pre-existing `TestPostDeployConfigSaveWrapper` in `nodes/frr/frr_test.go`, `docs/manual/kinds/frr.md`, and `schemas/clab.schema.json` were inspected; no tests or containers were executed, so runtime behavior is unverified.\",\n      \"The atomicity design was traced statically: the backup is published by `mv` from a `mktemp` file and the wrapper likewise, `/usr/bin/vtysh` is never absent on the happy path, and the `EXIT` trap cleans both temporaries.\",\n      \"Dependencies and APIs check out: `github.com/google/go-cmp/cmp` is already a direct dependency in `go.mod`, and `NewExecResult`/`SetReturnCode`/`SetStdErr` match existing usage in `exec/exec.go`.\",\n      \"Leftover `vtysh.containerlab.XXXXXX` and `vtysh.wrapper.XXXXXX` files after a `SIGKILL`ed install are accepted by design and asserted by the retry test; they never become the backup, so no finding was raised.\",\n      \"The pre-existing hazard of backing up an already-wrapped `vtysh` when `vtysh.containerlab` is missing exists identically in the base and was not worsened by this PR.\",\n      \"No release-note entry was added; `.cursor/rules/release-note-review.mdc` only mandates inspection for changes under `docs/rn/`, which this PR does not touch, so this is noted only as a possible maintainer follow-up.\"\n    ]\n  }\n}\n```"
 }
