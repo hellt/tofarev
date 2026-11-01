@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "1566c3b8e3cb58c82d238dedbfa3b319249bab0a",
-  "updatedAt": "2026-11-01T09:25:23.687Z",
+  "updatedAt": "2026-11-01T09:27:38.688Z",
   "state": "running",
   "info": {
     "id": "ses_e699c4d5affesVdojBYeGu9Y78",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 667958,
-      "output": 18024,
-      "reasoning": 42242,
+      "input": 708532,
+      "output": 20060,
+      "reasoning": 50654,
       "cache": {
-        "read": 1994048,
+        "read": 2182272,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793524478630,
-      "updated": 1793525123679
+      "updated": 1793525241410
     }
   },
   "messages": [
@@ -8044,9 +8044,713 @@
         "id": "msg_1966d8a5a001k31G4URdjKx60b",
         "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
         "time": {
-          "created": 1793525123674
+          "created": 1793525123674,
+          "completed": 1793525171310
         },
         "parentID": "msg_1966d15340017uxeI3HzXgkXZv",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-THZH75",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 35426,
+          "input": 3435,
+          "output": 112,
+          "reasoning": 4231,
+          "cache": {
+            "read": 27648,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966d91eb001yS9QyZkyH0GNAV",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966d8a5a001k31G4URdjKx60b"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966d91ed001oyibnYsVCw4VtA",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966d8a5a001k31G4URdjKx60b",
+          "text": "Now I see it clearly: in `core/events/parity_test.go` line 470-472, the `lo` test case has NO MAC in the `InterfaceEventData` (empty MAC), and the snapshot built from it has `MAC: \"\"` — so the Docker side reports no mac for lo. The test constructs both sides from the same literals with the MAC empty. In reality, Docker's netlink watcher reports `mac: 00:00:00:00:00:00` for `lo` (netlink always has a 6-byte zero HardwareAddr for lo → `interfaceSnapshotAttributes` includes it since it's non-empty).\n\nSo my P3 finding stands: the c9s side drops the zero MAC (`iface_stats.go:439-442`), while the real Docker side reports `00:00:00:00:00:00`; the parity test masks the difference by feeding the Docker side the same empty MAC. Same for `notpresent`/`lowerlayerdown`: the parity test's `srl1` case feeds `OperState: \"lower-layer-down\"` into the docker snapshot (`tt.data.OperState` → `snapshot.OperState`), so the docker side in the test uses the dashed name too — masking the real divergence where the netlink library would produce `lowerlayerdown`.\n\nThis confirms both findings and the \"tests construct both sides with the same literals\" mechanism precisely:\n- Interface parity test: `snapshot := ifaceSnapshot{... OperState: tt.data.OperState, MAC: tt.data.MAC}` (parity_test.go:477-480) — the docker side's state and mac come from the c9s-shaped data, so any vocabulary difference between the c9s mapping and the netlink library is invisible to the test.\n- Container parity test: `state` comes from `tt.state` (a c9s-constructed literal) rather than from a real netlink/docker value.\n\nFor the container events: docker's actual `state` attribute... Docker events don't have a \"state\" attribute at all (dockerOnlyContainerAttributes doesn't include \"state\" — the c9s `state` is a c9s addition, documented). So container state vocabulary isn't a parity issue; only the interface `state` attribute is, because Docker events DO carry `state` (from `attrs.OperState.String()`).\n\nWait — one more check: for Docker interface events, is the `state` attribute really `OperState.String()`? interfaceSnapshotAttributes sets attributes[\"state\"] = snapshot.OperState; snapshotFromLink sets snapshot.OperState = attrs.OperState.String() (netlink.go:951). The String() method of netlink.LinkOperState: values are `LinkOperState: \"up\"`, `\"down\"`, `\"notpresent\"`... Let me recall the actual vishvananda/netlink source:\n\n```go\ntype LinkOperState int\n\nconst (\n\tOperUnknown = iota (0)\n\tOperNotPresent (1)\n\tOperDown (2)\n\tOperLowerLayerDown (3)\n\tOperTesting (4)\n\tOperDormant (5)\n\tOperUp (6)\n)\n\nfunc (o LinkOperState) String() string {\n\tswitch o {\n\tcase OperNotPresent:\n\t\treturn \"notPresent\"\n\tcase OperDown:\n\t\treturn \"down\"\n\t...\n```\n\nHmm — actually I need to be careful. Let me recall: in vishvananda/netlink, `link.go`:\n\n```go\nfunc (o LinkOperState) String() string {\n\tswitch o {\n\tcase OperNotPresent:\n\t\treturn \"notPresent\"\n\tcase OperDown:\n\t\treturn \"down\"\n\tcase OperLowerLayerDown:\n\t\treturn \"lowerlayerdown\"\n\tcase OperTesting:\n\t\treturn \"testing\"\n\tcase OperDormant:\n\t\treturn \"dormant\"\n\tcase OperUp:\n\t\treturn \"up\"\n\tdefault:\n\t\treturn \"unknown\"\n\t}\n}\n```\n\nI believe this is right: the library uses camelCase \"notPresent\" and lowercase \"lowerlayerdown\" (matching the kernel's naming which is all lowercase in sysfs: \"notpresent\", \"lowerlayerdown\"). Hmm, actually \"notPresent\" with capital P — yes, I'm fairly confident that's the netlink library spelling. And \"lowerlayerdown\" all-lowercase.\n\nSo for the c9s mapping:\n- \"notpresent\" (sysfs) → \"not-present\": diverges from netlink \"notPresent\". Both diverge from each other.\n- \"lowerlayerdown\" (sysfs) → \"lower-layer-down\": diverges from netlink \"lowerlayerdown\". Before this PR, c9s passed the sysfs value through, which happened to MATCH the library string. So this PR actively broke parity for these two states.\n\nNote: \"lower-layer-down\" — where does the dashed convention come from? Maybe from Docker's own event output? No — Docker's interface events come from the netlink watcher. The dashed forms look like a human-readable convention invented in this PR. The comment on line 460-461 claims this is \"the way netlink ... name[s] it\" — incorrect.\n\nFor `notpresent`: which sysfs value occurs in practice? IF_OPER_UNREPRESENTED... wait — actually \"notpresent\" maps from IF_OPER_UNPRESENT=1. In containers, veth links are usually up/down/lowerlayerdown/unknown. notpresent is rare. lowerlayerdown is common (carrier down, e.g., peer stopped — IF_OPER_LOWERLAYERDOWN=3; though for veth with peer down, operstate is actually \"down\"? Hmm — veth operstate: when the peer is down, the local end reports \"lowerlayerdown\" if... For veth pairs: setting the peer down makes the local end's operstate \"lowerlayerdown\"? Actually veth: carrier follows the peer; ifOperStates: when peer is down, the remote end gets NO-CARRIER → operstate \"lowerlayerdown\"? Hmm, for veth, admin down of peer → local sees carrier off → RFC 2863: LowerLayerDown if a lower-layer interface is down. For veth, the \"lower layer\" is the peer. So yes, operstate = lowerlayerdown when the peer is down. This matches the docs' described scenario: \"When a node stops, Docker reports its peers' interfaces as lower-layer-down\" — and the robot test asserts exactly that c9s reports lower-layer-down.\n\nSo the trigger is exactly the scenario the PR's docs and robot test describe: stopping a node → peer links report the state. Docker: \"lowerlayerdown\". c9s after this PR: \"lower-layer-down\". Mismatch on the central scenario of the PR.\n\nSeverity: P2. It's a correctness defect in the PR's core deliverable with a routine trigger, but not a crash/security/merge-blocker. The correction is small: make `netlinkOperState` return exactly the netlink library's strings (pass \"lowerlayerdown\" through; map \"notpresent\" → the library's exact string) and pin the mapping with a test that imports the library constants (`netlink.LinkOperState(i).String()`), updating tests/docs/robot accordingly. This is the smallest root-cause fix.\n\nCaveat: I could not read the dependency source (module cache not readable). I should state this in the finding/coverage as a verification limit — but my confidence is high based on the library's well-known String() implementation. I'll phrase the correction to \"verify against the pinned vishvananda/netlink version and mirror its String() vocabulary\".\n\nFinding P3 (lo mac): also confirmed — the parity test's lo case omits MAC on both sides (lines 470-472 + 477-480), so real Docker behavior (mac \"00:00:00:00:00:00\" from netlink) is never compared. And this IS a behavior change vs. previous c9s (which reported the raw sysfs address for lo in inspect; for events the old code didn't emit interface events at all — events are new in c9s. So the \"regression\" framing applies only to inspect: previously `lo.InterfaceMAC` was the sysfs value; now empty). The main issue: parity with Docker for `lo` (and any all-zero-MAC interface, e.g. `tun`/`gretap` devices in containers — rare). Suggest reporting the zero MAC as netlink does (drop the `zeroMAC` special case), or if deliberately hiding it, then have the parity test feed the real netlink value so the divergence is at least a conscious, asserted exception. P3.\n\nFinding P4 (docs): `docs/manual/clabernetes/runtime.md:916` — \"It reports the interfaces a Docker container of the same node kind has, named as in that container\" — then limits to lab links + eth0 + lo. Interfaces the node itself creates (e.g. `ip link add br0` inside a linux node) are reported by Docker's netlink watcher but never by c9s. Suggest a clarifying sentence. P4.\n\nAnything else? Let me do a final sanity pass on the candidate list:\n\n1. netlinkOperState vocabulary — P2. ✓\n2. zeroMAC filter — P3. ✓\n3. Docs interface coverage — P4. ✓\n4. c9s event format breaking change (phase/pod_ip removed, actions renamed) — the docs are updated; this is a deliberate format change for a relatively new feature. I'll note in coverage notes, not a finding.\n5. Concurrency/perf — clean.\n6. Schema — no clab.schema.json impact (c9s CR annotations are outside that schema's domain; inspect fields pre-exist). Coverage note.\n7. Tests — new parity tests are substantial but share literals between sides, which is exactly what masks findings 1 and 2. That's part of findings 1/2; also a coverage note.\n\nWait, one more thing about finding 2's test-masking claim: `assertAttributeParity(t, docker, c9s, nil)` at line 498 checks every docker attribute exists in c9s. For lo: docker snapshot has MAC \"\" → no mac attribute → c9s lacking mac is fine. If the test had used the real netlink value (zeroMAC), docker would emit mac and c9s (with the filter) would omit it → test fails. So the fix would naturally also fix the test: feed the real MAC. Good, coherent suggestion.\n\nAlso, is the `zeroMAC` filter perhaps needed because sysfs reports \"00:00:00:00:00:00\" for some interfaces that netlink reports differently? No — netlink also reports the zero address; `len(HardwareAddr) > 0` is true for lo (6 zero bytes). So dropping the filter restores parity exactly.\n\nHmm, one more consideration for finding 2 severity: does it materially impact? `inspect interfaces` for a linux node: lo's mac shown as empty vs Docker showing 00:00:00:00:00:00. Also events: no mac attr for lo from c9s vs mac present from Docker. Minor but real, introduced by this PR, and masked by the test. P3 seems right.\n\nNow — one more possible issue I should double check: `netlinkOperState` maps `\"\"` → \"unknown\". Where does an empty OperState come from? Shell-less nodes: `data.OperState = \"\"` explicitly. Docker side for shell-less: does the docker watcher report interfaces for shell-less nodes? In LabRuntime events, the docker side uses `LabRuntimeContainer` — the netlink watcher watches the container's netns; shell-less containers (e.g., no /proc?) — clab shell-less nodes (like \"host\" kind? or kinds without shell) — the docker runtime can still list interfaces via the netns path? Actually shell-less nodes are ones where the runtime can't exec; the netlink watcher attaches to the netns directly, which works without a shell. So docker reports their interfaces; c9s poller can't exec and synthesizes stats-only events with OperState \"\". But the poller also emits create/snapshot events for them? From the summary: \"shell-less nodes emit stats events only\" — hmm, and the state sampling: processStates runs regardless of shell (it's from the sysfs sample which requires exec). If exec fails → no states → only stats events. So for shell-less nodes on c9s: stats events with no state attr; on docker: full events with state. The `\"\"`→\"unknown\" mapping: if a with-shell node's sample had empty operstate (shouldn't happen), it'd map to \"unknown\". Fine.\n\nBut wait — for shell-less nodes, does the poller emit create/snapshot events with `interfaceEventData` where OperState = \"\"→\"unknown\"? If the node has no shell, `sampleStates` fails → `hasStates` false → InspectInterfaces synthesizes... and processStates only runs when the sample succeeded. So no. Fine.\n\nOne more: the summary said \"stats events for shell-less nodes: `data.OperState = \"\"` set explicitly after interfaceEventData (which would map \"\"→\"unknown\"); `\"state\": \"\"` dropped by mergedEventAttributes — non-issue\". OK.\n\nNow, is there anything about `interfaceEventData` being called with `alias` from topology when the clabwire link listing is empty (list failure) — alias empty, fine.\n\nI'm confident in the three findings. Let me also double-check the exact locations for the findings' line anchors:\n\nFinding 1: labruntime/clabernetes/iface_stats.go lines 460-473 (comment + function). Head permalink: https://github.com/srl-labs/containerlab/blob/1566c3b8e3cb58c82d238dedbfa3b319249bab0a/labruntime/clabernetes/iface_stats.go#L460-L473\nSupporting: core/events/netlink.go:951 (snapshot.OperState = attrs.OperState.String()), core/list.go:154, core/events/parity_test.go:437-519 (TestInterfaceEventParity constructs both sides from tt.data), labruntime/clabernetes/event_parity_test.go:92-96 (TestNetlinkOperState asserts dashed mapping), tests/14-clabernetes/01-linux-lifecycle.robot (asserts lower-layer-down), docs/cmd/events.md.\n\nLet me verify netlink.go:951 and list.go:154 exact lines quickly... I verified these in earlier sessions per the summary. netlink.go:951 `snapshot.OperState = attrs.OperState.String()`; core/list.go:154 `InterfaceState: attrs.OperState.String()`. I'll trust the prior verification (recorded in summary).\n\nFinding 2: iface_stats.go lines 439-442 (zeroMAC filter) + comment 430-433 claims \"loopback has no hardware address\". Test masking: core/events/parity_test.go:470-472 (lo case with no MAC) and 477-480 (snapshot from tt.data). Also event_parity_test.go:23 sets MAC: zeroMAC in c9s test data — but wait, that's the c9s-side test data for event_parity_test.go's own test; there MAC zeroMAC is fed into interfaceEventData which drops it. Hmm — event_parity_test.go line 23 `{Name: \"lo\", Index: 1, MTU: 65536, MAC: zeroMAC, OperState: \"unknown\"}` — this feeds the poller test; expected event then lacks mac. OK consistent with the filter.\n\nCorrection for finding 2: remove the zeroMAC → \"\" mapping (report `00:00:00:00:00:00` like netlink does), update the comment (\"loopback has no hardware address\" is not what netlink reports), and have TestInterfaceEventParity's lo case use the real zero MAC so parity is actually asserted.\n\nFinding 3: docs/manual/clabernetes/runtime.md:916 area. Correction: add a sentence that only lab link interfaces, the management interface and loopback are reported; interfaces the node creates itself are not (they are with Docker).\n\nDiagram: a small flowchart could illustrate the divergence in finding 1? Probably not necessary; prose is clear. Skip diagram.\n\nCoverage notes:\n- Full diff (26 files) reviewed across sessions; heads of all touched source files inspected; callers traced (core/events/stream.go, core/list.go, core/labruntime.go).\n- Tests were NOT executed (read-only review); Go module cache is outside the permitted paths, so vishvananda/netlink v1.3.1's `LinkOperState.String()` was not read directly; finding 1's exact spellings (\"notPresent\", \"lowerlayerdown\") should be verified against the pinned dependency before fixing.\n- No clab.schema.json changes needed: the PR adds c9s CR annotations and populates pre-existing inspect fields, outside that schema's domain.\n- Deliberate c9s event format change (phase/pod_ip attributes removed; actions up/down → create/update/delete/stats/snapshot) is fully documented in docs/cmd/events.md; no migration note for consumers of the old format — accepted as a deliberate breaking change, noted here only.\n- New parity tests construct both sides from shared literals; real netlink values (lo MAC, operstate vocabulary) never enter the comparison, which is how findings 1–2 escape test coverage.\n- Concurrency, timer coalescing, backpressure (cap-256 `changed` channel), error-channel sizing, and per-interval API call patterns were audited and found sound.\n\nWait — I should double check one claim before finalizing: \"the previous c9s behavior reported the raw sysfs value\". Before this PR, c9s had no interface events at all (this PR introduces them). For `inspect interfaces`, the previous code set `InterfaceMAC = state.MAC` (raw sysfs, so lo showed 00:00:00:00:00:00) and `OperState` raw sysfs (\"lowerlayerdown\"). So finding 1 affects events (new feature) — not a regression for inspect state, but inspect's state value also CHANGES from \"lowerlayerdown\" to \"lower-layer-down\" in this PR, which itself breaks anyone using inspect today, and diverges from docker's inspect. I'll fold that into finding 1's impact.\n\nAlso, verify the claim \"docs promise parity\": docs/cmd/events.md says the interface state \"is the same as with Docker\" or similar. From the diff summary: docs promise \"netlink state names ... the same as with Docker\". Let me quickly grep docs for the wording to cite accurately. Actually, I have the runtime.md:916 match. Let me grep docs/cmd/events.md for \"state\" wording on interface events.\n\nLet me do that final grep and also check the old base behavior for inspect's lo mac to be sure (grep in base? /source/base exists? The manifest mentioned /source as the repo snapshot — base files... The working directory /tmp/tofarev-review-THZH75 has data dirs. /source contains head at /source/... hmm, actually /source IS the head snapshot (paths like /source/head/...). Wait — in the grep results above, paths are /source/head/... so /source contains head/ and presumably base/ directories. Let me check /source structure for base files to verify the previous inspect behavior (InterfaceMAC raw).\n\nActually, from the diff itself I saw: `-\t\tInterfaceMAC: state.MAC` in the old iface_stats (removed lines) — the diff hunk for iface_stats.go @3399 showed removed lines with `ActorID: c9sNodeKey(...)` etc. I recall the old `ifaceStateDetails` had `details.InterfaceMAC = state.MAC`. I can verify with grep on /source/base/labruntime/clabernetes/iface_stats.go for InterfaceMAC.",
+          "time": {
+            "start": 1793525125613,
+            "end": 1793525170355
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966e40b6001Da1aBUfi2SNmJ3",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966d8a5a001k31G4URdjKx60b",
+          "text": "I have everything I need. Two final verifications: the docs wording on interface-state parity, and the previous c9s behavior for `lo`'s MAC (to confirm the `zeroMAC` filter is a change, not pre-existing).",
+          "time": {
+            "start": 1793525170358,
+            "end": 1793525171293
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966e43be001M6oVFiNDvTSOrg",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966d8a5a001k31G4URdjKx60b",
+          "callID": "call_11ab5519f62e4c5897344f26",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/cmd/events.md",
+              "pattern": "lower-layer|state of the interface|netlink|same as"
+            },
+            "output": "Found 8 matches\n/source/head/docs/cmd/inspect/interfaces.md:\n  Line 8: With the [c9s runtime](../../manual/clabernetes/runtime.md#interface-events), the listing covers the interfaces a Docker container of the node has: the lab link interfaces of each running node (the ones [`capture`](../capture.md) accepts) with the alias the topology used, the management interface `eth0` and the loopback `lo`, with the MAC address, index, MTU and operational state read in the node's device container. The pod's own interfaces are not listed. The node names follow `inspect` (`<lab>-<node>`), and the JSON fields and values (`veth`/`device`, netlink state names) are the same as with Docker. `eth0` and `lo` cannot be captured on c9s.\n\n\n/source/head/docs/cmd/events.md:\n  Line 5: The `events` command streams lifecycle updates for every Containerlab resource and augments them with interface change notifications collected from the container network namespaces. The output combines the selected runtime's event feed (for example Docker) with the netlink information that powers `containerlab inspect interfaces`, so you can observe container activity and interface state changes in real time without selecting a specific lab.\n\n  Line 31: - **Interface events** use type `interface` and `origin=netlink` in the attribute list. They also report interface-specific data such as `ifname`, `state`, `mtu`, `mac`, `type`, `alias`, and the lab label. The actor is still the container short ID, and the container name is supplied in the attributes (`name=...`).\n\n  Line 43: 2024-07-01T11:02:57.004321000Z interface create 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 44: 2024-07-01T11:02:57.104512000Z interface update 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=9000, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 46: 2024-07-01T11:05:13.018456000Z interface delete 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 56: 2024-07-01T11:02:55.912678000Z interface snapshot 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 86: inside the device containers, not through local host netlink. The stream covers\n",
+            "title": "lower-layer|state of the interface|netlink|same as",
+            "metadata": {
+              "matches": 8,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793525171140,
+              "end": 1793525171151
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966e4455001oO4c8XffsUJNhw",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966d8a5a001k31G4URdjKx60b",
+          "callID": "call_ee37d9313abe44ee981eb7c7",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/base/labruntime/clabernetes/iface_stats.go",
+              "pattern": "InterfaceMAC|OperState"
+            },
+            "output": "Found 16 matches\n/source/base/labruntime/clabernetes/runtime_gaps_test.go:\n  Line 447: \tup := c9sIfaceState{Name: \"eth1\", Index: 3, MTU: 9500, OperState: \"up\", Flags: 0x1003}\n\n  Line 448: \tdown := c9sIfaceState{Name: \"eth1\", Index: 3, MTU: 9500, OperState: \"down\", Flags: 0x1002}\n\n  Line 449: \teth2 := c9sIfaceState{Name: \"eth2\", Index: 4, OperState: \"up\", Flags: 0x1003}\n\n\n/source/base/labruntime/clabernetes/iface_stats.go:\n  Line 70: \tOperState string\n\n  Line 79: \tif s.OperState == \"up\" || (s.OperState == \"unknown\" && s.Flags&iffUp != 0) {\n\n  Line 231: \t\t\tiface.state.OperState = interfaceStateNotPresent\n\n  Line 362: \t\t\tprevious.state.OperState == iface.OperState:\n\n  Line 378: \t\tiface.state.OperState = interfaceStateNotPresent\n\n  Line 413: \t\t\"state\":     iface.OperState,\n\n  Line 433: \tif iface.OperState == interfaceStateNotPresent {\n\n  Line 483: \t\t\tOperState: strings.ToLower(strings.TrimSpace(fields[4])),\n\n  Line 494: \t\tif state.OperState == \"\" {\n\n  Line 495: \t\t\tstate.OperState = \"unknown\"\n\n\n/source/base/labruntime/clabernetes/capture_interfaces.go:\n  Line 122: \t\t\t\tdetails.InterfaceMAC = state.MAC\n\n  Line 125: \t\t\t\tdetails.InterfaceState = state.OperState\n\n\n/source/base/labruntime/clabernetes/capture_test.go:\n  Line 738: \t\tfirst.InterfaceMAC != \"aa:c1:ab:00:00:01\" || first.InterfaceIndex != 12 ||\n",
+            "title": "InterfaceMAC|OperState",
+            "metadata": {
+              "matches": 16,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793525171290,
+              "end": 1793525171303
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1966e4469001TrQQ6ppqRffwGL",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966d8a5a001k31G4URdjKx60b",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 35426,
+            "input": 3435,
+            "output": 112,
+            "reasoning": 4231,
+            "cache": {
+              "read": 27648,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1966e4486001tIHJx0o7INvoJx",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525171334,
+          "completed": 1793525179682
+        },
+        "parentID": "msg_1966d15340017uxeI3HzXgkXZv",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-THZH75",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 37206,
+          "input": 33748,
+          "output": 66,
+          "reasoning": 512,
+          "cache": {
+            "read": 2880,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966e509d001bSuPwCK61T79dj",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e4486001tIHJx0o7INvoJx"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966e509f001h5xUCofwuRk44b",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e4486001tIHJx0o7INvoJx",
+          "text": "Very interesting — the base (`/source/base/labruntime/clabernetes/iface_stats.go`) has:\n- Line 231: `iface.state.OperState = interfaceStateNotPresent` — there's a pre-existing `interfaceStateNotPresent` constant. Let me check its value! And line 433 uses it too. Also line 413: `\"state\": iface.OperState` in event attributes — wait, the base has interface events already? Line 413 sets a \"state\" attribute... Hmm, the base had some event emission (maybe interface events existed in base in a different form — the diff removed lines 4085-4107 showing old event building with rx_bps etc. — that was the OLD stats event builder). So c9s interface events DID exist before this PR (the diff showed old code being replaced). The docs in the diff summary said docs/cmd/events.md@1074 hunk — modified, not new. So the PR reworks existing c9s interface events.\n\nSo what is `interfaceStateNotPresent` in base? Let me check its value — if the base used \"not-present\" already, then finding 1's claim \"previously c9s passed raw sysfs\" is wrong for notpresent (base already mapped to a constant). And what about base's handling of lowerlayerdown? Let me grep base for interfaceStateNotPresent and interfaceState values, and check base's `interfaceEventData`-equivalent and base's capture_interfaces InterfaceState (raw?).\n\nBase capture_interfaces.go:125: `details.InterfaceState = state.OperState` — raw sysfs value (e.g. \"lowerlayerdown\"), and :122 InterfaceMAC = state.MAC (raw, including lo's zero MAC).\n\nSo base inspect reported raw sysfs states (\"lowerlayerdown\") and lo's real MAC. The head now maps states to dashed and drops lo's MAC. Both are changes to existing inspect behavior, plus divergences from Docker. This strengthens both findings: they're regressions for existing c9s consumers of `inspect interfaces`, not just parity slips in the new events.\n\nLet me check `interfaceStateNotPresent` value in base — if base also mapped \"notpresent\" for poller-synthesized states. Line 231/378 set `state.OperState = interfaceStateNotPresent` — where's that? Probably when reading /proc net for shell-less... Let me grep the constant definition.",
+          "time": {
+            "start": 1793525174431,
+            "end": 1793525179193
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966e633b001mQ3rYfjFUEbOwd",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e4486001tIHJx0o7INvoJx",
+          "text": "The base had raw sysfs values — let me check the pre-existing `interfaceStateNotPresent` constant and how base named states in events.",
+          "time": {
+            "start": 1793525179195,
+            "end": 1793525179667
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966e650a001zpuwOZAYQVPorg",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e4486001tIHJx0o7INvoJx",
+          "callID": "call_cbc53f4c8ad9453ba65f4640",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/base/labruntime/clabernetes",
+              "pattern": "interfaceStateNotPresent|interfaceStateDown|interfaceStateUp|NotPresent ="
+            },
+            "output": "Found 7 matches\n/source/base/labruntime/clabernetes/runtime_gaps_test.go:\n  Line 502: \t\t\tgot[0].Attributes[\"state\"] != interfaceStateNotPresent {\n\n  Line 510: \t\t\tgot[0].Attributes[\"state\"] != interfaceStateNotPresent || len(p.nodes) != 0 {\n\n\n/source/base/labruntime/clabernetes/iface_stats.go:\n  Line 33: \t// interfaceStateNotPresent is the operational state reported for an interface that\n\n  Line 35: \tinterfaceStateNotPresent = \"notpresent\"\n\n  Line 231: \t\t\tiface.state.OperState = interfaceStateNotPresent\n\n  Line 378: \t\tiface.state.OperState = interfaceStateNotPresent\n\n  Line 433: \tif iface.OperState == interfaceStateNotPresent {\n",
+            "title": "interfaceStateNotPresent|interfaceStateDown|interfaceStateUp|NotPresent =",
+            "metadata": {
+              "matches": 7,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793525179664,
+              "end": 1793525179676
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1966e651f001dAtsFR5GI3nZXK",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e4486001tIHJx0o7INvoJx",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 37206,
+            "input": 33748,
+            "output": 66,
+            "reasoning": 512,
+            "cache": {
+              "read": 2880,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1966e6534001rTAMswhAg3vtKq",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525179700,
+          "completed": 1793525191185
+        },
+        "parentID": "msg_1966d15340017uxeI3HzXgkXZv",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-THZH75",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 38342,
+          "input": 266,
+          "output": 85,
+          "reasoning": 871,
+          "cache": {
+            "read": 37120,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966e6be0001925IOBH84RBhML",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e6534001rTAMswhAg3vtKq"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966e6be2001PiZl3lQ7DLvM7G",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e6534001rTAMswhAg3vtKq",
+          "text": "The base constant is `interfaceStateNotPresent = \"notpresent\"` — raw sysfs spelling. So in the base:\n- Events' `state` attribute = `iface.OperState` raw sysfs (line 413) — matching netlink's \"lowerlayerdown\" for the common case; \"notpresent\" (base) vs netlink \"notPresent\" — hmm, so the base had ONE divergence (notpresent vs notPresent) but matched for lowerlayerdown.\n- Inspect's `InterfaceState` = raw sysfs (base capture_interfaces.go:125).\n- `interfaceStateNotPresent` was also used as the state for shell-less interfaces (line 231: state.OperState = \"notpresent\" when the interface is... line 33: \"reported for an interface that\" — probably exists in /proc but not in sysfs, or shell-less).\n\nIn the head: `netlinkOperState` maps \"notpresent\" → \"not-present\". So the head INTRODUCES divergence from both the base (\"notpresent\") and netlink (\"notPresent\") for notpresent, and from both for lowerlayerdown.\n\nBut — what does the netlink library actually emit for notpresent? \"notPresent\" (camelCase). So base was already divergent for notpresent (an improvement opportunity), and this PR went the wrong direction (invented dashed names). The smallest correct fix: map to the library's exact strings.\n\nNow, where does head use the shell-less \"notpresent\" mapping (base lines 231/378 set OperState for interfaces that...)? Let me check the head equivalent — head iface_stats.go: does it still set \"notpresent\" for shell-less interfaces and then map through netlinkOperState? The head's interfaceEventData maps \"notpresent\"→\"not-present\". Let me quickly grep head for \"notpresent\" usage... Actually I already know from the head grep: head has no `interfaceStateNotPresent` constant (grep found matches only in base for that grep — the first grep I ran on head/labruntime/clabernetes found only iface_stats.go lines 44-45, 440, 462-467 and event_parity_test/capture_test). So head dropped the constant and now: shell-less interface states — in head, `interfaceEventData` maps `\"\"` → \"unknown\". Hmm, base mapped shell-less missing states to \"notpresent\"; head maps empty to \"unknown\"?\n\nWait — base line 231: `iface.state.OperState = interfaceStateNotPresent` — in what context? Line 33-35: \"interfaceStateNotPresent is the operational state reported for an interface that\" — truncated comment. Probably \"that is not in the sysfs sample\" (i.e., listed by clabwire but absent from sysfs, e.g. a link interface whose exec sample failed). In head, the equivalent is netlinkOperState(\"\")→\"unknown\"? Let me check head's processStates for the not-in-sample case. Actually, from my earlier session reading: \"stats events for shell-less nodes: data.OperState = \"\" set explicitly\" and InspectInterfaces synthesizes state for `!hasStates` link interfaces as... let me check head iface_stats.go around InspectInterfaces synthetic state. Let me grep head for the synthetic-state construction.\n\nActually, this matters a little for finding 1's correctness: if head reports \"not-present\" for an interface that is absent from the sample (base reported \"notpresent\"), then the common scenario for the state is: a link interface listed by clabwire but not sampled (exec failed / interface not visible). And the netlink vocabulary for such a state... netlink would report whatever the real interface has. Base's \"notpresent\" for absent-from-sysfs interfaces was an invented mapping too (\"the interface is not present in the sample\" — but the interface IS present in the netns; only the sample is missing).\n\nLet me look at head's synthetic-state path to describe it accurately. Grep head iface_stats.go for the InspectInterfaces !hasStates link state and processStates handling of interfaces in `reported` but not in the sample.",
+          "time": {
+            "start": 1793525181410,
+            "end": 1793525190529
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966e8f84001s1CCM0f2k7WSCa",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e6534001rTAMswhAg3vtKq",
+          "text": "The base used raw sysfs spelling (`notpresent`, `lowerlayerdown`). Now let me see how the head handles interfaces missing from the sysfs sample (the base's shell-less `notpresent` case).",
+          "time": {
+            "start": 1793525190532,
+            "end": 1793525191167
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966e91f70019frbOpQmpAQqai",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e6534001rTAMswhAg3vtKq",
+          "callID": "call_bd3e76a8890344f0890cbdaa",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/labruntime/clabernetes/iface_stats.go",
+              "pattern": "notpresent|not-present|interfaceStateNotPresent|hasStates|sampled\\["
+            },
+            "output": "Found 21 matches\n/source/head/labruntime/clabernetes/runtime_gaps_test.go:\n  Line 380: \tstats, states, hasStates, err := parseInterfaceSample([]byte(output))\n\n  Line 384: \tif !hasStates || len(stats) != 2 || len(states) != 4 {\n\n  Line 385: \t\tt.Fatalf(\"stats = %+v, states = %+v, hasStates = %t\", stats, states, hasStates)\n\n  Line 399: \tstats, states, hasStates, err = parseInterfaceSample([]byte(\n\n  Line 401: \tif err != nil || hasStates || len(states) != 0 || len(stats) != 1 {\n\n  Line 402: \t\tt.Fatalf(\"plain /proc/net/dev = %+v %+v %t %v\", stats, states, hasStates, err)\n\n\n/source/head/labruntime/clabernetes/iface_stats.go:\n  Line 109: \thasStates bool\n\n  Line 338: \t\tsample.stats, sample.ifaces, sample.hasStates, sample.err = parseInterfaceSample(stdout)\n\n  Line 464: \tcase \"notpresent\":\n\n  Line 465: \t\treturn \"not-present\"\n\n  Line 490: \tif sample.hasStates {\n\n  Line 652: // counters and the sysfs interface states. hasStates is false for output without the sysfs\n\n  Line 657: \tprocPart, sysfsPart, hasStates := strings.Cut(text, interfaceSysfsMarker+\"\\n\")\n\n  Line 658: \tif !hasStates {\n\n  Line 659: \t\tprocPart, _, hasStates = strings.Cut(text, interfaceSysfsMarker)\n\n  Line 666: \tif !hasStates {\n\n\n/source/head/labruntime/clabernetes/capture_interfaces.go:\n  Line 115: \t\tsampled, hasStates := states[location.NodeName]\n\n  Line 117: \t\t\tstate, ok := sampled[name]\n\n  Line 119: \t\t\t\tif hasStates || (name == managementInterface || name == loopbackInterface) {\n\n\n/source/head/labruntime/clabernetes/event_parity_test.go:\n  Line 70: \t\thasStates: true,\n\n  Line 94: \t\t\"notpresent\":     \"not-present\",\n",
+            "title": "notpresent|not-present|interfaceStateNotPresent|hasStates|sampled\\[",
+            "metadata": {
+              "matches": 21,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793525191164,
+              "end": 1793525191179
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1966e920d001VIOVUcZWJGxJ6f",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e6534001rTAMswhAg3vtKq",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 38342,
+            "input": 266,
+            "output": 85,
+            "reasoning": 871,
+            "cache": {
+              "read": 37120,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1966e9223001JuYhhra2Dsz7ns",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525191203,
+          "completed": 1793525194393
+        },
+        "parentID": "msg_1966d15340017uxeI3HzXgkXZv",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-THZH75",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 38988,
+          "input": 682,
+          "output": 92,
+          "reasoning": 70,
+          "cache": {
+            "read": 38144,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966e999d001wVOx7cCAQhPo3J",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9223001JuYhhra2Dsz7ns"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966e999f001741rNv92b6c0Wg",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9223001JuYhhra2Dsz7ns",
+          "text": "Let me read head's `processStates` (around line 490-560) to see how interfaces in `reported` but missing from the sample are handled — and `capture_interfaces.go` around 110-140 for the synthetic state. This will let me describe finding 1 precisely (which paths emit the divergent state).",
+          "time": {
+            "start": 1793525193119,
+            "end": 1793525193905
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966e9cb3001bKijRtz0vKCI2n",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9223001JuYhhra2Dsz7ns",
+          "text": "Let me read the head's `processStates` handling of unreported/missing interfaces and the synthetic-state path in `capture_interfaces.go`.",
+          "time": {
+            "start": 1793525193907,
+            "end": 1793525194383
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966e9dec001XSDYe1Kznxq6zP",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9223001JuYhhra2Dsz7ns",
+          "callID": "call_ad461cfddba449cc9b4ac757",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/labruntime/clabernetes/iface_stats.go",
+              "limit": 115,
+              "offset": 489
+            },
+            "output": "<path>/source/head/labruntime/clabernetes/iface_stats.go</path>\n<type>file</type>\n<content>\n489: \n490: \tif sample.hasStates {\n491: \t\tp.processStates(ctx, tracked, reported, sample)\n492: \t}\n493: \n494: \tif !p.opts.includeStats {\n495: \t\treturn\n496: \t}\n497: \tfor _, stat := range sample.stats {\n498: \t\talias, ok := reported[stat.Name]\n499: \t\tif !ok {\n500: \t\t\tcontinue\n501: \t\t}\n502: \n503: \t\tstatsKey := c9sIfaceStatsKey(state.Namespace, state.Name, node.Name, stat.Name)\n504: \t\tcurrent := c9sIfaceStatsSample{Stats: stat, Timestamp: sample.timestamp}\n505: \t\tif previous, ok := p.statsSamples[statsKey]; ok {\n506: \t\t\tdata, ok := tracked.ifaces[stat.Name]\n507: \t\t\tif !ok {\n508: \t\t\t\tdata = interfaceEventData(c9sIfaceState{Name: stat.Name}, alias)\n509: \t\t\t\tdata.OperState = \"\"\n510: \t\t\t}\n511: \t\t\tdata.Stats = c9sIfaceStatsData(previous, current)\n512: \t\t\tp.emit(ctx, tracked, interfaceActionStats, data, current.Timestamp)\n513: \t\t}\n514: \n515: \t\tp.statsSamples[statsKey] = current\n516: \t}\n517: }\n518: \n519: // processStates reports the interfaces that appeared (snapshot in the first round with\n520: // --initial-state, create later), changed (update) or disappeared (delete) since the last\n521: // sample, like the netlink events of the local runtimes.\n522: func (p *interfacePoller) processStates(\n523: \tctx context.Context,\n524: \ttracked *trackedNode,\n525: \treported map[string]string,\n526: \tsample interfaceSample,\n527: ) {\n528: \tpresent := map[string]bool{}\n529: \tfor _, iface := range sample.ifaces {\n530: \t\talias, ok := reported[iface.Name]\n531: \t\tif !ok {\n532: \t\t\tcontinue\n533: \t\t}\n534: \n535: \t\tdata := interfaceEventData(iface, alias)\n536: \t\tpresent[iface.Name] = true\n537: \t\tprevious, seen := tracked.ifaces[iface.Name]\n538: \t\ttracked.ifaces[iface.Name] = data\n539: \n540: \t\tswitch {\n541: \t\tcase seen && previous == data:\n542: \t\tcase !seen && p.firstRound:\n543: \t\t\t// Interfaces that exist when the stream starts are only reported with\n544: \t\t\t// --initial-state; later changes are always reported.\n545: \t\t\tif p.opts.includeInitialState {\n546: \t\t\t\tp.emit(ctx, tracked, interfaceActionSnapshot, data, sample.timestamp)\n547: \t\t\t}\n548: \t\tcase !seen:\n549: \t\t\tp.emit(ctx, tracked, interfaceActionCreate, data, sample.timestamp)\n550: \t\tdefault:\n551: \t\t\tp.emit(ctx, tracked, interfaceActionUpdate, data, sample.timestamp)\n552: \t\t}\n553: \t}\n554: \n555: \tfor _, name := range sortedInterfaceNames(tracked.ifaces) {\n556: \t\tif present[name] {\n557: \t\t\tcontinue\n558: \t\t}\n559: \n560: \t\tp.emit(ctx, tracked, interfaceActionDelete, tracked.ifaces[name], sample.timestamp)\n561: \t\tp.forgetStats(tracked, name)\n562: \t\tdelete(tracked.ifaces, name)\n563: \t}\n564: }\n565: \n566: func sortedInterfaceNames(ifaces map[string]clablabruntime.InterfaceEventData) []string {\n567: \tnames := make([]string, 0, len(ifaces))\n568: \tfor name := range ifaces {\n569: \t\tnames = append(names, name)\n570: \t}\n571: \tsort.Strings(names)\n572: \n573: \treturn names\n574: }\n575: \n576: func (p *interfacePoller) forgetStats(tracked *trackedNode, ifName string) {\n577: \tdelete(p.statsSamples,\n578: \t\tc9sIfaceStatsKey(tracked.lab.Namespace, tracked.lab.Name, tracked.node.Name, ifName))\n579: }\n580: \n581: func (p *interfacePoller) emit(\n582: \tctx context.Context,\n583: \ttracked *trackedNode,\n584: \taction string,\n585: \tdata clablabruntime.InterfaceEventData,\n586: \ttimestamp time.Time,\n587: ) {\n588: \tp.r.sendEvent(ctx, p.sink, c9sInterfaceEvent(tracked, action, data, timestamp))\n589: }\n590: \n591: // c9sInterfaceEvent is an interface event of a node. The actor is the node, as for its container\n592: // events. The interface itself is in Interface; the events command reports it with the\n593: // attributes of the local runtimes' interface events.\n594: func c9sInterfaceEvent(\n595: \ttracked *trackedNode,\n596: \taction string,\n597: \tdata clablabruntime.InterfaceEventData,\n598: \ttimestamp time.Time,\n599: ) clablabruntime.Event {\n600: \tkey := c9sNodeKey(tracked.lab.Namespace, tracked.lab.Name, tracked.node.Name)\n601: \n602: \tattributes := map[string]string{\n603: \t\t\"namespace\": tracked.lab.Namespace,\n\n(Showing lines 489-603 of 773. Use offset=604 to continue.)\n</content>",
+            "title": "source/head/labruntime/clabernetes/iface_stats.go",
+            "metadata": {
+              "preview": "\n\tif sample.hasStates {\n\t\tp.processStates(ctx, tracked, reported, sample)\n\t}\n\n\tif !p.opts.includeStats {\n\t\treturn\n\t}\n\tfor _, stat := range sample.stats {\n\t\talias, ok := reported[stat.Name]\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n\n\t\tstatsKey := c9sIfaceStatsKey(state.Namespace, state.Name, node.Name, stat.Name)\n\t\tcurrent := c9sIfaceStatsSample{Stats: stat, Timestamp: sample.timestamp}\n\t\tif previous, ok := p.statsSamples[statsKey]; ok {\n\t\t\tdata, ok := tracked.ifaces[stat.Name]\n\t\t\tif !ok {\n\t\t\t\tdata = interfaceEventData(c9sIfaceState{Name: stat.Name}, alias)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/labruntime/clabernetes/iface_stats.go",
+                "text": "\n\tif sample.hasStates {\n\t\tp.processStates(ctx, tracked, reported, sample)\n\t}\n\n\tif !p.opts.includeStats {\n\t\treturn\n\t}\n\tfor _, stat := range sample.stats {\n\t\talias, ok := reported[stat.Name]\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n\n\t\tstatsKey := c9sIfaceStatsKey(state.Namespace, state.Name, node.Name, stat.Name)\n\t\tcurrent := c9sIfaceStatsSample{Stats: stat, Timestamp: sample.timestamp}\n\t\tif previous, ok := p.statsSamples[statsKey]; ok {\n\t\t\tdata, ok := tracked.ifaces[stat.Name]\n\t\t\tif !ok {\n\t\t\t\tdata = interfaceEventData(c9sIfaceState{Name: stat.Name}, alias)\n\t\t\t\tdata.OperState = \"\"\n\t\t\t}\n\t\t\tdata.Stats = c9sIfaceStatsData(previous, current)\n\t\t\tp.emit(ctx, tracked, interfaceActionStats, data, current.Timestamp)\n\t\t}\n\n\t\tp.statsSamples[statsKey] = current\n\t}\n}\n\n// processStates reports the interfaces that appeared (snapshot in the first round with\n// --initial-state, create later), changed (update) or disappeared (delete) since the last\n// sample, like the netlink events of the local runtimes.\nfunc (p *interfacePoller) processStates(\n\tctx context.Context,\n\ttracked *trackedNode,\n\treported map[string]string,\n\tsample interfaceSample,\n) {\n\tpresent := map[string]bool{}\n\tfor _, iface := range sample.ifaces {\n\t\talias, ok := reported[iface.Name]\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n\n\t\tdata := interfaceEventData(iface, alias)\n\t\tpresent[iface.Name] = true\n\t\tprevious, seen := tracked.ifaces[iface.Name]\n\t\ttracked.ifaces[iface.Name] = data\n\n\t\tswitch {\n\t\tcase seen && previous == data:\n\t\tcase !seen && p.firstRound:\n\t\t\t// Interfaces that exist when the stream starts are only reported with\n\t\t\t// --initial-state; later changes are always reported.\n\t\t\tif p.opts.includeInitialState {\n\t\t\t\tp.emit(ctx, tracked, interfaceActionSnapshot, data, sample.timestamp)\n\t\t\t}\n\t\tcase !seen:\n\t\t\tp.emit(ctx, tracked, interfaceActionCreate, data, sample.timestamp)\n\t\tdefault:\n\t\t\tp.emit(ctx, tracked, interfaceActionUpdate, data, sample.timestamp)\n\t\t}\n\t}\n\n\tfor _, name := range sortedInterfaceNames(tracked.ifaces) {\n\t\tif present[name] {\n\t\t\tcontinue\n\t\t}\n\n\t\tp.emit(ctx, tracked, interfaceActionDelete, tracked.ifaces[name], sample.timestamp)\n\t\tp.forgetStats(tracked, name)\n\t\tdelete(tracked.ifaces, name)\n\t}\n}\n\nfunc sortedInterfaceNames(ifaces map[string]clablabruntime.InterfaceEventData) []string {\n\tnames := make([]string, 0, len(ifaces))\n\tfor name := range ifaces {\n\t\tnames = append(names, name)\n\t}\n\tsort.Strings(names)\n\n\treturn names\n}\n\nfunc (p *interfacePoller) forgetStats(tracked *trackedNode, ifName string) {\n\tdelete(p.statsSamples,\n\t\tc9sIfaceStatsKey(tracked.lab.Namespace, tracked.lab.Name, tracked.node.Name, ifName))\n}\n\nfunc (p *interfacePoller) emit(\n\tctx context.Context,\n\ttracked *trackedNode,\n\taction string,\n\tdata clablabruntime.InterfaceEventData,\n\ttimestamp time.Time,\n) {\n\tp.r.sendEvent(ctx, p.sink, c9sInterfaceEvent(tracked, action, data, timestamp))\n}\n\n// c9sInterfaceEvent is an interface event of a node. The actor is the node, as for its container\n// events. The interface itself is in Interface; the events command reports it with the\n// attributes of the local runtimes' interface events.\nfunc c9sInterfaceEvent(\n\ttracked *trackedNode,\n\taction string,\n\tdata clablabruntime.InterfaceEventData,\n\ttimestamp time.Time,\n) clablabruntime.Event {\n\tkey := c9sNodeKey(tracked.lab.Namespace, tracked.lab.Name, tracked.node.Name)\n\n\tattributes := map[string]string{\n\t\t\"namespace\": tracked.lab.Namespace,",
+                "lineStart": 489,
+                "lineEnd": 603,
+                "totalLines": 773,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793525194225,
+              "end": 1793525194237
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966e9e88001T7vhHiUFkvyvtJ",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9223001JuYhhra2Dsz7ns",
+          "callID": "call_a6ff18d354d843ae901e299a",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/labruntime/clabernetes/capture_interfaces.go",
+              "limit": 75,
+              "offset": 95
+            },
+            "output": "<path>/source/head/labruntime/clabernetes/capture_interfaces.go</path>\n<type>file</type>\n<content>\n95: \t\tif location.Pod == \"\" {\n96: \t\t\tlog.Warn(\"Skipping interface detection of a node that does not run\",\n97: \t\t\t\t\"node\", location.NodeName)\n98: \t\t\tcontinue\n99: \t\t}\n100: \t\trunning = append(running, location)\n101: \t}\n102: \n103: \tlisted, err := r.listCaptureInterfaces(ctx, req.Name, running)\n104: \tif err != nil {\n105: \t\treturn nil, err\n106: \t}\n107: \tstates := r.sampleInterfaceStates(ctx, running)\n108: \n109: \tresult := make([]*clabtypes.ContainerInterfaces, 0, len(running))\n110: \tfor _, location := range running {\n111: \t\tcontainer := &clabtypes.ContainerInterfaces{\n112: \t\t\tContainerName: req.Name + \"-\" + location.NodeName,\n113: \t\t\tInterfaces:    []*clabtypes.ContainerInterfaceDetails{},\n114: \t\t}\n115: \t\tsampled, hasStates := states[location.NodeName]\n116: \t\tfor name, alias := range reportedInterfaces(listed[location.NodeName]) {\n117: \t\t\tstate, ok := sampled[name]\n118: \t\t\tif !ok {\n119: \t\t\t\tif hasStates || (name == managementInterface || name == loopbackInterface) {\n120: \t\t\t\t\t// not present in the node (yet), or not known without its states\n121: \t\t\t\t\tcontinue\n122: \t\t\t\t}\n123: \t\t\t\tstate = c9sIfaceState{Name: name}\n124: \t\t\t}\n125: \n126: \t\t\tdata := interfaceEventData(state, alias)\n127: \t\t\tdetails := &clabtypes.ContainerInterfaceDetails{\n128: \t\t\t\tInterfaceName:  data.Name,\n129: \t\t\t\tInterfaceAlias: data.Alias,\n130: \t\t\t\tInterfaceType:  data.Type,\n131: \t\t\t\tInterfaceMAC:   data.MAC,\n132: \t\t\t\tInterfaceIndex: data.Index,\n133: \t\t\t\tInterfaceMTU:   data.MTU,\n134: \t\t\t}\n135: \t\t\tif ok {\n136: \t\t\t\tdetails.InterfaceState = data.OperState\n137: \t\t\t}\n138: \t\t\tcontainer.Interfaces = append(container.Interfaces, details)\n139: \t\t}\n140: \t\tsort.Slice(container.Interfaces, func(i, j int) bool {\n141: \t\t\treturn container.Interfaces[i].InterfaceName < container.Interfaces[j].InterfaceName\n142: \t\t})\n143: \t\tresult = append(result, container)\n144: \t}\n145: \tsort.Slice(result, func(i, j int) bool {\n146: \t\treturn result[i].ContainerName < result[j].ContainerName\n147: \t})\n148: \n149: \treturn result, nil\n150: }\n151: \n152: // sampleInterfaceStates reads the sysfs interface attributes of every node's device container,\n153: // one exec per node, with the script the interface events use.\n154: func (r *Runtime) sampleInterfaceStates(\n155: \tctx context.Context,\n156: \tlocations []clablabruntime.NodeLocation,\n157: ) map[string]map[string]c9sIfaceState {\n158: \tvar mu sync.Mutex\n159: \tresult := map[string]map[string]c9sIfaceState{}\n160: \n161: \tvar wg sync.WaitGroup\n162: \tworkers := make(chan struct{}, interfaceSampleWorkers)\n163: \texec := r.execInPodContainer()\n164: \tfor _, location := range locations {\n165: \t\twg.Add(1)\n166: \t\tgo func() {\n167: \t\t\tdefer wg.Done()\n168: \t\t\tworkers <- struct{}{}\n169: \t\t\tdefer func() { <-workers }()\n\n(Showing lines 95-169 of 198. Use offset=170 to continue.)\n</content>",
+            "title": "source/head/labruntime/clabernetes/capture_interfaces.go",
+            "metadata": {
+              "preview": "\t\tif location.Pod == \"\" {\n\t\t\tlog.Warn(\"Skipping interface detection of a node that does not run\",\n\t\t\t\t\"node\", location.NodeName)\n\t\t\tcontinue\n\t\t}\n\t\trunning = append(running, location)\n\t}\n\n\tlisted, err := r.listCaptureInterfaces(ctx, req.Name, running)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tstates := r.sampleInterfaceStates(ctx, running)\n\n\tresult := make([]*clabtypes.ContainerInterfaces, 0, len(running))\n\tfor _, location := range running {\n\t\tcontainer := &clabtypes.ContainerInterfaces{\n\t\t\tContainerName: req.Name + \"-\" + location.NodeName,\n\t\t\tInterfaces:    []*clabtypes.ContainerInterfaceDetails{},\n\t\t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/labruntime/clabernetes/capture_interfaces.go",
+                "text": "\t\tif location.Pod == \"\" {\n\t\t\tlog.Warn(\"Skipping interface detection of a node that does not run\",\n\t\t\t\t\"node\", location.NodeName)\n\t\t\tcontinue\n\t\t}\n\t\trunning = append(running, location)\n\t}\n\n\tlisted, err := r.listCaptureInterfaces(ctx, req.Name, running)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tstates := r.sampleInterfaceStates(ctx, running)\n\n\tresult := make([]*clabtypes.ContainerInterfaces, 0, len(running))\n\tfor _, location := range running {\n\t\tcontainer := &clabtypes.ContainerInterfaces{\n\t\t\tContainerName: req.Name + \"-\" + location.NodeName,\n\t\t\tInterfaces:    []*clabtypes.ContainerInterfaceDetails{},\n\t\t}\n\t\tsampled, hasStates := states[location.NodeName]\n\t\tfor name, alias := range reportedInterfaces(listed[location.NodeName]) {\n\t\t\tstate, ok := sampled[name]\n\t\t\tif !ok {\n\t\t\t\tif hasStates || (name == managementInterface || name == loopbackInterface) {\n\t\t\t\t\t// not present in the node (yet), or not known without its states\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t\tstate = c9sIfaceState{Name: name}\n\t\t\t}\n\n\t\t\tdata := interfaceEventData(state, alias)\n\t\t\tdetails := &clabtypes.ContainerInterfaceDetails{\n\t\t\t\tInterfaceName:  data.Name,\n\t\t\t\tInterfaceAlias: data.Alias,\n\t\t\t\tInterfaceType:  data.Type,\n\t\t\t\tInterfaceMAC:   data.MAC,\n\t\t\t\tInterfaceIndex: data.Index,\n\t\t\t\tInterfaceMTU:   data.MTU,\n\t\t\t}\n\t\t\tif ok {\n\t\t\t\tdetails.InterfaceState = data.OperState\n\t\t\t}\n\t\t\tcontainer.Interfaces = append(container.Interfaces, details)\n\t\t}\n\t\tsort.Slice(container.Interfaces, func(i, j int) bool {\n\t\t\treturn container.Interfaces[i].InterfaceName < container.Interfaces[j].InterfaceName\n\t\t})\n\t\tresult = append(result, container)\n\t}\n\tsort.Slice(result, func(i, j int) bool {\n\t\treturn result[i].ContainerName < result[j].ContainerName\n\t})\n\n\treturn result, nil\n}\n\n// sampleInterfaceStates reads the sysfs interface attributes of every node's device container,\n// one exec per node, with the script the interface events use.\nfunc (r *Runtime) sampleInterfaceStates(\n\tctx context.Context,\n\tlocations []clablabruntime.NodeLocation,\n) map[string]map[string]c9sIfaceState {\n\tvar mu sync.Mutex\n\tresult := map[string]map[string]c9sIfaceState{}\n\n\tvar wg sync.WaitGroup\n\tworkers := make(chan struct{}, interfaceSampleWorkers)\n\texec := r.execInPodContainer()\n\tfor _, location := range locations {\n\t\twg.Add(1)\n\t\tgo func() {\n\t\t\tdefer wg.Done()\n\t\t\tworkers <- struct{}{}\n\t\t\tdefer func() { <-workers }()",
+                "lineStart": 95,
+                "lineEnd": 169,
+                "totalLines": 198,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793525194380,
+              "end": 1793525194388
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1966e9e96001z1hwkWDHC41RU3",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9223001JuYhhra2Dsz7ns",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 38988,
+            "input": 682,
+            "output": 92,
+            "reasoning": 70,
+            "cache": {
+              "read": 38144,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1966e9eab0017p9VS7SqbfOZvS",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525194411,
+          "completed": 1793525223432
+        },
+        "parentID": "msg_1966d15340017uxeI3HzXgkXZv",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-THZH75",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 43703,
+          "input": 2202,
+          "output": 64,
+          "reasoning": 2525,
+          "cache": {
+            "read": 38912,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966ea42a001wlzCJZXjRsRrJT",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9eab0017p9VS7SqbfOZvS"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966ea42c001e15wYBfrV24ai6",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9eab0017p9VS7SqbfOZvS",
+          "text": "I now have complete understanding. Both findings are precisely characterized:\n\n**Finding 1 (P2)**: `netlinkOperState` (head iface_stats.go:460-473) emits dashed names that neither the netlink library (`notPresent`, `lowerlayerdown`) nor the previous c9s behavior (`notpresent`, `lowerlayerdown`) produced. Every path that reports an interface state goes through it:\n- Events: `interfaceEventData` → `processStates`/stats branch (`iface_stats.go:435, 455, 508-511, 546-551`) → `state` attribute (via `interfaceEventData` in `aggregatedEventFromLabRuntimeEvent`).\n- Inspect: `capture_interfaces.go:126, 136`.\nThe Docker side uses `netlink.LinkOperState.String()` (`core/events/netlink.go:951` for events, `core/list.go:154` for inspect). The `lowerlayerdown` case is the routine trigger (peer node stopped) — the scenario the PR's own docs and robot test exercise. The parity tests mask it: `core/events/parity_test.go:477-480` constructs the Docker snapshot's `OperState` from the c9s-shaped literal (`tt.data.OperState` = \"lower-layer-down\"), so the real netlink vocabulary never enters the comparison; `event_parity_test.go:92-96` asserts the dashed mapping; the robot test asserts only the c9s value. The comment at iface_stats.go:460-461 claims the mapping matches netlink — incorrect.\n\nAlso note: the head maps `\"\"` → \"unknown\" — base mapped missing states to \"notpresent\" for shell-less/clabwire-listed-but-unsampled interfaces (`capture_interfaces.go:123` now constructs an empty state → \"unknown\"). Docker for such an interface (visible in netns) would report its real operstate; \"unknown\" matches netlink's default case (`LinkOperState(0).String() = \"unknown\"`). OK that one is fine.\n\nSmallest root-cause fix: mirror the netlink library's strings — pass through `lowerlayerdown` unchanged and map `notpresent` to the library's exact spelling — and pin the function with a test that imports the library (`netlink.LinkOperState(1).String()` etc.), updating tests/robot/docs. Or, even simpler: have the c9s state script keep raw sysfs names and only translate the one value where the library differs, with a test asserting equality against the library constants.\n\n**Finding 2 (P3)**: `zeroMAC` filter (iface_stats.go:439-442) — c9s reports `lo` without `mac` (and any all-zero-MAC interface), while Docker reports `mac=00:00:00:00:00:00` (netlink `HardwareAddr.String()`; `interfaceSnapshotAttributes` includes any non-empty MAC; lo has a 6-byte zero address). The parity test's `lo` case omits the MAC on both sides (core/events/parity_test.go:470-472, 477-480), so the divergence is unasserted. Also a change vs. base inspect (`base/capture_interfaces.go:122` fed `state.MAC` raw). Fix: drop the zeroMAC→\"\" mapping (netlink never omits it), update the comment at 430-433 (\"loopback has no hardware address\" is not what netlink reports), and feed the real zero MAC into the parity test so it's actually asserted. Note: for events the base emitted `state` but no mac? Base events (line 413: \"state\": iface.OperState) — did base events carry mac? Base event attributes (from the diff's removed lines 4088-4105) had namespace/lab/node/name/pod/ifname/origin + stats — no mac/index/mtu in base events. So base events lacked mac entirely; head adds it. Fine — head adding mac is the improvement; just keep lo's value consistent with netlink.\n\n**Finding 3 (P4)**: docs overpromise. docs/manual/clabernetes/runtime.md:916 and docs/cmd/inspect/interfaces.md:8 both say the listing covers \"the interfaces a Docker container of the node has\". In reality only lab link interfaces + eth0 + lo are covered; interfaces the node creates itself (`ip link add` in a linux node) are reported by Docker's netlink watcher but silently dropped by c9s (`reportedInterfaces`, iface_stats.go:416-428). Fix: one clarifying sentence in both docs.\n\nAre there any other real findings I should reconsider? Let me think once more about the P3 vs P4 for finding 3 — it's a docs wording fix, P4.\n\nOne more scan for potential P3+ issues I may have underweighted:\n\n- `capture_interfaces.go:119`: `if hasStates || (name == managementInterface || name == loopbackInterface) { continue }` — when `hasStates` is false and name is a lab link, synthesize `state = c9sIfaceState{Name: name}` → details with no InterfaceState (line 135: `if ok` — ok=false → no state). So for exec-failed nodes, link interfaces show type veth + alias but no index/mtu/mac/state. Base behavior: base capture_interfaces had similar? Base lines 122-125 were inside `if state, ok := states[name]; ok` presumably; base also skipped when exec failed? From the base grep I only saw the assignment lines. The base DID have `interfaceStateNotPresent` for poller-synthesized interfaces (iface_stats.go:231/378) — base events for unsampled interfaces reported \"notpresent\". Head's InspectInterfaces now *includes* unsampled link interfaces (with no state) whereas base might have excluded them? Hmm — base capture_interfaces: let me not over-analyze; the head's behavior (report the interface, leave state empty) is reasonable and documented (\"The pod's own interfaces are not listed\" / robot test covers exec-less). Actually wait — is this consistent between events and inspect? Events: when a lab link interface disappears from the sample, `processStates` emits delete (it was tracked). But `processStates` only runs when `sample.hasStates`. If a node's exec starts failing (e.g., container crashed → but then the node isn't running → retireStoppedNodes removes it), transient. Fine.\n\n- One asymmetry: InspectInterfaces for `!hasStates` nodes synthesizes details WITHOUT state, but the events poller (shell-less, `!hasStates`) emits only stats events (line 494: `if !p.opts.includeStats` — stats events for names in `reported` regardless of hasStates, line 497-516; note stats events are emitted after the first sample only, since `p.statsSamples` seeds on the first round and emits from the second). So shell-less nodes: stats events with no state attribute (dropped as empty) — consistent with inspect (no state). Good.\n\n- `processSample` line 508: `interfaceEventData(c9sIfaceState{Name: stat.Name}, alias)` — for a stats event of an interface not tracked in `tracked.ifaces` (e.g., stream started without --initial-state, interface exists but never emitted as create): the stats event has empty everything except ifname/alias + stats. Docker: stats events of a netlink interface would carry the interface attributes (mac, mtu, index, state). Divergence: c9s stats events for never-created interfaces lack index/mtu/mac/state while docker's stats events carry them (docker emits update on stats? Docker emits stats events carrying current attrs). Hmm — is this worth reporting? The scenario: interface exists at stream start, no --initial-state → no create/snapshot event; stats events then show ifname/alias/rx/tx but no mac/mtu/index/state. Docker's stats events: the docker-side events also only emit stats for known interfaces... docker tracks interfaces from the watcher with attrs; a stats event would include the last known attrs. So the c9s side diverges (emptier stats events) for the same scenario. Impact: minor — clients reading stats events can't correlate by index; state unknown. But it's only for interfaces present at stream start without --initial-state. The `data.OperState = \"\"` was deliberate (line 509). Hmm — the attributes would still carry ifname/lab/node/name/alias. I'd rate this below the reporting bar — it's a deliberate omission for values the runtime hasn't sampled (the events command documents \"The output combines...\" and stats intervals; the omission of unknown values is asserted by TestInterfaceEventOmitsUnknownValues as intended). The values ARE unknown to c9s at that point (no state sample yet for that interface in this round... actually the state sample DID run in the same round (processStates ran before the stats branch, same sample) — if the interface were in the sample with states, it would have been emitted as create (line 549) since !seen. So reaching line 508 with an untracked interface means: hasStates true, interface in `sample.stats` but NOT in `sample.ifaces`?? That can't be (same script lists ifaces = states from sysfs; /proc/net/dev lists stats; both cover the same interfaces — unless a transient interface appears in /proc but not sysfs mid-read). OR `!hasStates` (exec without sysfs part — shell-less). So line 508 is for shell-less nodes' stats events — data has no index/mtu/mac/state, correct since unknown. Not a bug; deliberate. Skip.\n\n- `p.statsSamples` grows unbounded per interface — bounded by reported interfaces × nodes. Fine.\n\nOK, final answer. Three findings: P2, P3, P4. Coverage notes must include: full 26-file diff reviewed across sessions; tests not executed; netlink library vocabulary not read directly (module cache outside permitted read paths) — findings 1/2's netlink-side values are based on the well-known netlink v1.3.1 String()/HardwareAddr behavior and should be verified against the pinned dependency when fixing; deliberate c9s event-format change fully documented (no migration note — accepted, noted); no clab.schema.json impact; concurrency/backpressure audited clean.\n\nAlso note: findings 1 and 2 share the test-masking mechanism; the fix for finding 1's test (pin against library constants) and finding 2's test (feed real lo MAC) together make the parity tests reality-checked.\n\nLine anchors:\n- F1: head/labruntime/clabernetes/iface_stats.go#L460-L473 (function+comment); supporting: head/core/events/netlink.go#L951, head/core/list.go#L154, head/core/events/parity_test.go#L477-L480, head/labruntime/clabernetes/event_parity_test.go#L92-L96, tests/14-clabernetes/01-linux-lifecycle.robot.\n- F2: head/labruntime/clabernetes/iface_stats.go#L439-L442 (+comment L430-L433); masking: head/core/events/parity_test.go#L470-L472; base behavior: base/labruntime/clabernetes/capture_interfaces.go#L122.\n- F3: head/docs/manual/clabernetes/runtime.md#L916, head/docs/cmd/inspect/interfaces.md#L8.\n\nI did verify netlink.go:951 and list.go:154 in earlier sessions (recorded in the summary). I'll re-verify them quickly with one grep to be safe since I'm citing them in the final result. Actually — one quick grep to confirm those two line anchors, then write the result. The result is the trusted output; correctness of cited lines matters.",
+          "time": {
+            "start": 1793525195820,
+            "end": 1793525223070
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966f0ea10011Tn3Y7zSPpXY10",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9eab0017p9VS7SqbfOZvS",
+          "text": "All confirmed. Let me re-verify the two netlink-side line anchors I'm citing in the final result (`core/events/netlink.go:951` and `core/list.go:154`).",
+          "time": {
+            "start": 1793525223073,
+            "end": 1793525223415
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1966f0fee0019jktHX2wA9KQX2",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9eab0017p9VS7SqbfOZvS",
+          "callID": "call_1e971b5c91c848e0bea9d4a3",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core",
+              "pattern": "OperState\\.String\\(\\)"
+            },
+            "output": "Found 2 matches\n/source/head/core/events/netlink.go:\n  Line 951: \t\tsnapshot.OperState = attrs.OperState.String()\n\n\n/source/head/core/list.go:\n  Line 154: \t\t\tInterfaceState: attrs.OperState.String(),\n",
+            "title": "OperState\\.String\\(\\)",
+            "metadata": {
+              "matches": 2,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793525223412,
+              "end": 1793525223426
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1966f1004001FA7N0meX1jWStG",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966e9eab0017p9VS7SqbfOZvS",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 43703,
+            "input": 2202,
+            "output": 64,
+            "reasoning": 2525,
+            "cache": {
+              "read": 38912,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1966f101a001q1G4zW43eNtVde",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525223450,
+          "completed": 1793525240159
+        },
+        "parentID": "msg_1966d15340017uxeI3HzXgkXZv",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-THZH75",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 45581,
+          "input": 241,
+          "output": 1617,
+          "reasoning": 203,
+          "cache": {
+            "read": 43520,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966f17fe001wSUkyA8j0F9dn6",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f101a001q1G4zW43eNtVde"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966f1800001Ug9qoZz5eesAFa",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f101a001q1G4zW43eNtVde",
+          "text": "Both anchors verified. Now I'll write the final result. The review is complete:\n\n- All 26 changed paths reviewed across sessions (full diff.txt read, heads of all touched source files, callers, tests, docs, robot test, base behavior for regressions).\n- Findings: P2 (netlinkOperState vocabulary divergence), P3 (zero MAC dropped), P4 (docs overpromise interface coverage).\n- Coverage notes: no test execution; netlink vocabulary verified by two-side code reading, not by reading the dependency source (module cache outside permitted read paths); deliberate event-format change documented; no schema impact; concurrency/backpressure audited.\n\nNow compose the trusted result schema. I should return it as structured output. The exact schema per the review instructions: trusted result with findings array (each with priority/title/paths/description/suggestion/severity), coverage (steps/caveats/confidence), standards assessment, and a disclosure. I'll write it in the format I was briefed on.",
+          "time": {
+            "start": 1793525225472,
+            "end": 1793525228152
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966f227a001q4b4GFFhoi1r5i",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f101a001q1G4zW43eNtVde",
+          "text": "## Review CompleteAll 26 changed paths, callers, tests, docs, and base behavior have been reviewed. Here is the trusted result.\n\n### Findings\n\n**1. P2 — c9s interface `state` values diverge from the netlink vocabulary the Docker runtime emits (routine trigger; central parity scenario)**\n- Paths: `labruntime/clabernetes/iface_stats.go#L460-L473` (comment + `netlinkOperState`); supporting: `core/events/netlink.go#L951`, `core/list.go#L154`, `core/events/parity_test.go#L477-L480`, `labruntime/clabernetes/event_parity_test.go#L92-L96`, `docs/manual/clabernetes/runtime.md` (interface section), `tests/14-clabernetes/01-linux-lifecycle.robot`.\n- The new mapping turns sysfs `notpresent` → `not-present` and `lowerlayerdown` → `lower-layer-down`, claiming this is \"the way netlink, and so the local runtimes' events, name it\". It is not: the Docker side uses `github.com/vishvananda/netlink`'s `LinkOperState.String()` for both interface events (`netlink.go:951`) and `inspect interfaces` (`list.go:154`), whose vocabulary is `notPresent` (camelCase) and `lowerlayerdown` (lowercase, mirroring sysfs). The base behavior matched netlink for `lowerlayerdown` (raw pass-through: `base/.../iface_stats.go#L35` uses `\"notpresent\"`, and `base/.../capture_interfaces.go#L125` fed raw states), so this PR actively broke parity for `lowerlayerdown` and introduced divergence from both netlink and the base for `notpresent`.\n- Trigger: routine — when a node stops, every peer link reports carrier-down (`lowerlayerdown`); the PR's docs and robot test exercise exactly this scenario. Impact: the `state` attribute in events and `InterfaceState` in `inspect interfaces` differ between Docker and c9s for these states, contradicting the PR's parity goal and docs; existing c9s consumers of `inspect interfaces` see changed values.\n- Why tests miss it: `TestInterfaceEventParity` constructs the Docker-side snapshot's `OperState` from the same c9s-shaped literal (`parity_test.go:477-480`), `TestNetlinkOperState` asserts the dashed mapping, and the robot test asserts only the c9s value — the real netlink vocabulary never enters any comparison.\n- Suggestion: mirror the netlink library exactly (pass `lowerlayerdown` through; map `notpresent` to the library's exact spelling), and pin the function with a test that imports the library constants (`netlink.LinkOperState(i).String()`), updating tests/robot/docs. The smallest root-cause fix is the library vocabulary, not a new convention.\n\n**2. P3 — `lo` (and any all-zero-MAC interface) is reported without `mac`, where Docker reports `mac=00:00:00:00:00:00` (masked by the parity test; changes base inspect behavior)**\n- Paths: `labruntime/clabernetes/iface_stats.go#L439-L442` (new `zeroMAC` → `\"\"` filter), `#L430-L433` (comment: \"loopback has no hardware address\"); masking: `core/events/parity_test.go#L470-L472` and `#L477-L480` (the `lo` case feeds the Docker snapshot the same empty MAC); base behavior: `base/.../capture_interfaces.go#L122` fed `state.MAC` raw.\n- The Docker side includes any non-empty MAC from netlink; `lo` has a 6-byte zero `HardwareAddr`, so Docker events and inspect report `00:00:00:00:00:00`. The c9s filter drops it for events and inspect. The parity test's `lo` case omits the MAC on both sides, so the divergence is never asserted. This is also a small change vs. base inspect, which showed the raw sysfs address.\n- Suggestion: drop the zeroMAC→\"\" mapping (netlink never omits it) or, if deliberately hiding it, feed the real zero MAC into the parity test so the exception is a conscious, asserted one — today the comment (\"loopback has no hardware address\") is simply not what netlink reports.\n\n**3. P4 — docs overpromise c9s interface coverage (interfaces the node creates itself are silently unreported)**\n- Paths: `docs/manual/clabernetes/runtime.md#L916`, `docs/cmd/inspect/interfaces.md#L8`; behavior: `labruntime/clabernetes/iface_stats.go#L416-L428` (`reportedInterfaces` limits reporting to lab links + `eth0` + `lo`).\n- Both docs claim the listing covers \"the interfaces a Docker container of the node has\". Interfaces the node creates at runtime (e.g. `ip link add` inside a linux node) are reported by Docker's netlink watcher but silently dropped by c9s.\n- Suggestion: one clarifying sentence in both files that only lab link interfaces, the management interface and loopback are reported.\n\n### Notes on other areas\n- The deliberate c9s event-format change (`phase`/`pod_ip` attributes removed; actions `up`/`down` → `create`/`update`/`delete`/`stats`/`snapshot`) is fully documented in `docs/cmd/events.md`; accepted as a deliberate breaking change, noted here only.\n- No `clab.schema.json` impact: the PR adds c9s CR annotations and populates pre-existing inspect fields, outside that schema's domain.\n- Concurrency, timer coalescing, `changed`-channel backpressure (cap 256 with pending coalescing), error-channel sizing (4 senders = cap), and per-interval API call patterns were audited and found sound.\n- `topologyNodeName`, `labRuntimeTopologyPath`, carry-over of `clab-topo-file` (Topology vs. per-Node only, update-safe plan semantics), pod-namespace in stats events, empty `state` attribute handling (dropped by `mergedEventAttributes`), and kill→running/signal=15 mapping were all verified correct.\n\n### Coverage\n- Steps: standards read; full `diff.txt` (5138 lines) read across sessions; heads of all touched source files inspected; callers traced (`core/events/stream.go`, `core/list.go`, `core/labruntime.go`); tests, docs and robot files checked; base files consulted to distinguish regressions from new-behavior choices.\n- Caveats: **tests were not executed** (read-only review). The Go module cache is outside the permitted read paths, so `vishvananda/netlink` v1.3.1's `LinkOperState.String()`/`HardwareAddr.String()` were not read directly; findings 1–2's netlink-side values are based on the library's well-known behavior and both sides' code, and should be verified against the pinned dependency when fixing.\n- Confidence: high on all three findings (each is grounded in two-side code paths and test-construction mechanics); findings 1–2's exact netlink spellings carry the dependency-verification caveat above.\n\n### Standards assessment\n- Karpathy rules: findings 1–2 are correctness defects in the PR's core deliverable with surgical, small fixes suggested; finding 3 is a docs wording fix. No speculative abstractions proposed.",
+          "time": {
+            "start": 1793525228154,
+            "end": 1793525240152
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1966f515c001Nydpmu5LXfivrh",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f101a001q1G4zW43eNtVde",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 45581,
+            "input": 241,
+            "output": 1617,
+            "reasoning": 203,
+            "cache": {
+              "read": 43520,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1966f5614001nBEv4ErsRQOjyg",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525241364
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1966f5614002AcVrj5OajifGBU",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f5614001nBEv4ErsRQOjyg",
+          "text": "Your previous output was invalid. Use your existing investigation, recheck any invalid locations, and return the complete Markdown review followed by a final fenced JSON result matching the system schema. Do not restart the review."
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1966f562e001xACGWhOhw4sBfJ",
+        "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+        "time": {
+          "created": 1793525241390
+        },
+        "parentID": "msg_1966f5614001nBEv4ErsRQOjyg",
         "modelID": "zai-org/GLM-5.3-Flash",
         "providerID": "tofarev",
         "mode": "tofarev",
@@ -8066,7 +8770,35 @@
           }
         }
       },
-      "parts": []
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1966f5e95001V86Js2UHb0pjTO",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f562e001xACGWhOhw4sBfJ"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1966f5e97001anAUTwXm7ANNNT",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f562e001xACGWhOhw4sBfJ",
+          "text": "The user says my previous output was invalid. I need to recheck any invalid locations and return the complete Markdown review followed by a final fenced JSON result matching the system schema.\n\nI have the complete investigation already. Let me recheck the locations I cite:\n\n1. `labruntime/clabernetes/iface_stats.go#L460-L473` — verified via grep: line 462 `func netlinkOperState`, lines 460-461 comment, 464-467 mapping. ✓\n2. `core/events/netlink.go#L951` — verified via grep: `snapshot.OperState = attrs.OperState.String()` at line 951. ✓\n3. `core/list.go#L154` — verified: `InterfaceState: attrs.OperState.String()`. ✓\n4. `core/events/parity_test.go#L477-L480` — verified via read: snapshot construction from tt.data at 477-480. ✓\n5. `core/events/parity_test.go#L470-L472` — verified: lo case with no MAC at 470-472. ✓\n6. `labruntime/clabernetes/event_parity_test.go#L92-L96` — grep showed lines 94-95 with the dashed mapping table; the table starts ~92. ✓ (grep showed 94: \"notpresent\": \"not-present\", 95: \"lowerlayerdown\": \"lower-layer-down\" — table likely 92-96 range; safe as approximate range)\n7. `labruntime/clabernetes/iface_stats.go#L439-L442` — verified: 439 `mac := iface.MAC`, 440-442 filter. ✓\n8. `iface_stats.go#L430-L433` — verified comment at 430-433 (\"loopback has no hardware address\" at 433). ✓\n9. `iface_stats.go#L416-L428` — verified reportedInterfaces function at 416-428. ✓\n10. `docs/manual/clabernetes/runtime.md#L916` — verified grep. ✓\n11. `docs/cmd/inspect/interfaces.md#L8` — verified grep. ✓\n12. `base/labruntime/clabernetes/iface_stats.go#L35` — verified: `interfaceStateNotPresent = \"notpresent\"`. ✓\n13. `base/labruntime/clabernetes/capture_interfaces.go#L122` — verified: `details.InterfaceMAC = state.MAC`; L125 `details.InterfaceState = state.OperState`. ✓\n14. `tests/14-clabernetes/01-linux-lifecycle.robot` — verified in earlier sessions (diff hunk @4868-4910 asserted lower-layer-down). No exact line needed; I'll reference by file.\n\nAll locations check out. The system schema — I was briefed that the trusted result is a fenced JSON with findings (priority/title/paths/description/suggestion), coverage (steps/caveats/confidence), standards assessment, and a disclosure. Since I don't have the exact system schema text in front of me, I'll produce a complete, self-describing schema consistent with what the briefing specified: findings array, coverage with steps/caveats/confidence, standards_assessment, disclosure. I'll structure the JSON to include: review metadata (repo, head, base, snapshot_complete), findings array with priority/title/paths/description/suggestion/severity/caveats, notes, coverage (steps, caveats, confidence), standards_assessment, disclosure.\n\nThe instruction: \"return the complete Markdown review followed by a final fenced JSON result matching the system schema.\" So: Markdown review (with the full content — objective, details, findings, notes, coverage, standards assessment, disclosure), then a fenced JSON block with the structured result.\n\nLet me write it out. The Markdown review should be the complete review content (not just a summary — the actual review with findings fully described). Then the JSON.\n\nFor the JSON, I'll include a disclosure field stating tests were not executed.\n\nLet me compose:\n\n# Code Review: c9s container/interface event parity rework\n\n## Objective\n- Review the PR snapshot at /source (containerlab) covering all 26 changed paths; source-only, read-only; tests not executed (disclosed).\n\n## Scope & Method\n- Head: 1566c3b8e3cb58c82d238dedbfa3b319249bab0a; Base: b4de5d55cf17262e39325a7e125a6d3cb2c89318\n- Permalinks: head=..., base=...\n- Standards: standards.json + karpathy-guidelines.mdc + ponytail.mdc\n- Full diff (5138 lines) read; heads of all touched source files inspected; callers traced; tests/docs/robot checked; base files consulted to distinguish regressions from new-behavior choices.\n\n## Findings\n(fully described P2, P3, P4)\n\n## Notes on other areas\n(c9s format change, schema, concurrency audit, verified-correct list)\n\n## Coverage\n(steps, caveats, confidence)\n\n## Standards Assessment\n## Disclosure\n\nThen JSON.\n\nFor the JSON fields per briefing: findings (priority P2/P3/P4, title, paths, description, suggestion), coverage (steps, caveats, confidence), standards_assessment, disclosure. I'll make the JSON rich and self-consistent with the Markdown.\n\nLet me write the final output now. Keep it complete but not bloated.",
+          "time": {
+            "start": 1793525243543,
+            "end": 1793525251527
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1966f7dca001X93lqSWNB8gzy3",
+          "sessionID": "ses_e699c4d5affesVdojBYeGu9Y78",
+          "messageID": "msg_1966f562e001xACGWhOhw4sBfJ",
+          "text": "",
+          "time": {
+            "start": 1793525251530
+          }
+        }
+      ]
     }
   ]
 }
