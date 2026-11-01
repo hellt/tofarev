@@ -105,6 +105,10 @@ test('finalized digests carry canonical metadata, program-only links and checked
   assert.ok(out.notes.some(n => n.includes('An invented talk about nothing')));
   assert.ok(out.notes.some(n => n.includes('no `## Themes` section')));
   assert.equal(finalizeDigest('I cannot help with that.', p, [], true, '2026-10-31').markdown, null);
+  // Picks written as bullets instead of ### headings are flagged, not passed as clean.
+  const bullets = finalizeDigest('# D\n\n## Core\n\n- **Talk number 1** — why it matters\n\n## Themes\n\n- one', p, splitItems(p.program), true, '2026-10-31');
+  assert.equal(bullets.picks, 0);
+  assert.ok(bullets.notes.some(n => n.includes('no `###` pick headings')));
 });
 
 test('digest-files writes the validated digest and fails closed on a failed result', async () => {
