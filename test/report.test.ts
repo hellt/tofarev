@@ -144,3 +144,27 @@ test('reports name the model, and a model that cannot be resolved is explained a
   assert.ok(banner > 0 && reason > banner && reason < failed.indexOf('<details>'), failed);
   assert.throws(() => renderReport(r, result, manifest, { model: 'evil` [x](y)' }));
 });
+
+test('the final report footer adds the model, greyed, and its vendor mark; status comments keep the plain footer', async () => {
+  const { footer, subtle, FOOTER, MODEL_ASSETS, VENDOR_NAMES, statusBody } = await import('../src/requests.js');
+  assert.equal(footer(), FOOTER);
+  assert.ok(footer('zai-org/GLM-5.3').startsWith(FOOTER));
+  assert.ok(footer('zai-org/GLM-5.3').endsWith(` &nbsp;·&nbsp; <img src="${MODEL_ASSETS}/zai-org.svg" alt="Z.ai" title="Z.ai" height="20" align="absmiddle"> $\`\\color{gray}\\textsf{GLM-5.3}\`$`));
+  assert.match(footer('moonshotai/Kimi-K3'), /moonshotai\.svg" alt="Moonshot AI".*> \$`\\color\{gray\}\\textsf\{Kimi-K3\}`\$$/);
+  assert.match(footer('deepseek-ai/DeepSeek-V4.1-Flash-1017'), /deepseek-ai\.svg" alt="DeepSeek".*\\textsf\{DeepSeek-V4\.1-Flash-1017\}`\$$/);
+  assert.ok(footer('nvidia/Nemotron-3-Ultra').endsWith('&nbsp;·&nbsp; $`\\color{gray}\\textsf{Nemotron-3-Ultra}`$'), 'unknown vendors get the name only');
+  // GitHub Markdown keeps a $`...`$ span verbatim, so TeX's own `_` escape survives to the math renderer.
+  assert.equal(subtle('Qwen3_5-Coder'), '$`\\color{gray}\\textsf{Qwen3\\_5-Coder}`$');
+  assert.throws(() => footer('evil"><script>'));
+  const result = { version: 1 as const, findings: [finding], coverage: { complete: true, notes: [] } };
+  assert.ok(renderReport(r, result, manifest, { model: 'zai-org/GLM-5.3' }).body.endsWith(footer('zai-org/GLM-5.3')));
+  assert.ok(renderReport(r, result, manifest).body.endsWith(`---\n${FOOTER}`));
+  assert.ok(statusBody(r, 'Review queued.').endsWith(FOOTER));
+  // The pinned asset commit must contain every vendor mark the footer can show.
+  const sha = MODEL_ASSETS.match(/tofarev\/([0-9a-f]{40})\/assets\/models$/)![1];
+  const { execFileSync } = await import('node:child_process');
+  for (const vendor of Object.keys(VENDOR_NAMES)) {
+    const svg = execFileSync('git', ['show', `${sha}:assets/models/${vendor}.svg`], { encoding: 'utf8' });
+    assert.match(svg, /^<svg [^>]*viewBox="0 0 36 36"/, vendor);
+  }
+});

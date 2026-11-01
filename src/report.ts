@@ -1,4 +1,4 @@
-import { FOOTER, marker } from './requests.js';
+import { FOOTER, footer, marker } from './requests.js';
 import { type Finding, type Manifest, type Request, type Result, RequestSchema, ResultSchema, SessionUrl, validateLocations } from './types.js';
 import { ModelId } from './models.js';
 
@@ -120,7 +120,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
       body += '\n';
     }
     body += '</details>\n\n';
-    body += `---\n${FOOTER}`;
+    body += `---\n${footer(model)}`;
     if (Buffer.byteLength(body) <= maxBytes) return { body, request: r };
     if (findings.length) findings = findings.slice(0, -1);
     else if (shownNotes) shownNotes--;

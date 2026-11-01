@@ -13,7 +13,7 @@ Add `model=` to the review command, on the same line:
 /tofarev review model="deepseek v4.1 flash"
 ```
 
-The status comment shows the requested selector. The final report names the model that ran, for example ``Reviewed 1a2b3c4d5e6f with `zai-org/GLM-5.3` ``. If the selector does not resolve, the review stops before inference. The report then shows the reason and the available models, below the failure notice.
+The status comment shows the requested selector. The final report names the model that ran, for example ``Reviewed 1a2b3c4d5e6f with `zai-org/GLM-5.3` ``. The report footer also shows the model with its vendor mark; see [reports](reports.md). If the selector does not resolve, the review stops before inference. The report then shows the reason and the available models, below the failure notice.
 
 ## Default model
 

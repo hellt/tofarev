@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { GitHub, GitHubError, type Comment } from './github.js';
 import { RequestSchema, type Request, Sha, SessionUrl } from './types.js';
-import { Selector } from './models.js';
+import { ModelId, Selector } from './models.js';
 
 const Event = z.object({ action: z.literal('created'), repository: z.object({ id: z.number().int(), full_name: z.string() }),
   issue: z.object({ number: z.number().int().positive(), pull_request: z.object({}).passthrough() }),
@@ -52,7 +52,24 @@ export function publishedSessionUrl(body: string): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 const BRAND_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets';
-export const FOOTER = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>`;
+const POWERED_BY = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>`;
+// Vendor marks from the Token Factory model catalog, pinned like the logo above.
+export const MODEL_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/d96b303fbc990c17fe00a26db4ccc405e7e3bc61/assets/models';
+export const VENDOR_NAMES: Record<string, string> = { 'zai-org': 'Z.ai', moonshotai: 'Moonshot AI', 'deepseek-ai': 'DeepSeek' };
+// "Powered by <Token Factory> · <vendor mark> GLM-5.3" once the model is known.
+export function footer(model?: string, assets = MODEL_ASSETS): string {
+  if (!model) return POWERED_BY;
+  const [vendor, name] = ModelId.parse(model).split('/') as [string, string];
+  const mark = VENDOR_NAMES[vendor] ? `<img src="${assets}/${vendor}.svg" alt="${VENDOR_NAMES[vendor]}" title="${VENDOR_NAMES[vendor]}" height="20" align="absmiddle"> ` : '';
+  return `${POWERED_BY} &nbsp;·&nbsp; ${mark}${subtle(name)}`;
+}
+// GitHub Markdown has no colour syntax; its math renderer is the only way to show grey text.
+// The $`...`$ form keeps the TeX away from Markdown escaping, so only TeX's `_` needs escaping
+// (a model name is limited to letters, digits, `_`, `.` and `-` by ModelId).
+export function subtle(text: string): string {
+  return `$\`\\color{gray}\\textsf{${text.replaceAll('_', '\\_')}}\`$`;
+}
+export const FOOTER = footer();
 export function statusBody(r: Request, message: string, sessionUrl?: string) {
   if (sessionUrl) SessionUrl.parse(sessionUrl);
   return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Session log](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;
