@@ -47,6 +47,8 @@ test('pdf: links are parsed from program items', () => {
   assert.equal(pdfLink(a!), 'https://x.org/a.pdf');
   assert.equal(pdfLink(b!), 'https://x.org/b.pdf');
   assert.equal(pdfLink({ id: 'P1', group: '', title: 't', text: '### t\npage: https://x.org/p.html' }), null);
+  assert.equal(pdfLink({ id: 'P2', group: '', title: 't', text: '### t\npage: https://x.org/p.html | slides: https://x.org/s-00 | video: https://youtu.be/x' }), 'https://x.org/s-00');
+  assert.equal(pdfLink({ id: 'P3', group: '', title: 't', text: '### t\nslides: https://x.org/s.pdf | pdf: https://x.org/p.pdf' }), 'https://x.org/p.pdf');
 });
 
 test('the isolated worker extracts PDF text, follows safe redirects and rejects everything else', { timeout: 60_000 }, async () => {

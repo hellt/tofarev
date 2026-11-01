@@ -18,7 +18,7 @@ A program can be 800 kB, which is larger than the 100,000-token context window. 
 4. **Write.** OpenCode receives the caller instructions as the system prompt, followed by the selected items. Smaller programs go to this step whole.
 5. **Check.** Deterministic code produces the final Markdown. The model cannot change these checks.
 
-Before the write step, ToFaRev reads the PDFs that the program links. The targets are the `pdf:` links of every item in a single pass, or of the selected items in a staged run. The extracted text goes to the writer in a SOURCE TEXT section after the program. See [PDF sources](#pdf-sources).
+Before the write step, ToFaRev reads the PDFs that the program links. The targets are the `pdf:` links (or, for an item without one, its `slides:` link, which IETF meeting programs use) of every item in a single pass, or of the selected items in a staged run. The extracted text goes to the writer in a SOURCE TEXT section after the program. See [PDF sources](#pdf-sources).
 
 The write step uses one OpenCode agent. Its only tool is `webfetch`, for `page:` links of items without source text. The agent has no file, shell, or search tools. The writer instructions limit fetches to `page:` URLs from the selected items. These instructions are a model control, not a network control. If OpenCode returns no usable digest, one tool-free call writes from the program text.
 
