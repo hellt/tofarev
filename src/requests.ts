@@ -2,19 +2,30 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import { GitHub, GitHubError, type Comment } from './github.js';
 import { RequestSchema, type Request, Sha, SessionUrl } from './types.js';
+import { ModelId, Selector } from './models.js';
 
 const Event = z.object({ action: z.literal('created'), repository: z.object({ id: z.number().int(), full_name: z.string() }),
   issue: z.object({ number: z.number().int().positive(), pull_request: z.object({}).passthrough() }),
   comment: z.object({ id: z.number().int().positive(), body: z.string(), user: z.object({ login: z.string(), type: z.literal('User') }) }) });
-export type Admission = { repository: string; repositoryId: number; pr: number; triggerId: number; key: string; author: string };
+export type Admission = { repository: string; repositoryId: number; pr: number; triggerId: number; key: string; author: string; model?: string };
+// `/tofarev review` alone, or with one `model=<selector>` on the same line.
+export function parseCommand(body: string): { model?: string } | null {
+  const m = body.trim().match(/^\/tofarev review(?:[ \t]+model[ \t]*=[ \t]*(?:"([^"\n]*)"|'([^'\n]*)'|([^\n]*)))?$/);
+  if (!m) return null;
+  const raw = (m[1] ?? m[2] ?? m[3])?.trim();
+  if (raw === undefined) return {};
+  const model = Selector.safeParse(raw);
+  return model.success ? { model: model.data } : null;
+}
 export function admit(event: unknown, eventName: string, c: Config): Admission | null {
   const parsed = Event.safeParse(event); if (eventName !== 'issue_comment' || !parsed.success) return null;
   const e = parsed.data;
   if (e.repository.full_name !== c.repository || e.repository.id !== c.repositoryId ||
-    e.comment.body.trim() !== '/tofarev review' ||
+    !parseCommand(e.comment.body) ||
     !c.allowedUsers.some(u => u.toLowerCase() === e.comment.user.login.toLowerCase())) return null;
+  const { model } = parseCommand(e.comment.body)!;
   return { repository: c.repository, repositoryId: c.repositoryId, pr: e.issue.number,
-    triggerId: e.comment.id, key: `${c.repositoryId}:${e.comment.id}`, author: e.comment.user.login };
+    triggerId: e.comment.id, key: `${c.repositoryId}:${e.comment.id}`, author: e.comment.user.login, ...(model ? { model } : {}) };
 }
 export function marker(request: Request): string { return `<!-- tofarev:v1:${Buffer.from(JSON.stringify(RequestSchema.parse(request))).toString('base64')} -->`; }
 export function parseMarker(comment: Comment, c: Config, a: Admission): Request | null {
@@ -41,14 +52,31 @@ export function publishedSessionUrl(body: string): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 const BRAND_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets';
-export const FOOTER = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>`;
+const POWERED_BY = `Powered by <a href="https://tokenfactory.nebius.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="${BRAND_ASSETS}/nebius-token-factory-dark.svg"><img src="${BRAND_ASSETS}/nebius-token-factory-light.svg" alt="Nebius Token Factory" height="22" align="absmiddle"></picture></a>`;
+// Vendor marks from the Token Factory model catalog, pinned like the logo above.
+export const MODEL_ASSETS = 'https://raw.githubusercontent.com/hellt/tofarev/d96b303fbc990c17fe00a26db4ccc405e7e3bc61/assets/models';
+export const VENDOR_NAMES: Record<string, string> = { 'zai-org': 'Z.ai', moonshotai: 'Moonshot AI', 'deepseek-ai': 'DeepSeek' };
+// "Powered by <Token Factory> · <vendor mark> GLM-5.3" once the model is known.
+export function footer(model?: string, assets = MODEL_ASSETS): string {
+  if (!model) return POWERED_BY;
+  const [vendor, name] = ModelId.parse(model).split('/') as [string, string];
+  const mark = VENDOR_NAMES[vendor] ? `<img src="${assets}/${vendor}.svg" alt="${VENDOR_NAMES[vendor]}" title="${VENDOR_NAMES[vendor]}" height="20" align="absmiddle"> ` : '';
+  return `${POWERED_BY} &nbsp;·&nbsp; ${mark}${subtle(name)}`;
+}
+// GitHub Markdown has no colour syntax; its math renderer is the only way to show grey text.
+// The $`...`$ form keeps the TeX away from Markdown escaping, so only TeX's `_` needs escaping
+// (a model name is limited to letters, digits, `_`, `.` and `-` by ModelId).
+export function subtle(text: string): string {
+  return `$\`\\color{gray}\\textsf{${text.replaceAll('_', '\\_')}}\`$`;
+}
+export const FOOTER = footer();
 export function statusBody(r: Request, message: string, sessionUrl?: string) {
   if (sessionUrl) SessionUrl.parse(sessionUrl);
   return `${marker(r)}\n## ToFaRev review — ${r.state}\n\n${message}\n\n${sessionUrl ? `[Session log](${sessionUrl}) · ` : ''}[Workflow run](${r.runUrl})\n\n---\n${FOOTER}`;
 }
 export async function beginRequest(api: GitHub, c: Config, a: Admission, policy: string, runUrl: string) {
   const trigger = await api.comment(a.repository, a.triggerId);
-  if (trigger.user.type !== 'User' || trigger.user.login !== a.author || trigger.body.trim() !== '/tofarev review' ||
+  if (trigger.user.type !== 'User' || trigger.user.login !== a.author || parseCommand(trigger.body)?.model !== a.model ||
     trigger.issue_url !== `https://api.github.com/repos/${a.repository}/issues/${a.pr}`) return null;
   const existing = await findRequest(api, c, a);
   if (existing && ['completed', 'partial'].includes(existing.request.state)) return { ...existing, skip: true };
@@ -62,8 +90,9 @@ export async function beginRequest(api: GitHub, c: Config, a: Admission, policy:
   } catch (e) { if (e instanceof GitHubError && e.status === 404) failed = true; else throw e; }
   const request = RequestSchema.parse({ version: 1, key: a.key, repository: a.repository, repositoryId: a.repositoryId,
     pr: a.pr, triggerId: a.triggerId, head, base, mergeBase: existing?.request.mergeBase ?? null,
-    policy, runUrl, state: failed ? 'failed' : 'running' });
-  const body = statusBody(request, failed ? 'Review could not proceed: the pull request is closed or unavailable.' : 'Review queued.');
+    policy, runUrl, state: failed ? 'failed' : 'running', ...(a.model ? { model: a.model } : {}) });
+  const body = statusBody(request, failed ? 'Review could not proceed: the pull request is closed or unavailable.'
+    : a.model ? `Review queued with requested model \`${a.model}\`.` : 'Review queued.');
   if (existing) { await api.update(a.repository, existing.commentId, body); return { request, commentId: existing.commentId, skip: failed }; }
   for (let attempt = 0; ; attempt++) {
     try { const comment = await api.create(a.repository, a.pr, body); return { request, commentId: comment.id, skip: failed }; }

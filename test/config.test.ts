@@ -10,7 +10,8 @@ test('production configuration is explicit and invalid settings fail closed', ()
   assert.equal(c.reasoningEffort, 'high');
   assert.equal(MODEL, 'zai-org/GLM-5.3-Flash');
   assert.equal(ENDPOINT, 'https://api.tokenfactory.nebius.com/v1');
-  for (const bad of [{ repository: '../x' }, { allowedUsers: [] }, { model: 'other' }, { reasoningEffort: 'medium' }, { limits: { turns: 0 } }]) {
+  assert.equal(c.model, MODEL);
+  for (const bad of [{ repository: '../x' }, { allowedUsers: [] }, { model: 'glm; rm -rf /' }, { model: '' }, { model: 'x'.repeat(101) }, { endpoint: 'https://evil.example' }, { reasoningEffort: 'medium' }, { limits: { turns: 0 } }]) {
     assert.throws(() => config(bad));
   }
   assert.throws(() => apiKey({}), /TOFAREV_API_KEY/);

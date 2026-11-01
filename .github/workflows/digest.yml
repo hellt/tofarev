@@ -1,0 +1,97 @@
+name: ToFaRev reusable digest
+on:
+  workflow_call:
+    inputs:
+      bot_repository:
+        required: true
+        type: string
+      bot_ref:
+        required: true
+        type: string
+      key:
+        description: Registry key. The caller's prompts/<key>.md is digested.
+        required: true
+        type: string
+      source_ref:
+        description: Full caller commit SHA that contains the prompt.
+        required: true
+        type: string
+      trusted_config:
+        description: Validated JSON configuration.
+        type: string
+        default: '{}'
+    secrets:
+      TOFAREV_API_KEY:
+        required: true
+      TAVILY_API_KEY:
+        description: Optional Tavily key. Linked PDFs that cannot be fetched directly are sent to Tavily Extract.
+        required: false
+permissions:
+  contents: read
+jobs:
+  digest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DIGEST_KEY: ${{ inputs.key }}
+    steps:
+      - name: Validate trusted workflow inputs
+        env:
+          BOT_REF: ${{ inputs.bot_ref }}
+          BOT_REPOSITORY: ${{ inputs.bot_repository }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          TRUSTED_CONFIG: ${{ inputs.trusted_config }}
+        run: |
+          node -e 'const e = process.env; if (!/^[a-f0-9]{40}$/.test(e.BOT_REF) || !/^[a-f0-9]{40}$/.test(e.SOURCE_REF) || !/^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/.test(e.BOT_REPOSITORY) || !/^[a-z0-9][a-z0-9._-]{0,99}$/.test(e.DIGEST_KEY)) process.exit(1); JSON.parse(e.TRUSTED_CONFIG)'
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.bot_repository }}
+          ref: ${{ inputs.bot_ref }}
+          persist-credentials: false
+      - name: Check out the caller prompt
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: .work/caller
+          sparse-checkout: prompts/${{ inputs.key }}.md
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Prepare read-only input
+        env:
+          TRUSTED_CONFIG: ${{ inputs.trusted_config }}
+        run: |
+          mkdir -p .work/source .work/out
+          cp ".work/caller/prompts/$DIGEST_KEY.md" .work/source/prompt.md
+          rm -rf .work/caller
+          printf '%s' "$TRUSTED_CONFIG" > .work/config.json
+          chmod -R a+rX .work/source
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.20.0
+      - run: npm ci --ignore-scripts && npm run build
+      - name: Build pinned writer
+        run: docker build --tag tofarev-reviewer .
+      - name: Run isolated digest writer
+        env:
+          TOFAREV_API_KEY: ${{ secrets.TOFAREV_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          set +e
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 3g --cpus 2 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --tmpfs /home/node:rw,nosuid,nodev,size=256m,uid=1000,gid=1000 \
+            --mount type=bind,src="$PWD/.work/source",dst=/source,readonly \
+            --mount type=bind,src="$PWD/.work/config.json",dst=/config.json,readonly \
+            --env TOFAREV_API_KEY --env TAVILY_API_KEY --env TOFAREV_CONFIG=/config.json \
+            tofarev-reviewer digest /source/prompt.md > .work/result.json
+          echo "Digest writer exited with status $?."
+      - name: Validate and write digest files
+        run: node dist/src/cli.js digest-files .work/result.json .work/out
+      - name: Preserve digest
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tofarev-digest-${{ inputs.key }}
+          path: .work/out
+          retention-days: 7
+          if-no-files-found: warn
+          overwrite: true

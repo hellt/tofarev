@@ -84,3 +84,42 @@ test('published session links accept known labels and validated hosting URL form
   assert.equal(publishedSessionUrl('[Session log](https://hellt.github.io/tofarev/sessions/290960521/123-1/)'), 'https://hellt.github.io/tofarev/sessions/290960521/123-1/');
   assert.equal(publishedSessionUrl('[Other session](https://opncd.ai/share/test1234)'), undefined);
 });
+
+test('the review command accepts one optional model selector on the same line', async () => {
+  const { parseCommand } = await import('../src/requests.js');
+  const ok: [string, string | undefined][] = [
+    ['/tofarev review', undefined], [' \n/tofarev review\n ', undefined], ['/tofarev review model=glm5.3', 'glm5.3'],
+    ['/tofarev review model=glm 5.3', 'glm 5.3'], ['/tofarev review model=z.ai/glm 5.3', 'z.ai/glm 5.3'], ['/tofarev review model = kimi k3 ', 'kimi k3'],
+    ['/tofarev review model="deepseek v4.1 flash"', 'deepseek v4.1 flash'], ["/tofarev review model='GLM-5.3-Flash'", 'GLM-5.3-Flash'],
+    ['/tofarev review model=deepseek-ai/DeepSeek-V4-Pro-0813', 'deepseek-ai/DeepSeek-V4-Pro-0813'],
+  ];
+  for (const [body, model] of ok) assert.deepEqual(parseCommand(body), model ? { model } : {}, body);
+  for (const body of ['/tofarev review model=', '/tofarev review model=glm\nplease', '/tofarev review now', '/tofarev review model=$(id)',
+    '/tofarev review model=`glm`', '/tofarev review model=glm|kimi', `/tofarev review model=${'g'.repeat(65)}`, 'quote /tofarev review model=glm',
+    '/tofarev reviewmodel=glm', '/tofarev review model=glm model=kimi']) {
+    assert.equal(parseCommand(body), null, body);
+  }
+  const e = event(); e.comment.body = '/tofarev review model=z.ai/glm 5.3';
+  assert.equal(admit(e, 'issue_comment', config())?.model, 'z.ai/glm 5.3');
+  e.comment.body = '/tofarev review model=glm; rm -rf /';
+  assert.equal(admit(e, 'issue_comment', config()), null);
+});
+
+test('a requested model is recorded in the marker and status comment, and must match the trigger', async () => {
+  const e = event(); e.comment.body = '/tofarev review model=glm 5.3';
+  const a = admit(e, 'issue_comment', config())!;
+  let created: any;
+  const api = (body: string) => new GitHub('secret', (async (url: string, init: RequestInit) => {
+    if (url.includes('/issues/comments/7')) return Response.json({ ...e.comment, body, issue_url: 'https://api.github.com/repos/srl-labs/containerlab/issues/42' });
+    if (url.includes('/pulls/')) return Response.json({ state: 'open', head: { sha: request.head }, base: { sha: request.base } });
+    if (init.method === 'POST') { created = JSON.parse(String(init.body)); return Response.json({ id: 9 }); }
+    return Response.json([]);
+  }) as typeof fetch);
+  const started = await beginRequest(api('/tofarev review model=glm 5.3'), config(), a, request.policy, request.runUrl);
+  assert.equal(started?.request.model, 'glm 5.3');
+  assert.match(created.body, /Review queued with requested model `glm 5.3`\./);
+  const comment = { id: 9, user: { type: 'Bot', login: 'tofarev[bot]' }, body: created.body };
+  assert.equal(parseMarker(comment, config(), a)?.model, 'glm 5.3');
+  assert.equal(await beginRequest(api('/tofarev review model=kimi'), config(), a, request.policy, request.runUrl), null, 'an edited trigger is rejected');
+  assert.equal(await beginRequest(api('/tofarev review'), config(), a, request.policy, request.runUrl), null);
+});

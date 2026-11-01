@@ -122,7 +122,7 @@ Install the generated file in Containerlab:
 2. In a Containerlab checkout, copy it to `.github/workflows/tofarev.yml`, commit it, and push it through the repository's normal review process. Alternatively, use GitHub's **Add file → Create new file**, name it `.github/workflows/tofarev.yml`, and paste the generated YAML.
 3. Get the file onto Containerlab's **default branch** (`main`). A workflow present only in a pull request will not receive these comment events.
 4. Confirm the two Actions secrets and Client ID variable from step 3 are configured, and the GitHub App is installed on Containerlab.
-5. As `hellt`, `flosch62`, or `kaelemc`, submit a new PR conversation comment containing exactly `/tofarev review`. The **ToFaRev** workflow should appear in Containerlab's **Actions** tab, and the App should post a status comment followed by the review.
+5. As `hellt`, `flosch62`, or `kaelemc`, submit a new PR conversation comment containing exactly `/tofarev review`, optionally followed by `model=<selector>`. The **ToFaRev** workflow should appear in Containerlab's **Actions** tab, and the App should post a status comment followed by the review.
 
 The [illustrative example](examples/containerlab-workflow.yml) uses dummy `owner/tofarev` and `aaaa…` values and must not be installed unchanged. You do not need to copy the bot source into Containerlab; the caller references the pinned workflow in the bot repository.
 

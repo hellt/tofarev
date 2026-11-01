@@ -1,5 +1,6 @@
-import { FOOTER, marker } from './requests.js';
+import { FOOTER, footer, marker } from './requests.js';
 import { type Finding, type Manifest, type Request, type Result, RequestSchema, ResultSchema, SessionUrl, validateLocations } from './types.js';
+import { ModelId } from './models.js';
 
 // Literal text fields: encode Markdown/HTML punctuation before assembling trusted markup.
 export function escape(text: string): string {
@@ -74,7 +75,9 @@ export function diagram(input?: string): string | null {
 }
 
 export function renderReport(request: Request, result: Result | null, manifest: Manifest | null,
-  options: { notes?: string[]; currentHead?: string; maxBytes?: number; sessionUrl?: string; sharingEnabled?: boolean; sessionSyncPending?: boolean } = {}): { body: string; request: Request } {
+  options: { notes?: string[]; currentHead?: string; maxBytes?: number; sessionUrl?: string; sharingEnabled?: boolean; sessionSyncPending?: boolean;
+    model?: string; modelError?: string } = {}): { body: string; request: Request } {
+  const model = options.model ? ModelId.parse(options.model) : undefined;
   const r = RequestSchema.parse(request);
   if (options.sessionUrl) SessionUrl.parse(options.sessionUrl);
   const checked = result && manifest ? formatInlineCode(validateLocations(ResultSchema.parse(result), manifest)) : null;
@@ -87,13 +90,14 @@ export function renderReport(request: Request, result: Result | null, manifest: 
     const omitted = total - findings.length;
     r.state = !checked ? 'failed' : (!checked.coverage.complete || manifest?.incomplete || options.notes?.length || omitted) ? 'partial' : 'completed';
     let body = `${marker(r)}\n## ToFaRev review — ${r.state}\n\n`;
-    if (r.head) body += `Reviewed [${r.head.slice(0, 12)}](https://github.com/${r.repository}/commit/${r.head}) · `;
+    if (r.head) body += `Reviewed [${r.head.slice(0, 12)}](https://github.com/${r.repository}/commit/${r.head})${model ? ` with \`${model}\`` : ''} · `;
     if (options.sessionUrl) body += `[Session log](${options.sessionUrl}) · `;
     body += `[Workflow run](${r.runUrl})\n\n`;
     if (options.sessionUrl && options.sessionSyncPending) body += 'The live session link is retained. Final report synchronization could not be confirmed; finding details are included below.\n\n';
     if (options.currentHead && options.currentHead !== r.head) body += '**Newer commits are present; they were not reviewed.**\n\n';
     if (r.state === 'partial') body += '**Partial review. The findings below do not cover all changes.**\n\n';
     if (r.state === 'failed') body += '**Review could not be completed. This is not a clean review.**\n\n';
+    if (options.modelError) body += `${prose(options.modelError)}\n\n`;
     if (omitted) body += `**${omitted} findings omitted to fit the comment size limit.**\n\n`;
     if (findings.length) {
       body += '| Finding | Location |\n| --- | --- |\n';
@@ -116,7 +120,7 @@ export function renderReport(request: Request, result: Result | null, manifest: 
       body += '\n';
     }
     body += '</details>\n\n';
-    body += `---\n${FOOTER}`;
+    body += `---\n${footer(model)}`;
     if (Buffer.byteLength(body) <= maxBytes) return { body, request: r };
     if (findings.length) findings = findings.slice(0, -1);
     else if (shownNotes) shownNotes--;
