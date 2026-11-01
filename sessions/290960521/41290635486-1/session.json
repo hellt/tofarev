@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "657b1700664a99c5e12c60b4cfd179eb11889bae",
-  "updatedAt": "2026-11-01T08:57:57.244Z",
-  "state": "running",
+  "updatedAt": "2026-11-01T08:58:36.101Z",
+  "state": "completed",
   "info": {
     "id": "ses_e69af794bffepNbEhVAv4WOoCS",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 630455,
-      "output": 10768,
-      "reasoning": 14720,
+      "input": 640589,
+      "output": 13397,
+      "reasoning": 17443,
       "cache": {
-        "read": 1687296,
+        "read": 1894720,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793523222196,
-      "updated": 1793523476960
+      "updated": 1793523516007
     }
   },
   "messages": [
@@ -5842,7 +5842,8 @@
         "id": "msg_1965469dd001abKSHVc0hGYfzy",
         "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
         "time": {
-          "created": 1793523476957
+          "created": 1793523476957,
+          "completed": 1793523478783
         },
         "parentID": "msg_1965436e6001620KypTRi1ley5",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -5855,16 +5856,557 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 38833,
+          "input": 1909,
+          "output": 31,
+          "reasoning": 29,
           "cache": {
-            "read": 0,
+            "read": 36864,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
-      "parts": []
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_196546fe4001NnpoJbZmSpCY1S",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965469dd001abKSHVc0hGYfzy"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_196546fe6001QIeJ0ML12RC5S4",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965469dd001abKSHVc0hGYfzy",
+          "text": "Let me look at the audit handling code around lines 758-810 in capture.go to confirm the stopping/audit-error behavior.",
+          "time": {
+            "start": 1793523478502,
+            "end": 1793523478766
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1965470f0001fjGIGBC3vg8zsz",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965469dd001abKSHVc0hGYfzy",
+          "callID": "call_054731461af84e7b906aa137",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/labruntime/clabernetes/capture.go",
+              "limit": 120,
+              "offset": 700
+            },
+            "output": "<path>/source/head/labruntime/clabernetes/capture.go</path>\n<type>file</type>\n<content>\n700: \t\t\treturn\n701: \t\tcase <-c.events:\n702: \t\t}\n703: \t}\n704: }\n705: \n706: // segmentDuration is the requested duration of a segment starting now.\n707: func (c *captureChain) segmentDuration(now time.Time) time.Duration {\n708: \tduration := c.capture.segment\n709: \tif !c.capture.deadline.IsZero() {\n710: \t\tduration = min(duration, c.capture.deadline.Sub(now))\n711: \t}\n712: \n713: \treturn max(duration, minCaptureSegment)\n714: }\n715: \n716: // nextStartIn is the time until the follow-up of the active segment is due. It marks the chain\n717: // final when none is due.\n718: func (c *captureChain) nextStartIn() time.Duration {\n719: \tif c.stopping {\n720: \t\tc.final = true\n721: \t\treturn maxCaptureSegment\n722: \t}\n723: \tactiveEnd := c.active.localStart.Add(c.active.duration)\n724: \tif !c.capture.deadline.IsZero() &&\n725: \t\t!activeEnd.Before(c.capture.deadline.Add(-c.capture.window)) {\n726: \t\tc.final = true\n727: \t\treturn maxCaptureSegment\n728: \t}\n729: \tc.final = false\n730: \n731: \treturn max(time.Until(activeEnd.Add(-c.capture.overlap)), 0)\n732: }\n733: \n734: func (c *captureChain) startNext(ctx context.Context) {\n735: \tc.next = c.start(ctx, c.segmentDuration(time.Now()))\n736: \tc.emitted = map[uint64]int{}\n737: \tc.held = nil\n738: \tc.cut = 0\n739: }\n740: \n741: func (c *captureChain) handle(\n742: \tctx context.Context,\n743: \tevent segmentEvent,\n744: \ttimer *time.Timer,\n745: ) (bool, error) {\n746: \tsegment := event.segment\n747: \n748: \tswitch {\n749: \tcase event.audit != nil:\n750: \t\treturn false, c.handleAudit(segment, event.audit)\n751: \tcase event.packet != nil:\n752: \t\treturn c.handlePacket(segment, event.packet)\n753: \tcase event.done:\n754: \t\tsegment.done = true\n755: \t\tif segment.stopTimer != nil {\n756: \t\t\tsegment.stopTimer.Stop()\n757: \t\t}\n758: \t\tif event.err != nil && !c.stopping {\n759: \t\t\tif segment == c.next && segment.started.IsZero() && c.retries < captureStartRetries {\n760: \t\t\t\t// the follow-up did not start; try again while the active one still runs\n761: \t\t\t\tc.retries++\n762: \t\t\t\tlog.Warn(\"Capture follow-up segment failed to start, retrying\",\n763: \t\t\t\t\t\"node\", c.group.display, \"error\", event.err)\n764: \t\t\t\tc.next = nil\n765: \t\t\t\tresetTimer(timer, time.Second)\n766: \n767: \t\t\t\treturn false, nil\n768: \t\t\t}\n769: \n770: \t\t\treturn true, fmt.Errorf(\"capture on c9s node %s/%s/%s failed: %w\",\n771: \t\t\t\tc.group.location.Namespace, c.capture.req.Name, c.group.display, event.err)\n772: \t\t}\n773: \t\tif segment != c.active {\n774: \t\t\treturn false, nil\n775: \t\t}\n776: \n777: \t\treturn c.switchSegments(ctx, timer)\n778: \t}\n779: \n780: \treturn false, nil\n781: }\n782: \n783: func (c *captureChain) handleAudit(segment *captureSegment, audit *captureAudit) error {\n784: \tswitch audit.Status {\n785: \tcase captureAuditStarted:\n786: \t\tsegment.started = audit.Time\n787: \t\tlog.Debug(\"Capture segment started\", \"node\", c.group.display, \"segment\", segment.index,\n788: \t\t\t\"interfaces\", strings.Join(c.group.interfaces, \",\"), \"duration\", segment.duration)\n789: \t\tif segment == c.next && !c.active.started.IsZero() {\n790: \t\t\tc.setCut()\n791: \t\t}\n792: \t\tif segment == c.next {\n793: \t\t\tc.retries = 0\n794: \t\t}\n795: \tcase captureAuditSucceeded:\n796: \t\tsegment.ended = audit.Time\n797: \t\tlog.Debug(\"Capture segment succeeded\", \"node\", c.group.display,\n798: \t\t\t\"segment\", segment.index, \"packets\", audit.Packets)\n799: \tcase captureAuditDenied, captureAuditFailed:\n800: \t\treturn captureAuditError(c.group.display, audit)\n801: \t}\n802: \n803: \treturn nil\n804: }\n805: \n806: // captureAuditError turns a Denied or Failed clabwire audit record into an error.\n807: func captureAuditError(node string, audit *captureAudit) error {\n808: \tverb := \"failed\"\n809: \tif audit.Status == captureAuditDenied {\n810: \t\tverb = \"was denied\"\n811: \t}\n812: \tinterfaces := make([]string, 0, len(audit.Interfaces))\n813: \tfor _, intf := range audit.Interfaces {\n814: \t\tinterfaces = append(interfaces, intf.Name)\n815: \t}\n816: \n817: \treturn fmt.Errorf(\"capture of %s on node %s %s by clabwire: %s\",\n818: \t\tstrings.Join(interfaces, \",\"), node, verb, audit.Reason)\n819: }\n\n(Showing lines 700-819 of 1202. Use offset=820 to continue.)\n</content>",
+            "title": "source/head/labruntime/clabernetes/capture.go",
+            "metadata": {
+              "preview": "\t\t\treturn\n\t\tcase <-c.events:\n\t\t}\n\t}\n}\n\n// segmentDuration is the requested duration of a segment starting now.\nfunc (c *captureChain) segmentDuration(now time.Time) time.Duration {\n\tduration := c.capture.segment\n\tif !c.capture.deadline.IsZero() {\n\t\tduration = min(duration, c.capture.deadline.Sub(now))\n\t}\n\n\treturn max(duration, minCaptureSegment)\n}\n\n// nextStartIn is the time until the follow-up of the active segment is due. It marks the chain\n// final when none is due.\nfunc (c *captureChain) nextStartIn() time.Duration {\n\tif c.stopping {",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/labruntime/clabernetes/capture.go",
+                "text": "\t\t\treturn\n\t\tcase <-c.events:\n\t\t}\n\t}\n}\n\n// segmentDuration is the requested duration of a segment starting now.\nfunc (c *captureChain) segmentDuration(now time.Time) time.Duration {\n\tduration := c.capture.segment\n\tif !c.capture.deadline.IsZero() {\n\t\tduration = min(duration, c.capture.deadline.Sub(now))\n\t}\n\n\treturn max(duration, minCaptureSegment)\n}\n\n// nextStartIn is the time until the follow-up of the active segment is due. It marks the chain\n// final when none is due.\nfunc (c *captureChain) nextStartIn() time.Duration {\n\tif c.stopping {\n\t\tc.final = true\n\t\treturn maxCaptureSegment\n\t}\n\tactiveEnd := c.active.localStart.Add(c.active.duration)\n\tif !c.capture.deadline.IsZero() &&\n\t\t!activeEnd.Before(c.capture.deadline.Add(-c.capture.window)) {\n\t\tc.final = true\n\t\treturn maxCaptureSegment\n\t}\n\tc.final = false\n\n\treturn max(time.Until(activeEnd.Add(-c.capture.overlap)), 0)\n}\n\nfunc (c *captureChain) startNext(ctx context.Context) {\n\tc.next = c.start(ctx, c.segmentDuration(time.Now()))\n\tc.emitted = map[uint64]int{}\n\tc.held = nil\n\tc.cut = 0\n}\n\nfunc (c *captureChain) handle(\n\tctx context.Context,\n\tevent segmentEvent,\n\ttimer *time.Timer,\n) (bool, error) {\n\tsegment := event.segment\n\n\tswitch {\n\tcase event.audit != nil:\n\t\treturn false, c.handleAudit(segment, event.audit)\n\tcase event.packet != nil:\n\t\treturn c.handlePacket(segment, event.packet)\n\tcase event.done:\n\t\tsegment.done = true\n\t\tif segment.stopTimer != nil {\n\t\t\tsegment.stopTimer.Stop()\n\t\t}\n\t\tif event.err != nil && !c.stopping {\n\t\t\tif segment == c.next && segment.started.IsZero() && c.retries < captureStartRetries {\n\t\t\t\t// the follow-up did not start; try again while the active one still runs\n\t\t\t\tc.retries++\n\t\t\t\tlog.Warn(\"Capture follow-up segment failed to start, retrying\",\n\t\t\t\t\t\"node\", c.group.display, \"error\", event.err)\n\t\t\t\tc.next = nil\n\t\t\t\tresetTimer(timer, time.Second)\n\n\t\t\t\treturn false, nil\n\t\t\t}\n\n\t\t\treturn true, fmt.Errorf(\"capture on c9s node %s/%s/%s failed: %w\",\n\t\t\t\tc.group.location.Namespace, c.capture.req.Name, c.group.display, event.err)\n\t\t}\n\t\tif segment != c.active {\n\t\t\treturn false, nil\n\t\t}\n\n\t\treturn c.switchSegments(ctx, timer)\n\t}\n\n\treturn false, nil\n}\n\nfunc (c *captureChain) handleAudit(segment *captureSegment, audit *captureAudit) error {\n\tswitch audit.Status {\n\tcase captureAuditStarted:\n\t\tsegment.started = audit.Time\n\t\tlog.Debug(\"Capture segment started\", \"node\", c.group.display, \"segment\", segment.index,\n\t\t\t\"interfaces\", strings.Join(c.group.interfaces, \",\"), \"duration\", segment.duration)\n\t\tif segment == c.next && !c.active.started.IsZero() {\n\t\t\tc.setCut()\n\t\t}\n\t\tif segment == c.next {\n\t\t\tc.retries = 0\n\t\t}\n\tcase captureAuditSucceeded:\n\t\tsegment.ended = audit.Time\n\t\tlog.Debug(\"Capture segment succeeded\", \"node\", c.group.display,\n\t\t\t\"segment\", segment.index, \"packets\", audit.Packets)\n\tcase captureAuditDenied, captureAuditFailed:\n\t\treturn captureAuditError(c.group.display, audit)\n\t}\n\n\treturn nil\n}\n\n// captureAuditError turns a Denied or Failed clabwire audit record into an error.\nfunc captureAuditError(node string, audit *captureAudit) error {\n\tverb := \"failed\"\n\tif audit.Status == captureAuditDenied {\n\t\tverb = \"was denied\"\n\t}\n\tinterfaces := make([]string, 0, len(audit.Interfaces))\n\tfor _, intf := range audit.Interfaces {\n\t\tinterfaces = append(interfaces, intf.Name)\n\t}\n\n\treturn fmt.Errorf(\"capture of %s on node %s %s by clabwire: %s\",\n\t\tstrings.Join(interfaces, \",\"), node, verb, audit.Reason)\n}",
+                "lineStart": 700,
+                "lineEnd": 819,
+                "totalLines": 1202,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793523478772,
+              "end": 1793523478778
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1965470fc0019mtZWgxmgWbWTr",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965469dd001abKSHVc0hGYfzy",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 38833,
+            "input": 1909,
+            "output": 31,
+            "reasoning": 29,
+            "cache": {
+              "read": 36864,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1965471090010I0XCBAsYtLHBt",
+        "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+        "time": {
+          "created": 1793523478793,
+          "completed": 1793523481833
+        },
+        "parentID": "msg_1965436e6001620KypTRi1ley5",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-RDQspZ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 40384,
+          "input": 1464,
+          "output": 63,
+          "reasoning": 137,
+          "cache": {
+            "read": 38720,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19654785c001lf2gmbS0DLTLp9",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965471090010I0XCBAsYtLHBt"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19654785d0014S2vKNEB2eXm9E",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965471090010I0XCBAsYtLHBt",
+          "text": "Confirmed: `handleAudit` returns an error for Denied/Failed regardless of `c.stopping`. When stopping (Ctrl+C), if clabwire emits a Failed audit record on stdin close, the chain returns that error even though the run's clean-exit contract promises \"context ended is not an error\". Is this actually a bug? Let me check how the chain error is consumed at stop. Look at the chain run loop and where stop() is invoked — the run function around line 464 and where c.stopping is set (line 681).\n\nLet me read lines 600-700 and 940-1000 to see error flow at stop.",
+          "time": {
+            "start": 1793523480669,
+            "end": 1793523481716
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_196547c75001Ve0DKx6Fyx6P5t",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965471090010I0XCBAsYtLHBt",
+          "callID": "call_0a54e24d901b46bd868587c7",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/labruntime/clabernetes/capture.go",
+              "limit": 130,
+              "offset": 590
+            },
+            "output": "<path>/source/head/labruntime/clabernetes/capture.go</path>\n<type>file</type>\n<content>\n590: // processes give the same packet timestamps a few microseconds apart, and timestamps alone\n591: // cannot pair them. The chain therefore cuts in the middle of the overlap and matches packets by\n592: // content close to the cut:\n593: //\n594: //  1. When segment k+1 reports Started (pod clock, from its audit record), the cut is\n595: //     T = midpoint of [Started(k+1), Started(k) + duration(k)]: both segments run then.\n596: //  2. Segment k keeps streaming live, but only packets stamped before T; it remembers the\n597: //     content of what it wrote since segment k+1 started.\n598: //  3. Segment k+1's packets are held back until segment k has ended. Then the ones stamped\n599: //     before T-W are dropped (segment k had them), the ones stamped within W of T are dropped\n600: //     when segment k wrote the same bytes on the same interface, and every other one is written.\n601: //     From then on segment k+1 streams live.\n602: //\n603: // Once the pod clock passed T+W, segment k's stdin is closed so it ends without running to its\n604: // planned end. While packets are held back, the chain holds the reorder buffer at T-W, so other\n605: // nodes' later packets do not overtake them in the merged stream.\n606: //\n607: // W (500 ms, less for short test segments) covers the stamping difference. Identical frames on\n608: // the same interface within W of the cut can be paired with each other, which can drop a true\n609: // repeat; nothing else is lost or doubled. A follow-up segment that does not start in time leaves\n610: // a gap, which is reported through CaptureRequest.OnGap (or logged), never silently ignored.\n611: type captureChain struct {\n612: \tcapture *captureRun\n613: \tgroup   *captureGroup\n614: \n615: \tevents chan segmentEvent\n616: \twg     sync.WaitGroup\n617: \n618: \tactive *captureSegment\n619: \tnext   *captureSegment\n620: \t// cut is the switch time between active and next, in nanoseconds; zero until known.\n621: \tcut int64\n622: \t// emitted remembers the content of the packets active wrote while next runs.\n623: \temitted map[uint64]int\n624: \t// held are the packets of next until active ends.\n625: \theld     []*clabcapture.Packet\n626: \tsegments int\n627: \tretries  int\n628: \t// final is set once no further segment is due.\n629: \tfinal bool\n630: \t// stopping is set once ctx ended: the segments are asked to end and what they still\n631: \t// deliver is written.\n632: \tstopping bool\n633: }\n634: \n635: // run runs the chain until its last segment ended. When ctx ends, it stops the segments and\n636: // keeps writing the packets they read until then; a segment that does not end within\n637: // captureStdinCloseGrace is cut.\n638: func (c *captureChain) run(ctx context.Context) error {\n639: \tc.events = make(chan segmentEvent, 256)\n640: \t// the segments outlive ctx so they can deliver their last packets; segmentsCtx cuts them\n641: \tsegmentsCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))\n642: \tvar abort *time.Timer\n643: \tdefer func() {\n644: \t\tif abort != nil {\n645: \t\t\tabort.Stop()\n646: \t\t}\n647: \t\tcancel()\n648: \t\tc.drain()\n649: \t\tc.capture.out.Release(c)\n650: \t}()\n651: \n652: \tc.active = c.start(segmentsCtx, c.segmentDuration(time.Now()))\n653: \ttimer := time.NewTimer(c.nextStartIn())\n654: \tdefer timer.Stop()\n655: \n656: \tdone := ctx.Done()\n657: \tfor {\n658: \t\tselect {\n659: \t\tcase <-done:\n660: \t\t\tdone = nil\n661: \t\t\tc.stop(timer)\n662: \t\t\tabort = time.AfterFunc(captureStdinCloseGrace, cancel)\n663: \t\tcase <-segmentsCtx.Done():\n664: \t\t\treturn nil\n665: \t\tcase <-timer.C:\n666: \t\t\tif c.next == nil && !c.final {\n667: \t\t\t\tc.startNext(segmentsCtx)\n668: \t\t\t}\n669: \t\tcase event := <-c.events:\n670: \t\t\tstop, err := c.handle(segmentsCtx, event, timer)\n671: \t\t\tif err != nil || stop {\n672: \t\t\t\treturn err\n673: \t\t\t}\n674: \t\t}\n675: \t}\n676: }\n677: \n678: // stop ends the chain early, like a deadline would: no further segment starts and the running\n679: // ones are asked to end. The chain then writes what they deliver until they ended.\n680: func (c *captureChain) stop(timer *time.Timer) {\n681: \tc.stopping = true\n682: \tc.final = true\n683: \ttimer.Stop()\n684: \tc.active.closeStdin()\n685: \tif c.next != nil {\n686: \t\tc.next.closeStdin()\n687: \t}\n688: }\n689: \n690: // drain waits for the segment goroutines after the chain ended.\n691: func (c *captureChain) drain() {\n692: \tdone := make(chan struct{})\n693: \tgo func() {\n694: \t\tc.wg.Wait()\n695: \t\tclose(done)\n696: \t}()\n697: \tfor {\n698: \t\tselect {\n699: \t\tcase <-done:\n700: \t\t\treturn\n701: \t\tcase <-c.events:\n702: \t\t}\n703: \t}\n704: }\n705: \n706: // segmentDuration is the requested duration of a segment starting now.\n707: func (c *captureChain) segmentDuration(now time.Time) time.Duration {\n708: \tduration := c.capture.segment\n709: \tif !c.capture.deadline.IsZero() {\n710: \t\tduration = min(duration, c.capture.deadline.Sub(now))\n711: \t}\n712: \n713: \treturn max(duration, minCaptureSegment)\n714: }\n715: \n716: // nextStartIn is the time until the follow-up of the active segment is due. It marks the chain\n717: // final when none is due.\n718: func (c *captureChain) nextStartIn() time.Duration {\n719: \tif c.stopping {\n\n(Showing lines 590-719 of 1202. Use offset=720 to continue.)\n</content>",
+            "title": "source/head/labruntime/clabernetes/capture.go",
+            "metadata": {
+              "preview": "// processes give the same packet timestamps a few microseconds apart, and timestamps alone\n// cannot pair them. The chain therefore cuts in the middle of the overlap and matches packets by\n// content close to the cut:\n//\n//  1. When segment k+1 reports Started (pod clock, from its audit record), the cut is\n//     T = midpoint of [Started(k+1), Started(k) + duration(k)]: both segments run then.\n//  2. Segment k keeps streaming live, but only packets stamped before T; it remembers the\n//     content of what it wrote since segment k+1 started.\n//  3. Segment k+1's packets are held back until segment k has ended. Then the ones stamped\n//     before T-W are dropped (segment k had them), the ones stamped within W of T are dropped\n//     when segment k wrote the same bytes on the same interface, and every other one is written.\n//     From then on segment k+1 streams live.\n//\n// Once the pod clock passed T+W, segment k's stdin is closed so it ends without running to its\n// planned end. While packets are held back, the chain holds the reorder buffer at T-W, so other\n// nodes' later packets do not overtake them in the merged stream.\n//\n// W (500 ms, less for short test segments) covers the stamping difference. Identical frames on\n// the same interface within W of the cut can be paired with each other, which can drop a true\n// repeat; nothing else is lost or doubled. A follow-up segment that does not start in time leaves",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/labruntime/clabernetes/capture.go",
+                "text": "// processes give the same packet timestamps a few microseconds apart, and timestamps alone\n// cannot pair them. The chain therefore cuts in the middle of the overlap and matches packets by\n// content close to the cut:\n//\n//  1. When segment k+1 reports Started (pod clock, from its audit record), the cut is\n//     T = midpoint of [Started(k+1), Started(k) + duration(k)]: both segments run then.\n//  2. Segment k keeps streaming live, but only packets stamped before T; it remembers the\n//     content of what it wrote since segment k+1 started.\n//  3. Segment k+1's packets are held back until segment k has ended. Then the ones stamped\n//     before T-W are dropped (segment k had them), the ones stamped within W of T are dropped\n//     when segment k wrote the same bytes on the same interface, and every other one is written.\n//     From then on segment k+1 streams live.\n//\n// Once the pod clock passed T+W, segment k's stdin is closed so it ends without running to its\n// planned end. While packets are held back, the chain holds the reorder buffer at T-W, so other\n// nodes' later packets do not overtake them in the merged stream.\n//\n// W (500 ms, less for short test segments) covers the stamping difference. Identical frames on\n// the same interface within W of the cut can be paired with each other, which can drop a true\n// repeat; nothing else is lost or doubled. A follow-up segment that does not start in time leaves\n// a gap, which is reported through CaptureRequest.OnGap (or logged), never silently ignored.\ntype captureChain struct {\n\tcapture *captureRun\n\tgroup   *captureGroup\n\n\tevents chan segmentEvent\n\twg     sync.WaitGroup\n\n\tactive *captureSegment\n\tnext   *captureSegment\n\t// cut is the switch time between active and next, in nanoseconds; zero until known.\n\tcut int64\n\t// emitted remembers the content of the packets active wrote while next runs.\n\temitted map[uint64]int\n\t// held are the packets of next until active ends.\n\theld     []*clabcapture.Packet\n\tsegments int\n\tretries  int\n\t// final is set once no further segment is due.\n\tfinal bool\n\t// stopping is set once ctx ended: the segments are asked to end and what they still\n\t// deliver is written.\n\tstopping bool\n}\n\n// run runs the chain until its last segment ended. When ctx ends, it stops the segments and\n// keeps writing the packets they read until then; a segment that does not end within\n// captureStdinCloseGrace is cut.\nfunc (c *captureChain) run(ctx context.Context) error {\n\tc.events = make(chan segmentEvent, 256)\n\t// the segments outlive ctx so they can deliver their last packets; segmentsCtx cuts them\n\tsegmentsCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))\n\tvar abort *time.Timer\n\tdefer func() {\n\t\tif abort != nil {\n\t\t\tabort.Stop()\n\t\t}\n\t\tcancel()\n\t\tc.drain()\n\t\tc.capture.out.Release(c)\n\t}()\n\n\tc.active = c.start(segmentsCtx, c.segmentDuration(time.Now()))\n\ttimer := time.NewTimer(c.nextStartIn())\n\tdefer timer.Stop()\n\n\tdone := ctx.Done()\n\tfor {\n\t\tselect {\n\t\tcase <-done:\n\t\t\tdone = nil\n\t\t\tc.stop(timer)\n\t\t\tabort = time.AfterFunc(captureStdinCloseGrace, cancel)\n\t\tcase <-segmentsCtx.Done():\n\t\t\treturn nil\n\t\tcase <-timer.C:\n\t\t\tif c.next == nil && !c.final {\n\t\t\t\tc.startNext(segmentsCtx)\n\t\t\t}\n\t\tcase event := <-c.events:\n\t\t\tstop, err := c.handle(segmentsCtx, event, timer)\n\t\t\tif err != nil || stop {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n}\n\n// stop ends the chain early, like a deadline would: no further segment starts and the running\n// ones are asked to end. The chain then writes what they deliver until they ended.\nfunc (c *captureChain) stop(timer *time.Timer) {\n\tc.stopping = true\n\tc.final = true\n\ttimer.Stop()\n\tc.active.closeStdin()\n\tif c.next != nil {\n\t\tc.next.closeStdin()\n\t}\n}\n\n// drain waits for the segment goroutines after the chain ended.\nfunc (c *captureChain) drain() {\n\tdone := make(chan struct{})\n\tgo func() {\n\t\tc.wg.Wait()\n\t\tclose(done)\n\t}()\n\tfor {\n\t\tselect {\n\t\tcase <-done:\n\t\t\treturn\n\t\tcase <-c.events:\n\t\t}\n\t}\n}\n\n// segmentDuration is the requested duration of a segment starting now.\nfunc (c *captureChain) segmentDuration(now time.Time) time.Duration {\n\tduration := c.capture.segment\n\tif !c.capture.deadline.IsZero() {\n\t\tduration = min(duration, c.capture.deadline.Sub(now))\n\t}\n\n\treturn max(duration, minCaptureSegment)\n}\n\n// nextStartIn is the time until the follow-up of the active segment is due. It marks the chain\n// final when none is due.\nfunc (c *captureChain) nextStartIn() time.Duration {\n\tif c.stopping {",
+                "lineStart": 590,
+                "lineEnd": 719,
+                "totalLines": 1202,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793523481721,
+              "end": 1793523481727
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_196547cda001a5cAobG8stEOMf",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965471090010I0XCBAsYtLHBt",
+          "callID": "call_6bd0fa86155a4806a1763cbc",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/labruntime/clabernetes/capture.go",
+              "limit": 80,
+              "offset": 930
+            },
+            "output": "<path>/source/head/labruntime/clabernetes/capture.go</path>\n<type>file</type>\n<content>\n930: \t}\n931: \n932: \twindow := c.capture.window.Nanoseconds()\n933: \tfor _, packet := range c.held {\n934: \t\tif c.cut != 0 {\n935: \t\t\tif packet.Timestamp < c.cut-window {\n936: \t\t\t\tcontinue\n937: \t\t\t}\n938: \t\t\tif packet.Timestamp < c.cut+window {\n939: \t\t\t\tkey := packetKey(packet)\n940: \t\t\t\tif c.emitted[key] > 0 {\n941: \t\t\t\t\tc.emitted[key]--\n942: \t\t\t\t\tcontinue\n943: \t\t\t\t}\n944: \t\t\t}\n945: \t\t}\n946: \t\tif stop, err := c.emit(packet); stop || err != nil {\n947: \t\t\treturn true, err\n948: \t\t}\n949: \t}\n950: \n951: \tc.active, c.next = c.next, nil\n952: \tc.held, c.emitted, c.cut = nil, nil, 0\n953: \tif c.active.done {\n954: \t\t// the chain is stopping and the follow-up ended before the active one\n955: \t\treturn true, nil\n956: \t}\n957: \tresetTimer(timer, c.nextStartIn())\n958: \n959: \treturn false, nil\n960: }\n961: \n962: func resetTimer(timer *time.Timer, d time.Duration) {\n963: \tif !timer.Stop() {\n964: \t\tselect {\n965: \t\tcase <-timer.C:\n966: \t\tdefault:\n967: \t\t}\n968: \t}\n969: \ttimer.Reset(d)\n970: }\n971: \n972: // packetKey identifies a packet by its interface and content.\n973: func packetKey(packet *clabcapture.Packet) uint64 {\n974: \thash := fnv.New64a()\n975: \tvar id [4]byte\n976: \tid[0] = byte(packet.InterfaceID)\n977: \tid[1] = byte(packet.InterfaceID >> 8)\n978: \t_, _ = hash.Write(id[:])\n979: \t_, _ = hash.Write(packet.Data)\n980: \n981: \treturn hash.Sum64()\n982: }\n983: \n984: // start runs one clabwire capture and reports its packets, audit records and end as events.\n985: func (c *captureChain) start(ctx context.Context, duration time.Duration) *captureSegment {\n986: \tsegmentCtx, cancel := context.WithCancel(ctx)\n987: \tstdinReader, stdinWriter := io.Pipe()\n988: \tsegment := &captureSegment{\n989: \t\tindex: c.segments, localStart: time.Now(), duration: duration, cancel: cancel,\n990: \t\tcloseStdin: func() { _ = stdinWriter.Close() },\n991: \t}\n992: \tc.segments++\n993: \n994: \tcommand := []string{\n995: \t\tclabwireManager, \"node-runtime\", \"packet-capture\",\n996: \t\t\"--nodeName\", c.group.location.NodeName,\n997: \t\t\"--format\", \"pcapng\",\n998: \t\t\"--snapLength\", strconv.Itoa(c.capture.req.SnapLength),\n999: \t\t\"--duration\", duration.String(),\n1000: \t\tclabwireStopOnStdinClose,\n1001: \t}\n1002: \tfor _, name := range c.group.interfaces {\n1003: \t\tcommand = append(command, \"--interface\", name)\n1004: \t}\n1005: \tif c.capture.req.PacketLimit > 0 {\n1006: \t\tremaining := int64(c.capture.req.PacketLimit) - c.capture.out.Written()\n1007: \t\tcommand = append(command, \"--packetLimit\",\n1008: \t\t\tstrconv.FormatInt(min(max(remaining, 1), maxClabwirePackets), 10))\n1009: \t}\n\n(Showing lines 930-1009 of 1202. Use offset=1010 to continue.)\n</content>",
+            "title": "source/head/labruntime/clabernetes/capture.go",
+            "metadata": {
+              "preview": "\t}\n\n\twindow := c.capture.window.Nanoseconds()\n\tfor _, packet := range c.held {\n\t\tif c.cut != 0 {\n\t\t\tif packet.Timestamp < c.cut-window {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif packet.Timestamp < c.cut+window {\n\t\t\t\tkey := packetKey(packet)\n\t\t\t\tif c.emitted[key] > 0 {\n\t\t\t\t\tc.emitted[key]--\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif stop, err := c.emit(packet); stop || err != nil {\n\t\t\treturn true, err\n\t\t}\n\t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/labruntime/clabernetes/capture.go",
+                "text": "\t}\n\n\twindow := c.capture.window.Nanoseconds()\n\tfor _, packet := range c.held {\n\t\tif c.cut != 0 {\n\t\t\tif packet.Timestamp < c.cut-window {\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif packet.Timestamp < c.cut+window {\n\t\t\t\tkey := packetKey(packet)\n\t\t\t\tif c.emitted[key] > 0 {\n\t\t\t\t\tc.emitted[key]--\n\t\t\t\t\tcontinue\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t\tif stop, err := c.emit(packet); stop || err != nil {\n\t\t\treturn true, err\n\t\t}\n\t}\n\n\tc.active, c.next = c.next, nil\n\tc.held, c.emitted, c.cut = nil, nil, 0\n\tif c.active.done {\n\t\t// the chain is stopping and the follow-up ended before the active one\n\t\treturn true, nil\n\t}\n\tresetTimer(timer, c.nextStartIn())\n\n\treturn false, nil\n}\n\nfunc resetTimer(timer *time.Timer, d time.Duration) {\n\tif !timer.Stop() {\n\t\tselect {\n\t\tcase <-timer.C:\n\t\tdefault:\n\t\t}\n\t}\n\ttimer.Reset(d)\n}\n\n// packetKey identifies a packet by its interface and content.\nfunc packetKey(packet *clabcapture.Packet) uint64 {\n\thash := fnv.New64a()\n\tvar id [4]byte\n\tid[0] = byte(packet.InterfaceID)\n\tid[1] = byte(packet.InterfaceID >> 8)\n\t_, _ = hash.Write(id[:])\n\t_, _ = hash.Write(packet.Data)\n\n\treturn hash.Sum64()\n}\n\n// start runs one clabwire capture and reports its packets, audit records and end as events.\nfunc (c *captureChain) start(ctx context.Context, duration time.Duration) *captureSegment {\n\tsegmentCtx, cancel := context.WithCancel(ctx)\n\tstdinReader, stdinWriter := io.Pipe()\n\tsegment := &captureSegment{\n\t\tindex: c.segments, localStart: time.Now(), duration: duration, cancel: cancel,\n\t\tcloseStdin: func() { _ = stdinWriter.Close() },\n\t}\n\tc.segments++\n\n\tcommand := []string{\n\t\tclabwireManager, \"node-runtime\", \"packet-capture\",\n\t\t\"--nodeName\", c.group.location.NodeName,\n\t\t\"--format\", \"pcapng\",\n\t\t\"--snapLength\", strconv.Itoa(c.capture.req.SnapLength),\n\t\t\"--duration\", duration.String(),\n\t\tclabwireStopOnStdinClose,\n\t}\n\tfor _, name := range c.group.interfaces {\n\t\tcommand = append(command, \"--interface\", name)\n\t}\n\tif c.capture.req.PacketLimit > 0 {\n\t\tremaining := int64(c.capture.req.PacketLimit) - c.capture.out.Written()\n\t\tcommand = append(command, \"--packetLimit\",\n\t\t\tstrconv.FormatInt(min(max(remaining, 1), maxClabwirePackets), 10))\n\t}",
+                "lineStart": 930,
+                "lineEnd": 1009,
+                "totalLines": 1202,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793523481822,
+              "end": 1793523481828
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_196547ce6001YCjy59ZJahq54o",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_1965471090010I0XCBAsYtLHBt",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 40384,
+            "input": 1464,
+            "output": 63,
+            "reasoning": 137,
+            "cache": {
+              "read": 38720,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_196547cf3001gxJqoFK10D4pNC",
+        "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+        "time": {
+          "created": 1793523481843,
+          "completed": 1793523487803
+        },
+        "parentID": "msg_1965436e6001620KypTRi1ley5",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-RDQspZ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 43599,
+          "input": 2707,
+          "output": 51,
+          "reasoning": 649,
+          "cache": {
+            "read": 40192,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19654838e001c7VCDo5GvER70H",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196547cf3001gxJqoFK10D4pNC"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_196548390001GVOb7OKl1eRJlC",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196547cf3001gxJqoFK10D4pNC",
+          "text": "Confirmed: `handleAudit` returns `captureAuditError` regardless of `c.stopping`. When the run loop is in the `done` branch (ctx ended), and then a segment delivers a Failed audit record, `c.handle(...)` returns the error and `run` returns it. The doc contract says: \"Capture writes one section ... It returns when Duration passed, PacketLimit packets were written, or the context ended (which is not an error)\".\n\nBut is this a real issue? When stopping, the segments are asked to end via stdin close. Does clabwire emit a Failed audit record on stdin close? The `Succeeded` record goes to debug log. If the stdin-close end is modeled as Succeeded, no error. But if clabwire reports Failed because the client closed stdin (or writes Failed when killed), a clean Ctrl+C would surface \"capture ... failed by clabwire\" to the user. This is speculative — depends on clabwire's behavior, which is external. The contract test `TestCaptureClosesStdinWhenItEnds` \"cancel\" subtest runs with the fake clabwire which presumably doesn't emit Failed on stdin close. So it's a potential P3/P4 note, not confirmed. Actually wait — also consider: if clabwire legitimately fails mid-capture while the user is pressing Ctrl+C, reporting the failure is arguably correct. The questionable case is only whether clabwire reports Failed *because of* the stop. Unverifiable. I'll put it in coverage notes rather than a finding, or as a P4 with clear caveat. Hmm. The instructions: \"Return only supported, useful findings... Put unresolved uncertainty in coverage notes.\" This is speculative — coverage notes.\n\nNow let me finish remaining checks:\n1. `capture/output.go` written/Written atomic — fine.\n2. Check `cmd/options.go` diff (region ~2618) and `cmd/root_test.go` — already in read region 2166-2765? Summary says diff regions 2166 and 2766 were read, so 2618-2744 covered.\n3. Remaining unread diff regions: none — 1 to 7018 fully covered now.\n\nRemaining unread head files worth a skim: `capture/pcapng_test.go` (coverage), `capture/output.go` (read), `core/capture_local.go` (read per summary), `cmd/inspect_interfaces.go` (diff-only), docs/manual/wireshark.md diff (3900 region: lines 3879-3900).\n\nLet me check the wireshark.md diff region and skim pcapng_test.go quickly. Also confirm `capture/output.go` ValidateRequest and the `-w -` doc. Actually those were verified.\n\nOne more candidate: in the smoke test 33-capture.robot \"The capture reattaches...\" test uses `containerlab restart -t ${topo} --node l2` — fine.\n\nLet me quickly check pcapng_test.go coverage and the docs/manual/wireshark.md diff hunk (between 3879 and 3900).",
+          "time": {
+            "start": 1793523483536,
+            "end": 1793523487714
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1965493e6001oMUC0jPAAwlyFR",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196547cf3001gxJqoFK10D4pNC",
+          "callID": "call_daaffa693bdc4610b52a14ff",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 100,
+              "offset": 3876
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n3876:    rejected, and so is `--node-filter`. `--drawio` runs the clab-io-draw\n3877:    container, so it needs Docker or Podman on the outer host.\n3878:  - `tools` commands operate on local containers and host networking and are\n3879: diff --git a/docs/manual/wireshark.md b/docs/manual/wireshark.md\n3880: index b194b29..4654128 100644\n3881: --- a/docs/manual/wireshark.md\n3882: +++ b/docs/manual/wireshark.md\n3883: @@ -15,10 +15,16 @@ Every lab emulation software must provide its users with the packet capturing ab\n3884:  \n3885:  Containerlab offers a simple way to capture the packets from any interface of any node in the lab. This article will explain how to do that.\n3886:  \n3887:  ///tip\n3888:  \n3889: +The [`containerlab capture`](../cmd/capture.md) command captures one or more lab link interfaces, of one or more nodes, into one pcapng file or stream, with nothing to install in the nodes or on the host:\n3890: +\n3891: +```bash\n3892: +containerlab capture --name quickstart --target srl:e1-1 -w - | wireshark -k -i -\n3893: +```\n3894: +\n3895:  If you are looking for a free Web UI for packet capture with Wireshark, check out our [Edgeshark integration](#edgeshark-integration).\n3896:  ///\n3897:  \n3898:  Consider the following lab topology which highlights the typical points of packet capture.\n3899:  \n3900: diff --git a/labruntime/clabernetes/capture.go b/labruntime/clabernetes/capture.go\n3901: new file mode 100644\n3902: index 0000000..69d4072\n3903: --- /dev/null\n3904: +++ b/labruntime/clabernetes/capture.go\n3905: @@ -0,0 +1,1202 @@\n3906: +package clabernetes\n3907: +\n3908: +import (\n3909: +\t\"bytes\"\n3910: +\t\"context\"\n3911: +\t\"encoding/json\"\n3912: +\t\"errors\"\n3913: +\t\"fmt\"\n3914: +\t\"hash/fnv\"\n3915: +\t\"io\"\n3916: +\t\"os\"\n3917: +\t\"sort\"\n3918: +\t\"strconv\"\n3919: +\t\"strings\"\n3920: +\t\"sync\"\n3921: +\t\"time\"\n3922: +\n3923: +\t\"github.com/charmbracelet/log\"\n3924: +\tclabcapture \"github.com/srl-labs/containerlab/capture\"\n3925: +\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n3926: +\t\"golang.org/x/sync/errgroup\"\n3927: +)\n3928: +\n3929: +// The clabwire packet capture contract (clabernetes 0.11 or newer).\n3930: +const (\n3931: +\tclabwireContainer = \"clabwire\"\n3932: +\tclabwireManager   = \"/clabernetes/manager\"\n3933: +\t// captureAuditSchema is the schema of the JSON audit lines clabwire writes to stderr.\n3934: +\tcaptureAuditSchema = \"c9s.direct-packet-capture-audit/v1alpha1\"\n3935: +\n3936: +\tcaptureAuditStarted   = \"Started\"\n3937: +\tcaptureAuditSucceeded = \"Succeeded\"\n3938: +\tcaptureAuditFailed    = \"Failed\"\n3939: +\tcaptureAuditDenied    = \"Denied\"\n3940: +\n3941: +\t// maxCaptureSegment is the longest single clabwire capture; longer captures are chained.\n3942: +\tmaxCaptureSegment = time.Hour\n3943: +\t// maxClabwirePackets is the packet limit of a single clabwire capture.\n3944: +\tmaxClabwirePackets = 1_000_000\n3945: +\t// maxCaptureOverlap is how long two chained segments run side by side.\n3946: +\tmaxCaptureOverlap = 10 * time.Second\n3947: +\t// maxCaptureCutWindow is the half-width of the window around the cut in which packets of\n3948: +\t// two segments are matched by content; it covers the difference between the timestamps\n3949: +\t// two clabwire processes give the same packet.\n3950: +\tmaxCaptureCutWindow = 500 * time.Millisecond\n3951: +\t// minCaptureSegment is the shortest segment the chain requests.\n3952: +\tminCaptureSegment = 100 * time.Millisecond\n3953: +\t// captureEndGrace is how long a capture with a duration waits for its last clabwire\n3954: +\t// process to end after the duration passed.\n3955: +\tcaptureEndGrace = 30 * time.Second\n3956: +\t// captureStartRetries bounds the attempts to start a follow-up segment.\n3957: +\tcaptureStartRetries = 3\n3958: +\t// captureStdinCloseGrace is how long a segment's exec may take to end after its stdin was\n3959: +\t// closed before the stream is cut.\n3960: +\tcaptureStdinCloseGrace = 3 * time.Second\n3961: +\t// clabwireStopOnStdinClose makes clabwire end a capture when its stdin closes. A\n3962: +\t// Kubernetes exec does not stop its process when the stream ends, but it closes the\n3963: +\t// process's stdin, so every capture runs with stdin attached and this flag.\n3964: +\tclabwireStopOnStdinClose = \"--stop-on-stdin-close\"\n3965: +\n3966: +\t// envCaptureSegment overrides the segment length. It exists to exercise chaining in tests\n3967: +\t// without hour-long captures.\n3968: +\tenvCaptureSegment = \"CLAB_C9S_CAPTURE_SEGMENT\"\n3969: +\t// defaultCaptureReorderWindow is how long the merged stream holds a packet back so packets\n3970: +\t// of other nodes stamped earlier but delivered later still go out before it.\n3971: +\tdefaultCaptureReorderWindow = 250 * time.Millisecond\n3972: +\t// envCaptureReorderWindow overrides the reorder window; 0 writes packets as they arrive.\n3973: +\t// It is an internal knob, not a supported setting.\n3974: +\tenvCaptureReorderWindow = \"CLAB_C9S_CAPTURE_REORDER_WINDOW\"\n3975: +)\n\n(Showing lines 3876-3975 of 7018. Use offset=3976 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "   rejected, and so is `--node-filter`. `--drawio` runs the clab-io-draw\n   container, so it needs Docker or Podman on the outer host.\n - `tools` commands operate on local containers and host networking and are\ndiff --git a/docs/manual/wireshark.md b/docs/manual/wireshark.md\nindex b194b29..4654128 100644\n--- a/docs/manual/wireshark.md\n+++ b/docs/manual/wireshark.md\n@@ -15,10 +15,16 @@ Every lab emulation software must provide its users with the packet capturing ab\n \n Containerlab offers a simple way to capture the packets from any interface of any node in the lab. This article will explain how to do that.\n \n ///tip\n \n+The [`containerlab capture`](../cmd/capture.md) command captures one or more lab link interfaces, of one or more nodes, into one pcapng file or stream, with nothing to install in the nodes or on the host:\n+\n+```bash\n+containerlab capture --name quickstart --target srl:e1-1 -w - | wireshark -k -i -\n+```\n+\n If you are looking for a free Web UI for packet capture with Wireshark, check out our [Edgeshark integration](#edgeshark-integration).",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "   rejected, and so is `--node-filter`. `--drawio` runs the clab-io-draw\n   container, so it needs Docker or Podman on the outer host.\n - `tools` commands operate on local containers and host networking and are\ndiff --git a/docs/manual/wireshark.md b/docs/manual/wireshark.md\nindex b194b29..4654128 100644\n--- a/docs/manual/wireshark.md\n+++ b/docs/manual/wireshark.md\n@@ -15,10 +15,16 @@ Every lab emulation software must provide its users with the packet capturing ab\n \n Containerlab offers a simple way to capture the packets from any interface of any node in the lab. This article will explain how to do that.\n \n ///tip\n \n+The [`containerlab capture`](../cmd/capture.md) command captures one or more lab link interfaces, of one or more nodes, into one pcapng file or stream, with nothing to install in the nodes or on the host:\n+\n+```bash\n+containerlab capture --name quickstart --target srl:e1-1 -w - | wireshark -k -i -\n+```\n+\n If you are looking for a free Web UI for packet capture with Wireshark, check out our [Edgeshark integration](#edgeshark-integration).\n ///\n \n Consider the following lab topology which highlights the typical points of packet capture.\n \ndiff --git a/labruntime/clabernetes/capture.go b/labruntime/clabernetes/capture.go\nnew file mode 100644\nindex 0000000..69d4072\n--- /dev/null\n+++ b/labruntime/clabernetes/capture.go\n@@ -0,0 +1,1202 @@\n+package clabernetes\n+\n+import (\n+\t\"bytes\"\n+\t\"context\"\n+\t\"encoding/json\"\n+\t\"errors\"\n+\t\"fmt\"\n+\t\"hash/fnv\"\n+\t\"io\"\n+\t\"os\"\n+\t\"sort\"\n+\t\"strconv\"\n+\t\"strings\"\n+\t\"sync\"\n+\t\"time\"\n+\n+\t\"github.com/charmbracelet/log\"\n+\tclabcapture \"github.com/srl-labs/containerlab/capture\"\n+\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n+\t\"golang.org/x/sync/errgroup\"\n+)\n+\n+// The clabwire packet capture contract (clabernetes 0.11 or newer).\n+const (\n+\tclabwireContainer = \"clabwire\"\n+\tclabwireManager   = \"/clabernetes/manager\"\n+\t// captureAuditSchema is the schema of the JSON audit lines clabwire writes to stderr.\n+\tcaptureAuditSchema = \"c9s.direct-packet-capture-audit/v1alpha1\"\n+\n+\tcaptureAuditStarted   = \"Started\"\n+\tcaptureAuditSucceeded = \"Succeeded\"\n+\tcaptureAuditFailed    = \"Failed\"\n+\tcaptureAuditDenied    = \"Denied\"\n+\n+\t// maxCaptureSegment is the longest single clabwire capture; longer captures are chained.\n+\tmaxCaptureSegment = time.Hour\n+\t// maxClabwirePackets is the packet limit of a single clabwire capture.\n+\tmaxClabwirePackets = 1_000_000\n+\t// maxCaptureOverlap is how long two chained segments run side by side.\n+\tmaxCaptureOverlap = 10 * time.Second\n+\t// maxCaptureCutWindow is the half-width of the window around the cut in which packets of\n+\t// two segments are matched by content; it covers the difference between the timestamps\n+\t// two clabwire processes give the same packet.\n+\tmaxCaptureCutWindow = 500 * time.Millisecond\n+\t// minCaptureSegment is the shortest segment the chain requests.\n+\tminCaptureSegment = 100 * time.Millisecond\n+\t// captureEndGrace is how long a capture with a duration waits for its last clabwire\n+\t// process to end after the duration passed.\n+\tcaptureEndGrace = 30 * time.Second\n+\t// captureStartRetries bounds the attempts to start a follow-up segment.\n+\tcaptureStartRetries = 3\n+\t// captureStdinCloseGrace is how long a segment's exec may take to end after its stdin was\n+\t// closed before the stream is cut.\n+\tcaptureStdinCloseGrace = 3 * time.Second\n+\t// clabwireStopOnStdinClose makes clabwire end a capture when its stdin closes. A\n+\t// Kubernetes exec does not stop its process when the stream ends, but it closes the\n+\t// process's stdin, so every capture runs with stdin attached and this flag.\n+\tclabwireStopOnStdinClose = \"--stop-on-stdin-close\"\n+\n+\t// envCaptureSegment overrides the segment length. It exists to exercise chaining in tests\n+\t// without hour-long captures.\n+\tenvCaptureSegment = \"CLAB_C9S_CAPTURE_SEGMENT\"\n+\t// defaultCaptureReorderWindow is how long the merged stream holds a packet back so packets\n+\t// of other nodes stamped earlier but delivered later still go out before it.\n+\tdefaultCaptureReorderWindow = 250 * time.Millisecond\n+\t// envCaptureReorderWindow overrides the reorder window; 0 writes packets as they arrive.\n+\t// It is an internal knob, not a supported setting.\n+\tenvCaptureReorderWindow = \"CLAB_C9S_CAPTURE_REORDER_WINDOW\"\n+)",
+                "lineStart": 3876,
+                "lineEnd": 3975,
+                "totalLines": 7018,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793523487722,
+              "end": 1793523487741
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_196549428001P2bpyegQoYNxV9",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196547cf3001gxJqoFK10D4pNC",
+          "callID": "call_56a35f951c1c4a7e85d334ef",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/capture/pcapng_test.go",
+              "limit": 150
+            },
+            "output": "<path>/source/head/capture/pcapng_test.go</path>\n<type>file</type>\n<content>\n1: package capture\n2: \n3: import (\n4: \t\"bytes\"\n5: \t\"encoding/binary\"\n6: \t\"errors\"\n7: \t\"io\"\n8: \t\"strings\"\n9: \t\"testing\"\n10: )\n11: \n12: func TestPCAPNGWriterAndReaderRoundTrip(t *testing.T) {\n13: \tt.Parallel()\n14: \n15: \tvar out bytes.Buffer\n16: \twriter := NewWriter(&out)\n17: \tif err := writer.WriteHeader([]string{\"r1:e1-1\", \"r2:eth1\"}, 1500); err != nil {\n18: \t\tt.Fatal(err)\n19: \t}\n20: \tpackets := []Packet{\n21: \t\t{\n22: \t\t\tInterfaceID:    1,\n23: \t\t\tTimestamp:      1_761_559_200_123_456_789,\n24: \t\t\tOriginalLength: 98,\n25: \t\t\tData:           []byte(\"abcde\"),\n26: \t\t},\n27: \t\t{\n28: \t\t\tInterfaceID:    0,\n29: \t\t\tTimestamp:      1_761_559_200_123_456_790,\n30: \t\t\tOriginalLength: 4,\n31: \t\t\tData:           []byte(\"wxyz\"),\n32: \t\t},\n33: \t}\n34: \tfor idx := range packets {\n35: \t\tif err := writer.WritePacket(packets[idx].InterfaceID, &packets[idx]); err != nil {\n36: \t\t\tt.Fatal(err)\n37: \t\t}\n38: \t}\n39: \n40: \tdata := out.Bytes()\n41: \t// the section header names the writer\n42: \tif !bytes.Contains(data[:64], []byte(captureUserApplication)) {\n43: \t\tt.Fatal(\"section header has no shb_userappl\")\n44: \t}\n45: \tif len(data)%4 != 0 {\n46: \t\tt.Fatalf(\"stream length %d is not 32-bit aligned\", len(data))\n47: \t}\n48: \n49: \treader := NewReader(bytes.NewReader(data))\n50: \tvar names []string\n51: \tvar read []Packet\n52: \tfor {\n53: \t\tevent, err := reader.Next()\n54: \t\tif errors.Is(err, io.EOF) {\n55: \t\t\tbreak\n56: \t\t}\n57: \t\tif err != nil {\n58: \t\t\tt.Fatal(err)\n59: \t\t}\n60: \t\tif event.Interface != nil {\n61: \t\t\tnames = append(names, event.Interface.Name)\n62: \t\t\tif event.Interface.SnapLength != 1500 || event.Interface.LinkType != 1 {\n63: \t\t\t\tt.Fatalf(\"interface = %+v\", event.Interface)\n64: \t\t\t}\n65: \t\t}\n66: \t\tif event.Packet != nil {\n67: \t\t\tread = append(read, *event.Packet)\n68: \t\t}\n69: \t}\n70: \tif len(names) != 2 || names[0] != \"r1:e1-1\" || names[1] != \"r2:eth1\" {\n71: \t\tt.Fatalf(\"names = %v\", names)\n72: \t}\n73: \tfor idx := range packets {\n74: \t\tif read[idx].InterfaceID != packets[idx].InterfaceID ||\n75: \t\t\tread[idx].Timestamp != packets[idx].Timestamp ||\n76: \t\t\tread[idx].OriginalLength != packets[idx].OriginalLength ||\n77: \t\t\t!bytes.Equal(read[idx].Data, packets[idx].Data) {\n78: \t\t\tt.Fatalf(\"packet %d = %+v, want %+v\", idx, read[idx], packets[idx])\n79: \t\t}\n80: \t}\n81: }\n82: \n83: func TestPCAPNGReaderHandlesRepeatedSectionsAndResolutions(t *testing.T) {\n84: \tt.Parallel()\n85: \n86: \tvar out bytes.Buffer\n87: \tfirst := NewWriter(&out)\n88: \t_ = first.WriteHeader([]string{\"eth1\"}, 64)\n89: \t_ = first.WritePacket(0, &Packet{Timestamp: 5, Data: []byte{1}})\n90: \n91: \t// a second section whose interface has microsecond timestamps (no if_tsresol)\n92: \tsection := make([]byte, 16)\n93: \tbinary.LittleEndian.PutUint32(section[0:], pcapngByteOrderMagic)\n94: \tbinary.LittleEndian.PutUint16(section[4:], 1)\n95: \tout.Write(pcapngBlock(pcapngSectionHeaderType, section))\n96: \tdescription := make([]byte, 8)\n97: \tbinary.LittleEndian.PutUint16(description[0:], 1)\n98: \tdescription = appendPCAPNGOption(description, pcapngOptionIfName, []byte(\"eth2\"))\n99: \tout.Write(pcapngBlock(pcapngInterfaceType, description))\n100: \tbody := make([]byte, 20)\n101: \tbinary.LittleEndian.PutUint32(body[8:], 7) // 7 microseconds\n102: \tout.Write(pcapngBlock(pcapngEnhancedPacketType, body))\n103: \n104: \treader := NewReader(&out)\n105: \tvar timestamps []int64\n106: \tfor {\n107: \t\tevent, err := reader.Next()\n108: \t\tif errors.Is(err, io.EOF) {\n109: \t\t\tbreak\n110: \t\t}\n111: \t\tif err != nil {\n112: \t\t\tt.Fatal(err)\n113: \t\t}\n114: \t\tif event.Packet != nil {\n115: \t\t\ttimestamps = append(timestamps, event.Packet.Timestamp)\n116: \t\t}\n117: \t}\n118: \tif reader.sections != 2 || len(timestamps) != 2 || timestamps[0] != 5 || timestamps[1] != 7000 {\n119: \t\tt.Fatalf(\"sections %d, timestamps %v\", reader.sections, timestamps)\n120: \t}\n121: }\n122: \n123: func TestPCAPNGReaderRejectsInvalidStreams(t *testing.T) {\n124: \tt.Parallel()\n125: \n126: \tvar valid bytes.Buffer\n127: \twriter := NewWriter(&valid)\n128: \t_ = writer.WriteHeader([]string{\"eth1\"}, 64)\n129: \t_ = writer.WritePacket(0, &Packet{Timestamp: 1, Data: []byte(\"data\")})\n130: \n131: \treadAll := func(data []byte) error {\n132: \t\treader := NewReader(bytes.NewReader(data))\n133: \t\tfor {\n134: \t\t\t_, err := reader.Next()\n135: \t\t\tif errors.Is(err, io.EOF) {\n136: \t\t\t\treturn nil\n137: \t\t\t}\n138: \t\t\tif err != nil {\n139: \t\t\t\treturn err\n140: \t\t\t}\n141: \t\t}\n142: \t}\n143: \n144: \tif err := readAll(valid.Bytes()[:valid.Len()-6]); !errors.Is(err, io.ErrUnexpectedEOF) {\n145: \t\tt.Fatalf(\"truncated stream: %v\", err)\n146: \t}\n147: \n148: \tbigEndian := append([]byte(nil), valid.Bytes()...)\n149: \tbinary.BigEndian.PutUint32(bigEndian[4:], binary.LittleEndian.Uint32(bigEndian[4:]))\n150: \tbinary.BigEndian.PutUint32(bigEndian[8:], pcapngByteOrderMagic)\n\n(Showing lines 1-150 of 167. Use offset=151 to continue.)\n</content>",
+            "title": "source/head/capture/pcapng_test.go",
+            "metadata": {
+              "preview": "package capture\n\nimport (\n\t\"bytes\"\n\t\"encoding/binary\"\n\t\"errors\"\n\t\"io\"\n\t\"strings\"\n\t\"testing\"\n)\n\nfunc TestPCAPNGWriterAndReaderRoundTrip(t *testing.T) {\n\tt.Parallel()\n\n\tvar out bytes.Buffer\n\twriter := NewWriter(&out)\n\tif err := writer.WriteHeader([]string{\"r1:e1-1\", \"r2:eth1\"}, 1500); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tpackets := []Packet{",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/capture/pcapng_test.go",
+                "text": "package capture\n\nimport (\n\t\"bytes\"\n\t\"encoding/binary\"\n\t\"errors\"\n\t\"io\"\n\t\"strings\"\n\t\"testing\"\n)\n\nfunc TestPCAPNGWriterAndReaderRoundTrip(t *testing.T) {\n\tt.Parallel()\n\n\tvar out bytes.Buffer\n\twriter := NewWriter(&out)\n\tif err := writer.WriteHeader([]string{\"r1:e1-1\", \"r2:eth1\"}, 1500); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tpackets := []Packet{\n\t\t{\n\t\t\tInterfaceID:    1,\n\t\t\tTimestamp:      1_761_559_200_123_456_789,\n\t\t\tOriginalLength: 98,\n\t\t\tData:           []byte(\"abcde\"),\n\t\t},\n\t\t{\n\t\t\tInterfaceID:    0,\n\t\t\tTimestamp:      1_761_559_200_123_456_790,\n\t\t\tOriginalLength: 4,\n\t\t\tData:           []byte(\"wxyz\"),\n\t\t},\n\t}\n\tfor idx := range packets {\n\t\tif err := writer.WritePacket(packets[idx].InterfaceID, &packets[idx]); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t}\n\n\tdata := out.Bytes()\n\t// the section header names the writer\n\tif !bytes.Contains(data[:64], []byte(captureUserApplication)) {\n\t\tt.Fatal(\"section header has no shb_userappl\")\n\t}\n\tif len(data)%4 != 0 {\n\t\tt.Fatalf(\"stream length %d is not 32-bit aligned\", len(data))\n\t}\n\n\treader := NewReader(bytes.NewReader(data))\n\tvar names []string\n\tvar read []Packet\n\tfor {\n\t\tevent, err := reader.Next()\n\t\tif errors.Is(err, io.EOF) {\n\t\t\tbreak\n\t\t}\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t\tif event.Interface != nil {\n\t\t\tnames = append(names, event.Interface.Name)\n\t\t\tif event.Interface.SnapLength != 1500 || event.Interface.LinkType != 1 {\n\t\t\t\tt.Fatalf(\"interface = %+v\", event.Interface)\n\t\t\t}\n\t\t}\n\t\tif event.Packet != nil {\n\t\t\tread = append(read, *event.Packet)\n\t\t}\n\t}\n\tif len(names) != 2 || names[0] != \"r1:e1-1\" || names[1] != \"r2:eth1\" {\n\t\tt.Fatalf(\"names = %v\", names)\n\t}\n\tfor idx := range packets {\n\t\tif read[idx].InterfaceID != packets[idx].InterfaceID ||\n\t\t\tread[idx].Timestamp != packets[idx].Timestamp ||\n\t\t\tread[idx].OriginalLength != packets[idx].OriginalLength ||\n\t\t\t!bytes.Equal(read[idx].Data, packets[idx].Data) {\n\t\t\tt.Fatalf(\"packet %d = %+v, want %+v\", idx, read[idx], packets[idx])\n\t\t}\n\t}\n}\n\nfunc TestPCAPNGReaderHandlesRepeatedSectionsAndResolutions(t *testing.T) {\n\tt.Parallel()\n\n\tvar out bytes.Buffer\n\tfirst := NewWriter(&out)\n\t_ = first.WriteHeader([]string{\"eth1\"}, 64)\n\t_ = first.WritePacket(0, &Packet{Timestamp: 5, Data: []byte{1}})\n\n\t// a second section whose interface has microsecond timestamps (no if_tsresol)\n\tsection := make([]byte, 16)\n\tbinary.LittleEndian.PutUint32(section[0:], pcapngByteOrderMagic)\n\tbinary.LittleEndian.PutUint16(section[4:], 1)\n\tout.Write(pcapngBlock(pcapngSectionHeaderType, section))\n\tdescription := make([]byte, 8)\n\tbinary.LittleEndian.PutUint16(description[0:], 1)\n\tdescription = appendPCAPNGOption(description, pcapngOptionIfName, []byte(\"eth2\"))\n\tout.Write(pcapngBlock(pcapngInterfaceType, description))\n\tbody := make([]byte, 20)\n\tbinary.LittleEndian.PutUint32(body[8:], 7) // 7 microseconds\n\tout.Write(pcapngBlock(pcapngEnhancedPacketType, body))\n\n\treader := NewReader(&out)\n\tvar timestamps []int64\n\tfor {\n\t\tevent, err := reader.Next()\n\t\tif errors.Is(err, io.EOF) {\n\t\t\tbreak\n\t\t}\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t\tif event.Packet != nil {\n\t\t\ttimestamps = append(timestamps, event.Packet.Timestamp)\n\t\t}\n\t}\n\tif reader.sections != 2 || len(timestamps) != 2 || timestamps[0] != 5 || timestamps[1] != 7000 {\n\t\tt.Fatalf(\"sections %d, timestamps %v\", reader.sections, timestamps)\n\t}\n}\n\nfunc TestPCAPNGReaderRejectsInvalidStreams(t *testing.T) {\n\tt.Parallel()\n\n\tvar valid bytes.Buffer\n\twriter := NewWriter(&valid)\n\t_ = writer.WriteHeader([]string{\"eth1\"}, 64)\n\t_ = writer.WritePacket(0, &Packet{Timestamp: 1, Data: []byte(\"data\")})\n\n\treadAll := func(data []byte) error {\n\t\treader := NewReader(bytes.NewReader(data))\n\t\tfor {\n\t\t\t_, err := reader.Next()\n\t\t\tif errors.Is(err, io.EOF) {\n\t\t\t\treturn nil\n\t\t\t}\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\t}\n\n\tif err := readAll(valid.Bytes()[:valid.Len()-6]); !errors.Is(err, io.ErrUnexpectedEOF) {\n\t\tt.Fatalf(\"truncated stream: %v\", err)\n\t}\n\n\tbigEndian := append([]byte(nil), valid.Bytes()...)\n\tbinary.BigEndian.PutUint32(bigEndian[4:], binary.LittleEndian.Uint32(bigEndian[4:]))\n\tbinary.BigEndian.PutUint32(bigEndian[8:], pcapngByteOrderMagic)",
+                "lineStart": 1,
+                "lineEnd": 150,
+                "totalLines": 167,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793523487789,
+              "end": 1793523487795
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_196549436001IfKSTpUsqTxf6X",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196547cf3001gxJqoFK10D4pNC",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 43599,
+            "input": 2707,
+            "output": 51,
+            "reasoning": 649,
+            "cache": {
+              "read": 40192,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_196549448001WpxHDY5Re1V0HR",
+        "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+        "time": {
+          "created": 1793523487816,
+          "completed": 1793523499322
+        },
+        "parentID": "msg_1965436e6001620KypTRi1ley5",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-RDQspZ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 48305,
+          "input": 3343,
+          "output": 85,
+          "reasoning": 1357,
+          "cache": {
+            "read": 43520,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_196549a9f00153PK2myeTtgYcS",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196549448001WpxHDY5Re1V0HR"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_196549aa2001SFmZVVyFFgGhLT",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196549448001WpxHDY5Re1V0HR",
+          "text": "Everything checks out. All diff regions (1–7018) and key head files are covered. Test coverage is strong across capture, cmd, core, c9s, and smoke/robot suites.\n\nNow finalize. Findings assessment:\n\nCandidate findings considered across the review:\n1. Audit Failed/Denied error returned even when `c.stopping` — speculative (depends on external clabwire behavior); put in coverage notes, not a finding. Actually, let me reconsider: is there a concrete trigger? When stopping, `handleAudit` returns an error → `run` returns error → `Capture` returns error. If clabwire ever emits `Failed` on stdin close, the \"context ended is not an error\" contract breaks. But this is unverified external behavior; and even if clabwire did, reporting a real failure is defensible. Coverage note.\n2. `held`/`emitted` unbounded during ≤10s overlap at very high rates — bounded by overlap duration × packet rate; ≤10s × e.g. 1M pps would be significant, but realistic trigger is narrow; also snap length caps memory per packet. P4 at best. Hmm, is it actionable? `held` is bounded by `capture.out` backpressure? Let me think: held packets are packets from `next` before `active` ends — they come through the events channel (buf 256) and get appended to `c.held`. There's no bound. With a 10s overlap and heavy traffic (e.g., 1M pps × 256 KiB snap... realistically IPFIX-sized), memory could spike. But `emit` for active writes through `c.capture.out` which has backpressure? Let me not overstate. I could report as P4 optional improvement with a concrete note. Actually, I earlier flagged it as potential P4. Let me keep it as a P4 finding: `c.held` accumulates without bound for the ≤10s overlap while `c.active` streams live; at high packet rates this is memory. But is it actionable/desired? The overlap is bounded by `maxCaptureOverlap` (10s) — the held set is bounded by packets stamped in ~10s window. For a 10Gbps line-rate capture with full snap length that could be ~GBs. It's a legit P4 observation. Hmm, but do I have evidence that emit path has backpressure that would also bound it? c.capture.out.Written exists; output has limit logic. If PacketLimit set, once limit reached, emit returns stop → chain returns. Without limit, no backpressure. I'll include as P4.\n\nWait — but one root-cause rule: one finding per root cause. This one is real: `c.held` and `c.emitted` grow unbounded between `startNext` and the switch. During the overlap, packets from `next` are appended to `c.held` until `active` ends (up to overlap). At very high rates this can be large. P4 (realistic but extreme trigger; bounded in time).\n\nIs it actually true that during overlap held grows? handlePacket for next segment: packets are held until active ends. Yes (line 933 loop drains). So between startNext and switch, `c.held` accumulates all of next's packets. Bounded by overlap (~10s) × rate. OK, P4.\n\n3. Anything else? During my earlier reads (per summary) the analyses concluded the code is largely correct. I haven't identified P1-P3 defects with confidence. Let me do a couple more quick verifications on things that might be real defects:\n\na) `cmd/capture.go` — check `RunE` error handling and `-w -` behavior, and whether interrupts (second Ctrl+C) produce exit(1) truncating the pcap file. Contract: SIGINT ends capture with exit 0 and valid file. cmd/context.go FinishOnCancel: first signal cancels, second exits(1). Fine.\n\nb) Check `capture/local.go` snapshot length validation with `--snap-length` bounds 64..1048576 documented; default 0 → 256KiB. Verified in output.go ValidateRequest per summary.\n\nc) One thing worth double-checking: in `runReorder` test helper and `Reorder.Flush` — fine.\n\nd) `packetKey` truncates InterfaceID to 16 bits — fine for small interface counts (P4-ish, but not worth flagging; Karpathy rules: not actionable).\n\ne) The smoke test `33-capture.robot` \"Capture to stdout stops at the packet limit\" uses `sudo ${runtime} exec` with `sleep 1 &&` — fine.\n\nf) Schema check: no topology schema changes needed (no new topology keys; capture is a runtime/CLI feature). `tests/01-smoke/33-capture.clab.yml` includes `$schema` reference — fine.\n\ng) Docs: `docs/cmd/capture.md` comprehensive; mkdocs.yml nav entry added; wireshark.md cross-link added; clabernetes/runtime.md updated. Good.\n\nh) One potential correctness item worth verifying: in `run` (chain), when `ctx` ends (done branch), `c.stop(timer)` closes stdin of active and next; then events continue to be processed. If the *next* segment (not yet started) ends with an error event while `c.stopping`, line 758 suppresses it. But the follow-up that already started and then reports `Failed` audit → error. Same audit case. OK.\n\ni) `handle` when `event.done` and `event.err != nil && c.stopping` → swallowed, falls to `if segment != c.active return nil` → if segment is active → `switchSegments` → active done → `c.active.done` true → return true, nil (stop). Good.\n\nSo final findings: one P4 (held/emitted memory bound during segment overlap). Maybe also consider whether to include anything else from prior candidate list... The summary said \"Remaining candidate defects identified (see Important Details)\" — the list was: audit error while stopping (speculative), held/emitted growth (P4), packetKey 16-bit truncation (fine). I'll report the P4 and put the audit behavior in coverage notes.\n\nActually, let me reconsider the P4 more carefully to give a precise location. Let me find where held is appended in handlePacket. Let me grep quickly.",
+          "time": {
+            "start": 1793523489442,
+            "end": 1793523498819
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_19654bf450011IQkj03RBnWn2x",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196549448001WpxHDY5Re1V0HR",
+          "text": "All diff regions (lines 1–7018) are now covered and the key head files, tests, and docs have been read. Let me pin down the exact location of the one remaining finding candidate before finalizing.",
+          "time": {
+            "start": 1793523498821,
+            "end": 1793523499308
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_19654c125001Sc0Q3CiX1y0XUu",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196549448001WpxHDY5Re1V0HR",
+          "callID": "call_9a53ffb2430c48c6a4db1c50",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/labruntime/clabernetes/capture.go",
+              "pattern": "c\\.held = append|held\\b.*=|startNext|overlap"
+            },
+            "output": "Found 23 matches\n/source/head/labruntime/clabernetes/capture.go:\n  Line 452: // one starts before the current one ends, and the stream switches at a cut in the overlap. See\n\n  Line 453: // captureChain for how packets of the overlap are kept once.\n\n  Line 502: \trun.overlap = min(maxCaptureOverlap, run.segment/3)\n\n  Line 503: \trun.window = min(maxCaptureCutWindow, run.overlap/4)\n\n  Line 509: \t\t\treq.Duration+run.overlap+captureEndGrace)\n\n  Line 541: \toverlap  time.Duration\n\n  Line 588: // Chaining and the cut: segment k+1 starts `overlap` before segment k is due to end, so both\n\n  Line 591: // cannot pair them. The chain therefore cuts in the middle of the overlap and matches packets by\n\n  Line 667: \t\t\t\tc.startNext(segmentsCtx)\n\n  Line 731: \treturn max(time.Until(activeEnd.Add(-c.capture.overlap)), 0)\n\n  Line 734: func (c *captureChain) startNext(ctx context.Context) {\n\n  Line 737: \tc.held = nil\n\n  Line 821: // setCut places the cut in the middle of the overlap of the active and the next segment, both\n\n  Line 824: \toverlapStart := c.next.started\n\n  Line 825: \toverlapEnd := c.active.plannedEnd()\n\n  Line 826: \tif overlapEnd.Sub(overlapStart) < 2*c.capture.window {\n\n  Line 827: \t\t// the overlap is too short to match packets around a cut: the switch is reported as a\n\n  Line 832: \tc.cut = overlapStart.Add(overlapEnd.Sub(overlapStart) / 2).UnixNano()\n\n  Line 864: \t\tc.held = append(c.held, packet)\n\n  Line 889: \t\tc.next, c.held, c.emitted, c.cut = nil, nil, nil, 0\n\n  Line 902: \t\t\tReason: \"the follow-up capture did not overlap the previous one\",\n\n  Line 918: \t\tc.next, c.held, c.emitted, c.cut = nil, nil, nil, 0\n\n  Line 952: \tc.held, c.emitted, c.cut = nil, nil, 0\n",
+            "title": "c\\.held = append|held\\b.*=|startNext|overlap",
+            "metadata": {
+              "matches": 23,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793523499306,
+              "end": 1793523499317
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19654c137001y9nrR20eNOJjJx",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_196549448001WpxHDY5Re1V0HR",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 48305,
+            "input": 3343,
+            "output": 85,
+            "reasoning": 1357,
+            "cache": {
+              "read": 43520,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19654c1490017C72SZCgq1bWsE",
+        "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+        "time": {
+          "created": 1793523499337,
+          "completed": 1793523515983
+        },
+        "parentID": "msg_1965436e6001620KypTRi1ley5",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-RDQspZ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 51789,
+          "input": 711,
+          "output": 2399,
+          "reasoning": 551,
+          "cache": {
+            "read": 48128,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19654c909001jptW3dj6qPKQU2",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_19654c1490017C72SZCgq1bWsE"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19654c90b001nb8hdAkzZGGNwS",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_19654c1490017C72SZCgq1bWsE",
+          "text": "Confirmed: line 864 appends to `c.held` without any cap; the overlap is `min(maxCaptureOverlap, segment/3)` (≤10s). During the overlap, all of `next`'s packets accumulate in `c.held` until `active` ends and `switchSegments` drains them. At high packet rates with a large snap length this is bounded only by 10s × rate × snaplen — potentially large, though temporally bounded. Also `c.emitted` holds one entry per distinct packet content written by active since next started (bounded by rate in that span too).\n\nThat's a legitimate P4 (optional improvement — e.g., cap held backlog or note the bound). Given the ponytail rules (YAGNI), maybe this is over-engineering to flag. It is a real, explainable memory characteristic; P4 with a suggestion to either cap the held buffer or document the bound. I'll include it as P4.\n\nCoverage notes:\n- Snapshot read-only; no tests executed; review is source-only. Test files reviewed for coverage, not run.\n- Full diff (7018 lines, 37 paths) and all new head files reviewed; no remaining unread regions.\n- Unresolved uncertainty: whether clabwire emits a `Failed` audit record when its stdin closes during a stop; if it does, `handleAudit` (capture.go:799-800) would surface an error despite the \"context ended is not an error\" contract (runtime.go PacketCapturer doc). Left in coverage notes as unverifiable external behavior.\n- `packetKey` truncates InterfaceID to 16 bits — safe at current scale, noted as accepted tradeoff.\n- No topology schema changes required; capture is CLI/runtime API, not a schema-domain change.\n\nNow write final Markdown review + JSON.\n\nPermalink roots:\nhead: https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/\nbase: https://github.com/srl-labs/containerlab/blob/00c0f8f4a551466e9e0e0cc79a3e48d2510adfd4/\n\nFinding: P4 held/emitted growth — location head/labruntime/clabernetes/capture.go lines 860-870 (append) — let me use 855-870 as range. Actually line 864 is `c.held = append(...)`. Use start 855 end 870.\n\nSummary table: one finding P4. Plus coverage notes with the audit uncertainty.",
+          "time": {
+            "start": 1793523501323,
+            "end": 1793523504846
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_19654d6d1001WOMvsqxP5gdIwO",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_19654c1490017C72SZCgq1bWsE",
+          "text": "# PR Review: Packet capture (capture command, capture package, c9s clabwire integration)\n\n## Review Summary\n\nThis PR adds a `containerlab capture` command with a new self-contained `capture` package (pcapng codec, timestamp-order reorder buffer, local afpacket capture), wires it into `core.CLab`, `cmd`, and the c9s runtime (chained clabwire segments with content-based dedup at the switch), plus unit tests, a Go cluster integration test, two smoke/robot suites, and docs. I traced the full diff (all 7018 lines), the head implementations, and the test suites.\n\nOverall this is a high-quality, well-tested change. The control flow I traced holds up: `Output.Emit` limit handling is correct; `Reorder` ordering/deadlock behavior is sound; the local capture drain-on-end logic only writes packets stamped before the end; the c9s chain state machine (start/dedupe/switch/stop) is coherent and heavily covered by `fakeClabwire` tests; stdout purity for `-w -` is guaranteed by `log.SetOutput(os.Stderr)` in `cmd/root.go`; docs, `mkdocs.yml` nav, and CI (tshark install, `\"33*.robot\"` glob) are all updated consistently. No topology schema change is needed (the feature is CLI/runtime API, not a topology schema domain).\n\nI found one optional improvement; the remaining uncertainty is recorded in the coverage notes.\n\n## Findings\n\n| Priority | Count | Summary |\n|---|---|---|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 1 | Unbounded `held`/`emitted` backlog during c9s segment overlap |\n\n### P4 — `captureChain.held` and `emitted` grow without a cap during the segment overlap\n\n**Location:** [labruntime/clabernetes/capture.go L855-L870](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L855-L870) (append to `c.held` at line 864; reset in `switchSegments` at [L932-L952](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L932-L952))\n\n**Problem:** During the chaining overlap (at most `maxCaptureOverlap` = 10 s, per `run.overlap = min(maxCaptureOverlap, run.segment/3)` at [L502](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L502)), every packet delivered by the follow-up segment is appended to `c.held` until the active segment ends, and every packet the active segment writes goes into `c.emitted` as a content key. Neither slice/map has a size cap or backpressure tied to the consumer.\n\n**Trigger:** A chained c9s capture (duration > 1 h, or `CLAB_C9S_CAPTURE_SEGMENT` shorter) on a link with high packet rate. The memory footprint is temporally bounded (≈ overlap × packet rate × min(snap length, frame size)), but at line-rate traffic with the default 256 KiB snap length it can reach hundreds of MB to GBs of transient memory in the containerlab process before `switchSegments` drains it.\n\n**Impact:** Transient memory spike on a long-running capture of a busy link. No data loss or deadlock — the drain loop at [L932-L952](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L932-L952) releases everything, and the same pattern exists for `Reorder`'s window (bounded by timestamp, not count). This is an optional hardening item, not a correctness defect.\n\n**Suggestion:** If maintainers want a hard bound, cap `c.held` (for example, drop-to-gap beyond a byte budget, which would surface as a `CaptureGap`) or shrink the effective overlap under observed rate. Otherwise, a one-line comment noting the overlap-bound memory characteristic would prevent future surprise. Either way this can wait; do not block the merge on it.\n\n## Coverage Notes\n\n- **Execution limitation:** this is a read-only source snapshot; no tests, builds, or formatters were run. All conclusions are from source inspection. The Go unit tests (`capture/*_test.go`, `cmd/capture_test.go`, `core/capture_test.go`), the cluster integration test (`core/labruntime_cluster_test.go` with `TestC9sClusterCapture`), the `fakeClabwire` harness (`labruntime/clabernetes/capture_test.go`), the smoke suite (`tests/01-smoke/33-capture.robot` + summary script), and the c9s robot additions (`tests/14-clabernetes/01-linux-lifecycle.robot`, `clabwire-captures.sh`) were reviewed for coverage and look comprehensive: ordering, dedup, gaps, stdin-close stop, unsupported clabwire version, RBAC denial, and node restart reattach are all covered.\n- **Unresolved uncertainty (not a finding):** `handleAudit` at [capture.go L799-L800](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L799-L800) returns a `captureAuditError` for `Denied`/`Failed` regardless of `c.stopping`. If a clabwire build ever reported `Failed` *as a consequence of* stdin-close during a Ctrl+C stop, the `PacketCapturer.Capture` contract (\"the context ended … is not an error\", documented at [labruntime/runtime.go L452-L459](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/runtime.go#L452-L459)) would surface an error on a clean exit. Whether clabwire does so cannot be verified from this snapshot (it is an external service); the fake in tests does not. Flagging in case the clabwire contract should guarantee `Succeeded` on stdin-close stop.\n- `packetKey` truncates `InterfaceID` to 16 bits for hashing ([capture.go L973-L982](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L973-L982)); safe at realistic interface counts, accepted tradeoff.\n- `setCut`'s zero-cut branch is effectively unreachable in production because `window = min(500ms, overlap/4)` always satisfies `2*window < overlap`; it is a defensive path, consistent with the \"overlap too short\" gap reporting.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`captureChain.held`/`emitted` grow without a cap during the c9s segment overlap\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"labruntime/clabernetes/capture.go\",\n        \"start\": 855,\n        \"end\": 870\n      },\n      \"problem\": \"During the chaining overlap, every packet of the follow-up segment is appended to `c.held` (line 864) and every packet the active segment writes adds an entry to `c.emitted`, with no size cap or consumer backpressure; they are only released when `switchSegments` runs after the active segment ends.\",\n      \"trigger\": \"A chained c9s capture (duration over one hour, or `CLAB_C9S_CAPTURE_SEGMENT` set) on a link with a high packet rate; the overlap is at most `maxCaptureOverlap` (10 seconds, set at line 502 as `min(maxCaptureOverlap, run.segment/3)`).\",\n      \"impact\": \"Transient memory in the containerlab process bounded only by overlap duration times packet rate times snap length; at line rate with the default 256 KiB snap length this can reach large sizes before draining. No data loss or deadlock: the drain loop at lines 932-952 releases everything. This is an optional hardening item, not a correctness defect.\",\n      \"suggestion\": \"Either cap `c.held` (for example, exceed a byte budget and report it as a `CaptureGap`) or reduce the effective overlap under observed rate; at minimum add a comment documenting the overlap-bound memory characteristic. Do not block the merge on this.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"The full diff (7018 lines, 37 changed paths) was traversed, including all regions previously unread (6076-6357 and 6475-7018), plus the head implementations, unit tests (capture, cmd, core), the fakeClabwire c9s test harness, the cluster integration test, both robot suites, docs, mkdocs.yml, and the CI workflow changes.\",\n      \"This is a read-only snapshot review: no tests, builds, or formatters were executed; all conclusions are from source inspection.\",\n      \"Unresolved uncertainty: `handleAudit` (labruntime/clabernetes/capture.go lines 799-800) returns a `captureAuditError` for `Denied`/`Failed` even when `c.stopping` is set. If an external clabwire build reported `Failed` as a consequence of stdin-close during a Ctrl+C stop, the `PacketCapturer.Capture` contract documented in labruntime/runtime.go (context ended is not an error) would surface an error on a clean exit. Whether clabwire does this cannot be verified from the snapshot; the test fake does not. Raised as a coverage note rather than a finding.\",\n      \"`packetKey` truncates `InterfaceID` to 16 bits for content hashing (capture.go lines 973-982); safe at realistic interface counts, recorded as an accepted tradeoff.\",\n      \"`setCut`'s zero-cut branch is effectively unreachable in production because `window = min(maxCaptureCutWindow, overlap/4)` always satisfies `2*window < overlap`; it is a defensive path consistent with the 'overlap too short' gap reporting.\",\n      \"No topology schema changes are required: the feature is a CLI and runtime API addition, outside the clab.schema.json domain, and the new smoke topology references the existing schema.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793523504849,
+            "end": 1793523515974
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19655024a00150SF0ApaGpH9MY",
+          "sessionID": "ses_e69af794bffepNbEhVAv4WOoCS",
+          "messageID": "msg_19654c1490017C72SZCgq1bWsE",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 51789,
+            "input": 711,
+            "output": 2399,
+            "reasoning": 551,
+            "cache": {
+              "read": 48128,
+              "write": 0
+            }
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - `captureChain.held`/`emitted` grow without a cap during the c9s segment overlap** | [labruntime/clabernetes/capture.go:855-870](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L855-L870) |\n\n## P4 - `captureChain.held`/`emitted` grow without a cap during the c9s segment overlap\n\n**Location:** [labruntime/clabernetes/capture.go:855-870](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L855-L870)\n\n**Problem:** During the chaining overlap, every packet of the follow-up segment is appended to `c.held` &#40;line 864&#41; and every packet the active segment writes adds an entry to `c.emitted`, with no size cap or consumer backpressure; they are only released when `switchSegments` runs after the active segment ends.\n\n**Trigger:** A chained c9s capture &#40;duration over one hour, or `CLAB_C9S_CAPTURE_SEGMENT` set&#41; on a link with a high packet rate; the overlap is at most `maxCaptureOverlap` &#40;10 seconds, set at line 502 as `min(maxCaptureOverlap, run.segment/3)`&#41;.\n\n**Impact:** Transient memory in the containerlab process bounded only by overlap duration times packet rate times snap length; at line rate with the default 256 `KiB` snap length this can reach large sizes before draining. No data loss or deadlock&#58; the drain loop at lines 932-952 releases everything. This is an optional hardening item, not a correctness defect.\n\n**Suggested correction:** Either cap `c.held` &#40;for example, exceed a byte budget and report it as a `CaptureGap`&#41; or reduce the effective overlap under observed rate; at minimum add a comment documenting the overlap-bound memory characteristic. Do not block the merge on this.\n\n\n## Coverage\n\n- The full diff &#40;7018 lines, 37 changed paths&#41; was traversed, including all regions previously unread &#40;6076-6357 and 6475-7018&#41;, plus the head implementations, unit tests &#40;capture, cmd, core&#41;, the `fakeClabwire` c9s test harness, the cluster integration test, both robot suites, docs, [`mkdocs.yml`](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/mkdocs.yml#L1-L1), and the CI workflow changes.\n- This is a read-only snapshot review&#58; no tests, builds, or formatters were executed; all conclusions are from source inspection.\n- Unresolved uncertainty&#58; `handleAudit` &#40;[`labruntime/clabernetes/capture.go`](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/clabernetes/capture.go#L1-L1) lines 799-800&#41; returns a `captureAuditError` for `Denied`/`Failed` even when `c.stopping` is set. If an external clabwire build reported `Failed` as a consequence of stdin-close during a Ctrl+C stop, the `PacketCapturer.Capture` contract documented in [`labruntime/runtime.go`](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/labruntime/runtime.go#L1-L1) &#40;context ended is not an error&#41; would surface an error on a clean exit. Whether clabwire does this cannot be verified from the snapshot; the test fake does not. Raised as a coverage note rather than a finding.\n- `packetKey` truncates `InterfaceID` to 16 bits for content hashing &#40;`capture.go` lines 973-982&#41;; safe at realistic interface counts, recorded as an accepted tradeoff.\n- `setCut`&#39;s zero-cut branch is effectively unreachable in production because `window = min(maxCaptureCutWindow, overlap/4)` always satisfies `2*window < overlap`; it is a defensive path consistent with the &#39;overlap too short&#39; gap reporting.\n- No topology schema changes are required&#58; the feature is a CLI and runtime API addition, outside the [`clab.schema.json`](https://github.com/srl-labs/containerlab/blob/657b1700664a99c5e12c60b4cfd179eb11889bae/schemas/clab.schema.json#L1-L1) domain, and the new smoke topology references the existing schema.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`captureChain.held`/`emitted` grow without a cap during the c9s segment overlap\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"labruntime/clabernetes/capture.go\",\n        \"start\": 855,\n        \"end\": 870\n      },\n      \"problem\": \"During the chaining overlap, every packet of the follow-up segment is appended to `c.held` (line 864) and every packet the active segment writes adds an entry to `c.emitted`, with no size cap or consumer backpressure; they are only released when `switchSegments` runs after the active segment ends.\",\n      \"trigger\": \"A chained c9s capture (duration over one hour, or `CLAB_C9S_CAPTURE_SEGMENT` set) on a link with a high packet rate; the overlap is at most `maxCaptureOverlap` (10 seconds, set at line 502 as `min(maxCaptureOverlap, run.segment/3)`).\",\n      \"impact\": \"Transient memory in the containerlab process bounded only by overlap duration times packet rate times snap length; at line rate with the default 256 `KiB` snap length this can reach large sizes before draining. No data loss or deadlock: the drain loop at lines 932-952 releases everything. This is an optional hardening item, not a correctness defect.\",\n      \"suggestion\": \"Either cap `c.held` (for example, exceed a byte budget and report it as a `CaptureGap`) or reduce the effective overlap under observed rate; at minimum add a comment documenting the overlap-bound memory characteristic. Do not block the merge on this.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"The full diff (7018 lines, 37 changed paths) was traversed, including all regions previously unread (6076-6357 and 6475-7018), plus the head implementations, unit tests (capture, cmd, core), the `fakeClabwire` c9s test harness, the cluster integration test, both robot suites, docs, `mkdocs.yml`, and the CI workflow changes.\",\n      \"This is a read-only snapshot review: no tests, builds, or formatters were executed; all conclusions are from source inspection.\",\n      \"Unresolved uncertainty: `handleAudit` (`labruntime/clabernetes/capture.go` lines 799-800) returns a `captureAuditError` for `Denied`/`Failed` even when `c.stopping` is set. If an external clabwire build reported `Failed` as a consequence of stdin-close during a Ctrl+C stop, the `PacketCapturer.Capture` contract documented in `labruntime/runtime.go` (context ended is not an error) would surface an error on a clean exit. Whether clabwire does this cannot be verified from the snapshot; the test fake does not. Raised as a coverage note rather than a finding.\",\n      \"`packetKey` truncates `InterfaceID` to 16 bits for content hashing (`capture.go` lines 973-982); safe at realistic interface counts, recorded as an accepted tradeoff.\",\n      \"`setCut`'s zero-cut branch is effectively unreachable in production because `window = min(maxCaptureCutWindow, overlap/4)` always satisfies `2*window < overlap`; it is a defensive path consistent with the 'overlap too short' gap reporting.\",\n      \"No topology schema changes are required: the feature is a CLI and runtime API addition, outside the `clab.schema.json` domain, and the new smoke topology references the existing schema.\"\n    ]\n  }\n}\n```"
 }
