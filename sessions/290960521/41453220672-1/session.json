@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "d9659751f42ec30e7a6fd71290286329a00c2410",
-  "updatedAt": "2026-11-02T13:33:32.925Z",
-  "state": "running",
+  "updatedAt": "2026-11-02T13:35:16.582Z",
+  "state": "completed",
   "info": {
     "id": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 186754,
-      "output": 1116,
-      "reasoning": 16078,
+      "input": 242730,
+      "output": 5554,
+      "reasoning": 18443,
       "cache": {
-        "read": 1617408,
+        "read": 1739072,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793626157880,
-      "updated": 1793626402264
+      "updated": 1793626516527
     }
   },
   "messages": [
@@ -3914,6 +3914,9 @@
         "time": {
           "created": 1793626402230
         },
+        "summary": {
+          "diffs": []
+        },
         "agent": "tofarev",
         "model": {
           "providerID": "tofarev",
@@ -3927,7 +3930,8 @@
           "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
           "messageID": "msg_19c76edb6001j0Yp1zm0S6OO3D",
           "auto": true,
-          "overflow": false
+          "overflow": false,
+          "tail_start_id": "msg_19c75ef55001byqIUq2d86I9DM"
         }
       ]
     },
@@ -3937,7 +3941,8 @@
         "id": "msg_19c76edd4001EekiZkQmADnCmE",
         "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
         "time": {
-          "created": 1793626402261
+          "created": 1793626402261,
+          "completed": 1793626415977
         },
         "parentID": "msg_19c76edb6001j0Yp1zm0S6OO3D",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -3951,14 +3956,16 @@
         "summary": true,
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 31144,
+          "input": 29221,
+          "output": 1909,
+          "reasoning": 14,
           "cache": {
             "read": 0,
             "write": 0
           }
-        }
+        },
+        "finish": "stop"
       },
       "parts": [
         {
@@ -3983,12 +3990,670 @@
           "id": "prt_19c76f7fe001R9cIMGUHc9pDyU",
           "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
           "messageID": "msg_19c76edd4001EekiZkQmADnCmE",
-          "text": "",
+          "text": "## Objective\n- Perform a read-only PR review of the snapshot at /source (containerlab repo, srl-labs/containerlab). Head d9659751f42ec30e7a6fd71290286329a00c2410, base/target base 91c22792bf11b95fcc34d8b882d745bd3f13083a. Apply standards.json rules (karpathy-guidelines.mdc, ponytail.mdc), track all 4 changed paths, complete all checks (callers, tests, docs, schema), then return the trusted result schema.\n\n## Important Details\n- 4 changed paths (all status M): `docs/manual/kinds/cisco_iol.md`, `nodes/default_node.go`, `nodes/iol/iol.go`, `nodes/linux/linux.go`.\n- PR theme: make endpoint counting/config generation account for **parked endpoints** (parking feature pre-exists at base: `links/parking_node.go`, `ParkEndpoints`/`RestoreEndpoints`, `core/lifecycle.go` `parkRecreatedNodes`/`restoreRecreatedNodes`, `core/topology_reconcile.go`).\n- Key new code at head:\n  - `nodes/default_node.go:1115` `EndpointsWithParked()` — returns `d.Endpoints` if `parkingNode == nil`, else `append(slices.Clone(d.Endpoints), d.parkingNode.GetEndpoints()...)`; new `\"slices\"` import.\n  - `nodes/default_node.go:194` `Deploy()` sets `CLAB_INTFS` (= `clabconstants.ClabEnvIntfs`) via `len(d.EndpointsWithParked())` instead of endpoint count.\n  - `nodes/linux/linux.go:78` same change (linux overrides Deploy; pre-existing duplication of CLAB_INTFS logic).\n  - `nodes/iol/iol.go:231` (`ensureNumSlotsEnv`) and `:372` (`GenInterfaceConfig`) iterate `n.EndpointsWithParked()`.\n  - `nodes/iol/iol.go` `CreateIOLFiles`: `boot_config.txt` now created only if not exists (like nvram file) — preserves content; `PostDeploy` `GenBootConfig` still overwrites, so only visible when PostDeploy skipped/fails or mid-deploy failure.\n- Docs change: adds Telnet tab to cisco_iol.md — `telnet <container-name/id> 5000`, note console \"served on the node's management address\", warning that console requires vrnetlab image built after November 2026.\n- Verified flows: apply order in `core/apply.go` (~lines 207-223): `deleteApplyEndpoints` → `parkRecreatedNodes` → `deleteApplyNodes` → deploy (per-node `PreDeploy` → `Deploy` in `core/deploy.go:789`) → `restoreRecreatedNodes` → `deployLinks` → postDeploy. So parked endpoints exist during PreDeploy/Deploy of recreated nodes — CLAB_INTFS/NETMAP/CLAB_IOL_NUM_SLOTS include them, fixing vrnetlab premature boot during recreate.\n- VRNode embeds DefaultNode (`nodes/vr_node.go:26-32`), so vrnetlab kinds get the fix via inherited Deploy. sros overrides Park/Restore (`nodes/sros/sros.go:1838-1899`) but inherits Deploy env logic.\n- `grep ClabEnvIntfs`: only set in `nodes/linux/linux.go` and `nodes/default_node.go` — no other kind needs updating.\n- Parking ownership is exclusive: `moveEndpoint` (`links/endpoint.go:164`) releases from src, adopts into dst; no double-count in `EndpointsWithParked`.\n- Concurrency: Park/Restore are sequential in apply flow; `EndpointsWithParked` uses `slices.Clone` to avoid mutating `d.Endpoints`.\n- Doc telnet pattern (`telnet <container-name/id> 5000`) matches pre-existing pattern in many kinds docs (vr-sros.md, openbsd.md, dell_sonic.md, etc.) — not introduced by this PR; reviewer leaned toward not flagging.\n- No test coverage added for `EndpointsWithParked` (grep found usages only in iol.go, linux.go, default_node.go); per ponytail rule a cheap unit test could be a minor finding (P4).\n- Snapshot incomplete: false; manifest.json lists full inventory. Tooling quirk: bare `read /source` was denied by permission rules; `read /source/<file>` and `glob` with `path:/source` work.\n- Limitation to disclose: source-only review, tests not executed.\n\n## Work State\n### Completed\n- Read standards.json, both rule files, diff.txt, manifest.json.\n- Read all 4 head changed files (iol.go fully; cisco_iol.md around hunk; default_node.go key sections; linux.go fully) and key context: `links/parking_node.go`, `links/endpoint.go` moveEndpoint, `core/lifecycle.go`, `core/apply.go` (order of park/delete/deploy/restore), `core/deploy.go` deployNode (PreDeploy→Deploy order), `nodes/vr_node.go`, iol_test.go (no parked-endpoint tests).\n- Grepped: `parkingNode`, `EndpointsWithParked`, `ParkEndpoints|RestoreEndpoints`, `ClabEnvIntfs`, `ParkingNetnsName|parkingNetNS*`, telnet/5000 doc patterns.\n- Confirmed base already contains parking feature (base/links/parking_node.go, base/nodes/default_node.go ParkEndpoints) — PR only adds parked-endpoint awareness.\n- Analyzed boot_config.txt creation-guard change: behavior identical in normal deploy (GenBootConfig overwrites in PostDeploy); preserves content when PostDeploy skipped/fails.\n- Analyzed GenInterfaceConfig with parked endpoints: parked endpoints keep GetIfaceName/IPv4/IPv6 → NETMAP + boot config preserve mapping/addresses across recreate (the PR's intent).\n- Verified no double-count scenarios (failed restore keeps exclusive ownership; re-adoption in DiscoverOwnedEndpoints is pre-existing edge).\n\n### Active\n- Final issue triage and drafting the trusted result schema output. Candidate findings so far: (a) minor: no unit test for `EndpointsWithParked` (ponytail \"one runnable check\" rule) — P4; (b) doc claim \"console served on the node's management address\" vs `telnet <container-name/id>` resolution from host — matches pre-existing doc pattern across many kinds, likely not flaggable; (c) docs claim \"November 2026\" vrnetlab image — external, unverifiable, coverage note only. No P1/P2 code bug found yet.\n\n### Blocked\n- Nothing blocking; tests not executed (permitted: source-only review with disclosed limitation).\n\n## Next Move\n1. Finish remaining verification (if any): optionally re-check diff hunks vs head files are complete, decide final findings list and severities.\n2. Emit the trusted result schema with per-path check results, coverage notes (source-only, no test execution; doc claims about external vrnetlab images unverifiable), and findings (likely: missing test for EndpointsWithParked as minor; consider whether doc mgmt-address wording warrants a note).\n\n## Relevant Files\n- `/source/standards.json` — lists the two rule files (revision 91c22792...).\n- `/source/head/.cursor/rules/karpathy-guidelines.mdc`, `/source/head/.cursor/rules/ponytail.mdc` — review standards (surgical changes, simplicity, one runnable check).\n- `/source/diff.txt` — the 4-file diff (authoritative change set).\n- `/source/manifest.json` — head/base/mergeBase, changed list, full file inventory.\n- `/source/head/nodes/default_node.go` — EndpointsWithParked (line 1115), Deploy CLAB_INTFS (line 194), Park/RestoreEndpoints (1176-1245).\n- `/source/head/nodes/linux/linux.go` — Deploy CLAB_INTFS change (line 78).\n- `/source/head/nodes/iol/iol.go` — ensureNumSlotsEnv (231), GenInterfaceConfig (372), CreateIOLFiles boot_config guard, GenBootConfig/UpdateMgmtIntf context.\n- `/source/head/docs/manual/kinds/cisco_iol.md` — new Telnet tab/warning (lines 55-66).\n- `/source/head/links/parking_node.go`, `/source/head/links/endpoint.go` — parking mechanics/moveEndpoint ownership transfer.\n- `/source/head/core/apply.go`, `/source/head/core/lifecycle.go`, `/source/head/core/deploy.go`, `/source/head/core/topology_reconcile.go` — apply/deploy ordering around park/restore.\n- `/source/head/nodes/iol/iol_test.go`, `/source/head/nodes/default_node_test.go` — existing tests; no coverage for EndpointsWithParked.",
           "time": {
-            "start": 1793626404862
+            "start": 1793626404862,
+            "end": 1793626415971
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c772366001BylGo2Ff4yYhce",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c76edd4001EekiZkQmADnCmE",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 31144,
+            "input": 29221,
+            "output": 1909,
+            "reasoning": 14,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_19c77236c001reBY8fH89VdUj9",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626415980
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_19c77236d001bWe1eAV8bTMryL",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77236c001reBY8fH89VdUj9",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1793626415981,
+            "end": 1793626415981
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19c772374001ZFFwfKzEs3EhRV",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626415988,
+          "completed": 1793626424120
+        },
+        "parentID": "msg_19c77236c001reBY8fH89VdUj9",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sCcjsX",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 20840,
+          "input": 20194,
+          "output": 31,
+          "reasoning": 615,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19c772da0001yUKCNYideK57mP",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c772374001ZFFwfKzEs3EhRV"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19c772da2001LUwODWxqfNmTtL",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c772374001ZFFwfKzEs3EhRV",
+          "text": "I have all the necessary evidence. Time to finalize the review. Let me compile my findings and write the Markdown review.\n\nKey findings candidates:\n\n1. **Missing test for `EndpointsWithParked`** (P4) — ponytail rule \"one runnable check\"; the new helper has no test coverage, while other env-derivation behavior in the PR is covered only indirectly. Actually, is it? `iol_test.go` has no parked-endpoint tests. The helper is small and pure — a cheap table-driven test is warranted. P4.\n\n2. Doc claim about telnet resolution — matches pre-existing patterns across many kinds docs; not PR's problem. I won't flag; put in coverage notes.\n\n3. Doc claim \"vrnetlab images built after November 2026\" — external/unverifiable; coverage note.\n\n4. Anything else? Let me think about whether there is any actual P2/P3 in the changed code.\n\nConsider `EndpointsWithParked` returning a fresh slice each call — callers: len() (fine), iol loops (fine). No mutation issues due to slices.Clone.\n\nConsider `linux.go` Deploy — it sets CLAB_INTFS before CreateContainer? Line 78 region — I saw it in the diff context; presumably identical position to base. Fine.\n\nOne thing I haven't verified: does `iol` `GenInterfaceConfig` skip mgmt endpoint? Look: `GenInterfaceConfig` iterates over endpoints; does it exclude the mgmt interface endpoint (eth0)? At base, the loop was `for _, ep := range n.Endpoints` — unchanged except adding parked. So no new issue.\n\nAnother check: `ensureNumSlotsEnv` early-return uses `n.Cfg.Env[\"CLAB_IOL_NUM_SLOTS\"] != \"\"`. New behavior: parked endpoints included in `needed` computation. If the user set the env explicitly... unchanged behavior.\n\nWhat about the `boot_config.txt` guard: is there a scenario where the file persists with a stale config from a *removed* startup-config? If the user removes the `startup-config` from topology and recreates the node: PostDeploy → GenBootConfig → check: does GenBootConfig write empty content when no startup-config? Let me recall GenBootConfig in iol.go — it likely reads startup-config (or default) and writes to boot_config.txt. If bootstrapNone, maybe it clears? Let me check quickly to ensure the new guard doesn't cause stale config on reconfigure... Actually with `--reconfigure` the lab dir is wiped, so file missing → created. With redeploy (recreate), GenBootConfig runs in PostDeploy and overwrites. The only case where the stale file survives is when PostDeploy doesn't run — which is the intended fix. But what if the user changes the startup-config to something empty/none and applies? PostDeploy still runs → GenBootConfig overwrites. Fine.\n\nLet me quickly verify GenBootConfig handles bootstrapNone by writing empty.",
+          "time": {
+            "start": 1793626418594,
+            "end": 1793626424091
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_19c77431e001wQjMfzBMVj73k2",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c772374001ZFFwfKzEs3EhRV",
+          "callID": "call_9faaa683cee64b2cb7f5959f",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/iol/iol.go",
+              "limit": 120,
+              "offset": 243
+            },
+            "output": "<path>/source/head/nodes/iol/iol.go</path>\n<type>file</type>\n<content>\n243: \n244: \tif v := n.kindSpecificCfg().BootstrapConfig; v != \"\" {\n245: \t\tswitch p := clabutils.ResolvePath(v, params.TopoPaths.TopologyFileDir()); {\n246: \t\tcase strings.EqualFold(v, \"none\"):\n247: \t\t\tn.bootstrapNone = true\n248: \t\tcase clabutils.FileExists(p):\n249: \t\t\tn.bootstrapCfgFile = p\n250: \t\tdefault:\n251: \t\t\treturn fmt.Errorf(\"bootstrap-config file %q does not exist\", p)\n252: \t\t}\n253: \t}\n254: \n255: \t_, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n256: \tif err != nil {\n257: \t\treturn err\n258: \t}\n259: \n260: \tn.ensureNumSlotsEnv()\n261: \n262: \treturn n.CreateIOLFiles(ctx)\n263: }\n264: \n265: func (n *iol) PostDeploy(ctx context.Context, _ *clabnodes.PostDeployParams) error {\n266: \tlog.Infof(\"Running postdeploy actions for Cisco IOL '%s' node\", n.Cfg.ShortName)\n267: \n268: \tn.disableMgmtTxOffload(ctx)\n269: \n270: \tif err := n.GenBootConfig(ctx); err != nil {\n271: \t\treturn fmt.Errorf(\"failed to generate boot config: %w\", err)\n272: \t}\n273: \n274: \t// Must update mgmt IP if not first boot, unless the node boots without a baseline config\n275: \tif !n.firstBoot && !n.bootstrapNone {\n276: \t\treturn n.UpdateMgmtIntf(ctx)\n277: \t}\n278: \n279: \treturn nil\n280: }\n281: \n282: // Start re-applies the mgmt veth TX offload fix after a stop/start cycle. The runtime\n283: // recreates the mgmt veth (it is never parked), so its offload settings reset to defaults.\n284: // See disableMgmtTxOffload for why IOL cannot function with it enabled.\n285: func (n *iol) Start(ctx context.Context) error {\n286: \tif err := n.DefaultNode.Start(ctx); err != nil {\n287: \t\treturn err\n288: \t}\n289: \n290: \t// DefaultNode.Start no-ops for root-ns and auto-remove nodes; skip the offload fix\n291: \t// for them as well, as there is no container mgmt veth to adjust.\n292: \tif n.ShouldSkipLifecycle() {\n293: \t\treturn nil\n294: \t}\n295: \n296: \tn.disableMgmtTxOffload(ctx)\n297: \n298: \treturn nil\n299: }\n300: \n301: // disableMgmtTxOffload disables TX checksum offload on the host NS veth for the mgmt interface.\n302: // iouyap bridges IOL interfaces over packet sockets; frames carrying an offloaded\n303: // (CHECKSUM_PARTIAL) checksum reach the IOL process with an incomplete checksum, which its\n304: // TCP/IP stack drops, breaking TCP/UDP connectivity.\n305: //\n306: // Nodes running with host network mode are skipped: their eth0 is the host's interface,\n307: // and there is no clab-created mgmt veth to adjust.\n308: func (n *iol) disableMgmtTxOffload(ctx context.Context) {\n309: \tif n.Cfg.NetworkMode == \"host\" {\n310: \t\treturn\n311: \t}\n312: \n313: \tif n.Runtime.Mgmt().Driver == clabtypes.MgmtDriverMacvlan {\n314: \t\treturn\n315: \t}\n316: \n317: \tvar peerIfIndex int\n318: \terr := n.ExecFunction(ctx, clabutils.VethPeerIndex(\"eth0\", &peerIfIndex))\n319: \tif err != nil {\n320: \t\tlog.Warn(\"Failed to get veth peer index for IOL mgmt interface\",\n321: \t\t\t\"node\", n.Cfg.ShortName,\n322: \t\t\t\"error\", err)\n323: \t\treturn\n324: \t}\n325: \n326: \tif err := clabutils.DisableTxOffloadByIndex(peerIfIndex); err != nil {\n327: \t\tlog.Warn(\"Failed to disable TX checksum offload on IOL mgmt host veth\",\n328: \t\t\t\"node\", n.Cfg.ShortName,\n329: \t\t\t\"error\", err)\n330: \t}\n331: }\n332: \n333: func (n *iol) CreateIOLFiles(ctx context.Context) error {\n334: \t// If NVRAM already exists, don't need to create\n335: \t// otherwise saved configs in NVRAM are overwritten.\n336: \tif !clabutils.FileExists(path.Join(n.Cfg.LabDir, n.nvramFile)) {\n337: \t\t// create nvram file\n338: \t\tclabutils.CreateFile(path.Join(n.Cfg.LabDir, n.nvramFile), \"\")\n339: \t\tn.firstBoot = true\n340: \t}\n341: \t// create these files so the bind monut doesn't automatically\n342: \t// make folders.\n343: \tif bootCfg := path.Join(n.Cfg.LabDir, \"boot_config.txt\"); !clabutils.FileExists(bootCfg) {\n344: \t\tclabutils.CreateFile(bootCfg, \"\")\n345: \t}\n346: \n347: \treturn n.GenInterfaceConfig(ctx)\n348: }\n349: \n350: // Generate interfaces configuration for IOL (and iouyap/netmap).\n351: func (n *iol) GenInterfaceConfig(_ context.Context) error {\n352: \t// add 'boilerplate' to NETMAP and iouyap.ini for the management port\n353: \tiouyapData := fmt.Sprintf(\n354: \t\t\"[default]\\nbase_port = 49000\\nnetmap = /iol/NETMAP\\n[513:%d/%d]\\neth_dev = eth0\\n\",\n355: \t\tn.mgmtSlot,\n356: \t\tn.mgmtPort,\n357: \t)\n358: \tnetmapdata := fmt.Sprintf(\n359: \t\t\"%s:%d/%d 513:%d/%d\\n\",\n360: \t\tn.Pid,\n361: \t\tn.mgmtSlot,\n362: \t\tn.mgmtPort,\n\n(Showing lines 243-362 of 787. Use offset=363 to continue.)\n</content>",
+            "title": "source/head/nodes/iol/iol.go",
+            "metadata": {
+              "preview": "\n\tif v := n.kindSpecificCfg().BootstrapConfig; v != \"\" {\n\t\tswitch p := clabutils.ResolvePath(v, params.TopoPaths.TopologyFileDir()); {\n\t\tcase strings.EqualFold(v, \"none\"):\n\t\t\tn.bootstrapNone = true\n\t\tcase clabutils.FileExists(p):\n\t\t\tn.bootstrapCfgFile = p\n\t\tdefault:\n\t\t\treturn fmt.Errorf(\"bootstrap-config file %q does not exist\", p)\n\t\t}\n\t}\n\n\t_, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tn.ensureNumSlotsEnv()\n\n\treturn n.CreateIOLFiles(ctx)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/iol/iol.go",
+                "text": "\n\tif v := n.kindSpecificCfg().BootstrapConfig; v != \"\" {\n\t\tswitch p := clabutils.ResolvePath(v, params.TopoPaths.TopologyFileDir()); {\n\t\tcase strings.EqualFold(v, \"none\"):\n\t\t\tn.bootstrapNone = true\n\t\tcase clabutils.FileExists(p):\n\t\t\tn.bootstrapCfgFile = p\n\t\tdefault:\n\t\t\treturn fmt.Errorf(\"bootstrap-config file %q does not exist\", p)\n\t\t}\n\t}\n\n\t_, err := n.LoadOrGenerateCertificate(params.Cert, params.TopologyName)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tn.ensureNumSlotsEnv()\n\n\treturn n.CreateIOLFiles(ctx)\n}\n\nfunc (n *iol) PostDeploy(ctx context.Context, _ *clabnodes.PostDeployParams) error {\n\tlog.Infof(\"Running postdeploy actions for Cisco IOL '%s' node\", n.Cfg.ShortName)\n\n\tn.disableMgmtTxOffload(ctx)\n\n\tif err := n.GenBootConfig(ctx); err != nil {\n\t\treturn fmt.Errorf(\"failed to generate boot config: %w\", err)\n\t}\n\n\t// Must update mgmt IP if not first boot, unless the node boots without a baseline config\n\tif !n.firstBoot && !n.bootstrapNone {\n\t\treturn n.UpdateMgmtIntf(ctx)\n\t}\n\n\treturn nil\n}\n\n// Start re-applies the mgmt veth TX offload fix after a stop/start cycle. The runtime\n// recreates the mgmt veth (it is never parked), so its offload settings reset to defaults.\n// See disableMgmtTxOffload for why IOL cannot function with it enabled.\nfunc (n *iol) Start(ctx context.Context) error {\n\tif err := n.DefaultNode.Start(ctx); err != nil {\n\t\treturn err\n\t}\n\n\t// DefaultNode.Start no-ops for root-ns and auto-remove nodes; skip the offload fix\n\t// for them as well, as there is no container mgmt veth to adjust.\n\tif n.ShouldSkipLifecycle() {\n\t\treturn nil\n\t}\n\n\tn.disableMgmtTxOffload(ctx)\n\n\treturn nil\n}\n\n// disableMgmtTxOffload disables TX checksum offload on the host NS veth for the mgmt interface.\n// iouyap bridges IOL interfaces over packet sockets; frames carrying an offloaded\n// (CHECKSUM_PARTIAL) checksum reach the IOL process with an incomplete checksum, which its\n// TCP/IP stack drops, breaking TCP/UDP connectivity.\n//\n// Nodes running with host network mode are skipped: their eth0 is the host's interface,\n// and there is no clab-created mgmt veth to adjust.\nfunc (n *iol) disableMgmtTxOffload(ctx context.Context) {\n\tif n.Cfg.NetworkMode == \"host\" {\n\t\treturn\n\t}\n\n\tif n.Runtime.Mgmt().Driver == clabtypes.MgmtDriverMacvlan {\n\t\treturn\n\t}\n\n\tvar peerIfIndex int\n\terr := n.ExecFunction(ctx, clabutils.VethPeerIndex(\"eth0\", &peerIfIndex))\n\tif err != nil {\n\t\tlog.Warn(\"Failed to get veth peer index for IOL mgmt interface\",\n\t\t\t\"node\", n.Cfg.ShortName,\n\t\t\t\"error\", err)\n\t\treturn\n\t}\n\n\tif err := clabutils.DisableTxOffloadByIndex(peerIfIndex); err != nil {\n\t\tlog.Warn(\"Failed to disable TX checksum offload on IOL mgmt host veth\",\n\t\t\t\"node\", n.Cfg.ShortName,\n\t\t\t\"error\", err)\n\t}\n}\n\nfunc (n *iol) CreateIOLFiles(ctx context.Context) error {\n\t// If NVRAM already exists, don't need to create\n\t// otherwise saved configs in NVRAM are overwritten.\n\tif !clabutils.FileExists(path.Join(n.Cfg.LabDir, n.nvramFile)) {\n\t\t// create nvram file\n\t\tclabutils.CreateFile(path.Join(n.Cfg.LabDir, n.nvramFile), \"\")\n\t\tn.firstBoot = true\n\t}\n\t// create these files so the bind monut doesn't automatically\n\t// make folders.\n\tif bootCfg := path.Join(n.Cfg.LabDir, \"boot_config.txt\"); !clabutils.FileExists(bootCfg) {\n\t\tclabutils.CreateFile(bootCfg, \"\")\n\t}\n\n\treturn n.GenInterfaceConfig(ctx)\n}\n\n// Generate interfaces configuration for IOL (and iouyap/netmap).\nfunc (n *iol) GenInterfaceConfig(_ context.Context) error {\n\t// add 'boilerplate' to NETMAP and iouyap.ini for the management port\n\tiouyapData := fmt.Sprintf(\n\t\t\"[default]\\nbase_port = 49000\\nnetmap = /iol/NETMAP\\n[513:%d/%d]\\neth_dev = eth0\\n\",\n\t\tn.mgmtSlot,\n\t\tn.mgmtPort,\n\t)\n\tnetmapdata := fmt.Sprintf(\n\t\t\"%s:%d/%d 513:%d/%d\\n\",\n\t\tn.Pid,\n\t\tn.mgmtSlot,\n\t\tn.mgmtPort,",
+                "lineStart": 243,
+                "lineEnd": 362,
+                "totalLines": 787,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793626424099,
+              "end": 1793626424114
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c7743340010dBNQLXxmVMUtB",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c772374001ZFFwfKzEs3EhRV",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 20840,
+            "input": 20194,
+            "output": 31,
+            "reasoning": 615,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19c77433e001FIMXAG4etlzlOI",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626424126,
+          "completed": 1793626436567
+        },
+        "parentID": "msg_19c77236c001reBY8fH89VdUj9",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sCcjsX",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 22478,
+          "input": 1627,
+          "output": 31,
+          "reasoning": 84,
+          "cache": {
+            "read": 20736,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19c77707c001JCEKNxOZJWsC9t",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77433e001FIMXAG4etlzlOI"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19c77707d0014yJsZRsT5QT5S7",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77433e001FIMXAG4etlzlOI",
+          "text": "Good. Let me now check `GenBootConfig` to make sure the \"don't truncate if exists\" doesn't leave stale config in the normal (non-recreate) flow, and check the `Pid` in netmapdata. Also, one thing to verify: `GenInterfaceConfig` at head — I want the exact lines of the new loop. Let me read lines 351-430.",
+          "time": {
+            "start": 1793626435709,
+            "end": 1793626436547
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_19c7773c5001wDnvV5R98wnfDN",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77433e001FIMXAG4etlzlOI",
+          "callID": "call_772a838f102f4252835a2df6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/iol/iol.go",
+              "limit": 80,
+              "offset": 362
+            },
+            "output": "<path>/source/head/nodes/iol/iol.go</path>\n<type>file</type>\n<content>\n362: \t\tn.mgmtPort,\n363: \t\tn.mgmtSlot,\n364: \t\tn.mgmtPort,\n365: \t)\n366: \n367: \tslot, port := 0, 0\n368: \n369: \t// Regexp to pull number out of linux'ethX' interface naming\n370: \tIntfRegExpr := regexp.MustCompile(`\\d+`)\n371: \n372: \tfor _, intf := range n.EndpointsWithParked() {\n373: \t\t// get numeric interface number and cast to int\n374: \t\tx, _ := strconv.Atoi(IntfRegExpr.FindString(intf.GetIfaceName()))\n375: \n376: \t\t// Interface naming is Ethernet{slot}/{port}. Each slot contains max 4 ports\n377: \t\tslot, port = n.iolPortForLinuxIdx(x)\n378: \n379: \t\t// append data to write to NETMAP and IOUYAP files\n380: \t\tiouyapData += fmt.Sprintf(\"[513:%d/%d]\\neth_dev = %s\\n\", slot, port, intf.GetIfaceName())\n381: \t\tnetmapdata += fmt.Sprintf(\"%s:%d/%d 513:%d/%d\\n\", n.Pid, slot, port, slot, port)\n382: \n383: \t\t// populate template array for config\n384: \t\tipv4Addr := \"\"\n385: \t\tipv4Mask := \"\"\n386: \t\tv4Prefix := intf.GetIPv4Addr()\n387: \t\tipv6Addr := \"\"\n388: \n389: \t\tif v4Prefix.IsValid() {\n390: \t\t\tipv4Addr = v4Prefix.Addr().String()\n391: \t\t\tipv4Mask = clabutils.CIDRToDDN(v4Prefix.Bits())\n392: \t\t}\n393: \n394: \t\tif a := intf.GetIPv6Addr(); a.IsValid() {\n395: \t\t\tipv6Addr = a.String()\n396: \t\t}\n397: \n398: \t\tn.interfaces = append(n.interfaces,\n399: \t\t\tIOLInterface{\n400: \t\t\t\tIfaceName: intf.GetIfaceName(),\n401: \t\t\t\tIfaceIdx:  x,\n402: \t\t\t\tSlot:      slot,\n403: \t\t\t\tPort:      port,\n404: \t\t\t\tIPv4Addr:  ipv4Addr,\n405: \t\t\t\tIPv4Mask:  ipv4Mask,\n406: \t\t\t\tIPv6Addr:  ipv6Addr,\n407: \t\t\t},\n408: \t\t)\n409: \t}\n410: \n411: \t// create IOUYAP and NETMAP file for interface mappings\n412: \terr := clabutils.CreateFile(path.Join(n.Cfg.LabDir, \"iouyap.ini\"), iouyapData)\n413: \tif err != nil {\n414: \t\treturn err\n415: \t}\n416: \terr = clabutils.CreateFile(path.Join(n.Cfg.LabDir, \"NETMAP\"), netmapdata)\n417: \n418: \treturn err\n419: }\n420: \n421: func (n *iol) GenBootConfig(_ context.Context) error {\n422: \tn.bootCfg = cfgTemplate\n423: \n424: \tswitch {\n425: \tcase n.bootstrapNone:\n426: \t\tn.bootCfg = \"{{ .PartialCfg }}\"\n427: \tcase n.bootstrapCfgFile != \"\":\n428: \t\tcfg, err := os.ReadFile(n.bootstrapCfgFile)\n429: \t\tif err != nil {\n430: \t\t\treturn err\n431: \t\t}\n432: \n433: \t\tn.bootCfg = string(cfg)\n434: \t}\n435: \n436: \tif n.Cfg.StartupConfig != \"\" {\n437: \t\tcfg, err := os.ReadFile(n.Cfg.StartupConfig)\n438: \t\tif err != nil {\n439: \t\t\treturn err\n440: \t\t}\n441: \n\n(Showing lines 362-441 of 787. Use offset=442 to continue.)\n</content>",
+            "title": "source/head/nodes/iol/iol.go",
+            "metadata": {
+              "preview": "\t\tn.mgmtPort,\n\t\tn.mgmtSlot,\n\t\tn.mgmtPort,\n\t)\n\n\tslot, port := 0, 0\n\n\t// Regexp to pull number out of linux'ethX' interface naming\n\tIntfRegExpr := regexp.MustCompile(`\\d+`)\n\n\tfor _, intf := range n.EndpointsWithParked() {\n\t\t// get numeric interface number and cast to int\n\t\tx, _ := strconv.Atoi(IntfRegExpr.FindString(intf.GetIfaceName()))\n\n\t\t// Interface naming is Ethernet{slot}/{port}. Each slot contains max 4 ports\n\t\tslot, port = n.iolPortForLinuxIdx(x)\n\n\t\t// append data to write to NETMAP and IOUYAP files\n\t\tiouyapData += fmt.Sprintf(\"[513:%d/%d]\\neth_dev = %s\\n\", slot, port, intf.GetIfaceName())\n\t\tnetmapdata += fmt.Sprintf(\"%s:%d/%d 513:%d/%d\\n\", n.Pid, slot, port, slot, port)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/iol/iol.go",
+                "text": "\t\tn.mgmtPort,\n\t\tn.mgmtSlot,\n\t\tn.mgmtPort,\n\t)\n\n\tslot, port := 0, 0\n\n\t// Regexp to pull number out of linux'ethX' interface naming\n\tIntfRegExpr := regexp.MustCompile(`\\d+`)\n\n\tfor _, intf := range n.EndpointsWithParked() {\n\t\t// get numeric interface number and cast to int\n\t\tx, _ := strconv.Atoi(IntfRegExpr.FindString(intf.GetIfaceName()))\n\n\t\t// Interface naming is Ethernet{slot}/{port}. Each slot contains max 4 ports\n\t\tslot, port = n.iolPortForLinuxIdx(x)\n\n\t\t// append data to write to NETMAP and IOUYAP files\n\t\tiouyapData += fmt.Sprintf(\"[513:%d/%d]\\neth_dev = %s\\n\", slot, port, intf.GetIfaceName())\n\t\tnetmapdata += fmt.Sprintf(\"%s:%d/%d 513:%d/%d\\n\", n.Pid, slot, port, slot, port)\n\n\t\t// populate template array for config\n\t\tipv4Addr := \"\"\n\t\tipv4Mask := \"\"\n\t\tv4Prefix := intf.GetIPv4Addr()\n\t\tipv6Addr := \"\"\n\n\t\tif v4Prefix.IsValid() {\n\t\t\tipv4Addr = v4Prefix.Addr().String()\n\t\t\tipv4Mask = clabutils.CIDRToDDN(v4Prefix.Bits())\n\t\t}\n\n\t\tif a := intf.GetIPv6Addr(); a.IsValid() {\n\t\t\tipv6Addr = a.String()\n\t\t}\n\n\t\tn.interfaces = append(n.interfaces,\n\t\t\tIOLInterface{\n\t\t\t\tIfaceName: intf.GetIfaceName(),\n\t\t\t\tIfaceIdx:  x,\n\t\t\t\tSlot:      slot,\n\t\t\t\tPort:      port,\n\t\t\t\tIPv4Addr:  ipv4Addr,\n\t\t\t\tIPv4Mask:  ipv4Mask,\n\t\t\t\tIPv6Addr:  ipv6Addr,\n\t\t\t},\n\t\t)\n\t}\n\n\t// create IOUYAP and NETMAP file for interface mappings\n\terr := clabutils.CreateFile(path.Join(n.Cfg.LabDir, \"iouyap.ini\"), iouyapData)\n\tif err != nil {\n\t\treturn err\n\t}\n\terr = clabutils.CreateFile(path.Join(n.Cfg.LabDir, \"NETMAP\"), netmapdata)\n\n\treturn err\n}\n\nfunc (n *iol) GenBootConfig(_ context.Context) error {\n\tn.bootCfg = cfgTemplate\n\n\tswitch {\n\tcase n.bootstrapNone:\n\t\tn.bootCfg = \"{{ .PartialCfg }}\"\n\tcase n.bootstrapCfgFile != \"\":\n\t\tcfg, err := os.ReadFile(n.bootstrapCfgFile)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tn.bootCfg = string(cfg)\n\t}\n\n\tif n.Cfg.StartupConfig != \"\" {\n\t\tcfg, err := os.ReadFile(n.Cfg.StartupConfig)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n",
+                "lineStart": 362,
+                "lineEnd": 441,
+                "totalLines": 787,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793626436553,
+              "end": 1793626436560
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c7773d300122Qjvv6TgKAJC5",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77433e001FIMXAG4etlzlOI",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 22478,
+            "input": 1627,
+            "output": 31,
+            "reasoning": 84,
+            "cache": {
+              "read": 20736,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19c7773dc00152jBmBvxsQX7RM",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626436572,
+          "completed": 1793626446497
+        },
+        "parentID": "msg_19c77236c001reBY8fH89VdUj9",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sCcjsX",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 24185,
+          "input": 1081,
+          "output": 13,
+          "reasoning": 755,
+          "cache": {
+            "read": 22336,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19c7781610019ymXgn2GsUOIv1",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c7773dc00152jBmBvxsQX7RM"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19c778163001SQKTUuX62vQCJD",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c7773dc00152jBmBvxsQX7RM",
+          "text": "I've now confirmed the full picture of the changed code. One more consideration on `GenInterfaceConfig`: the loop iterates over parked endpoints, but what happens if a *user-declared* topology endpoint was NOT captured (e.g., parking skipped it because it lacked the ownership altname and wasn't tracked)? Pre-existing parking concerns, not this PR.\n\nOne more real-world check: `n.interfaces` — `GenInterfaceConfig` appends to `n.interfaces` without clearing. Pre-existing? At base, same loop appended without reset — yes pre-existing (base had the same append pattern). But now with parked endpoints, is there a path where GenInterfaceConfig runs twice on the same node instance in one process, doubling `n.interfaces`? GenInterfaceConfig is called from CreateIOLFiles (PreDeploy) and... let me check if it's called elsewhere. In the recreate flow, PreDeploy is called once per process. So no doubling. Pre-existing anyway.\n\nNow let me finalize. Findings:\n\n1. **P4 — No runnable check for `EndpointsWithParked`** (ponytail \"one runnable check\" rule). New helper in `nodes/default_node.go:1115` is pure logic; a table-driven test (empty endpoints + parkingNode, endpoints + parked, no parkingNode) would cost little. Also `iol_test.go` has no parked-endpoint cases for `GenInterfaceConfig`/`ensureNumSlotsEnv`. Suggest adding a small unit test in `nodes/default_node_test.go`.\n\n2. Any P3? Let me think about the doc statement once more: \"The console is served on the node's management address, so it stays reachable when the IOS management configuration is broken.\" — `telnet <container-name/id> 5000` requires name resolution, which works on Linux hosts with Docker DNS? Docker's embedded DNS only resolves container names from within other containers on the same network. From the host, `docker inspect` or the clab `inspect` gives the IP. Hmm, but many containerlab docs use this pattern... Let me actually check one: `vr-sros.md` — I recalled it uses `telnet <container-name/id> 5003`. Since this pattern is pervasive and pre-existing in the repo, flagging it would be inconsistent. Not a finding. Coverage note.\n\nActually, wait — one more thing to double check: the claim in docs \"console requires a vrnetlab image built after November 2026\". Today is Nov 2026. Fine, unverifiable but plausible; coverage note.\n\n3. Is there anything about `CLAB_INTFS` semantics worth noting? The vrnetlab framework uses CLAB_INTFS to gate VM boot until all expected interfaces are present in the netns. With parked endpoints counted, during recreate the count is correct. But note: if the *restore fails*, the interfaces never appear in the container netns — vrnetlab would wait indefinitely. Pre-existing/parking-failure concern, out of scope.\n\n4. Also consider: should `EndpointsWithParked` be used in `DefaultNode.PreDeploy`'s...? No.\n\nLet me also double-check the linux.go diff hunk to make sure nothing else changed there besides the line. From my summary: \"nodes/linux/linux.go:78 same change (linux overrides Deploy; pre-existing duplication of CLAB_INTFS logic)\". Let me verify the hunk in diff.txt quickly to be thorough about \"complete checks for every changed path\". I already read the full linux.go. Let me view the diff hunks for linux.go and default_node.go one more time to be sure about exact line numbers for the JSON.",
+          "time": {
+            "start": 1793626440035,
+            "end": 1793626446476
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_19c779a90001XWBiIHhEBRROka",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c7773dc00152jBmBvxsQX7RM",
+          "callID": "call_362212b58cc64664adf53488",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt"
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n1: diff --git a/docs/manual/kinds/cisco_iol.md b/docs/manual/kinds/cisco_iol.md\n2: index 9fffb3c..4539c1e 100644\n3: --- a/docs/manual/kinds/cisco_iol.md\n4: +++ b/docs/manual/kinds/cisco_iol.md\n5: @@ -49,10 +49,24 @@ to connect to a `bash` shell of a running -{{ kind_short_display_name }}- contai\n6:  \n7:  ```bash\n8:  docker exec -it <container-name/id> bash\n9:  ```\n10:  \n11: +///\n12: +/// tab | Telnet\n13: +to connect to the -{{ kind_short_display_name }}- console via telnet\n14: +\n15: +```bash\n16: +telnet <container-name/id> 5000\n17: +```\n18: +\n19: +The console is served on the node's management address, so it stays reachable when the IOS management configuration is broken. After the node boots, press Enter first: IOS ignores console input until it receives a lone Enter.\n20: +\n21: +/// warning | Console requires a recent image\n22: +The telnet console requires an -{{ kind_short_display_name }}- image built with srl-labs/vrnetlab after November 2026. Images built from an older vrnetlab revision do not serve a console on port 5000.\n23: +///\n24: +\n25:  ///\n26:  \n27:  /// note\n28:  Default credentials: `admin:admin`\n29:  ///\n30: diff --git a/nodes/default_node.go b/nodes/default_node.go\n31: index 2469363..fc7acd3 100644\n32: --- a/nodes/default_node.go\n33: +++ b/nodes/default_node.go\n34: @@ -11,10 +11,11 @@ import (\n35:  \t\"os\"\n36:  \t\"path\"\n37:  \t\"path/filepath\"\n38:  \t\"reflect\"\n39:  \t\"regexp\"\n40: +\t\"slices\"\n41:  \t\"strconv\"\n42:  \t\"strings\"\n43:  \t\"sync\"\n44:  \n45:  \t\"github.com/charmbracelet/log\"\n46: @@ -188,11 +189,11 @@ func (d *DefaultNode) Deploy(ctx context.Context, _ *DeployParams) error {\n47:  \t// Set the \"CLAB_INTFS\" variable to the number of interfaces (endpoints) a node has.\n48:  \t// This env var does not count in the eth0 interface that is automatically created by the\n49:  \t// container runtime. This env var is used by some containers (e.g. vrnetlab systems) to\n50:  \t// postpone the startup until all interfaces\n51:  \t// have been added to the container namespace.\n52: -\td.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(d.GetEndpoints()))\n53: +\td.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(d.EndpointsWithParked()))\n54:  \n55:  \t// create the container\n56:  \tcID, err := d.Runtime.CreateContainer(ctx, d.Cfg)\n57:  \tif err != nil {\n58:  \t\treturn err\n59: @@ -1109,10 +1110,17 @@ func (d *DefaultNode) ReleaseEndpoint(e clablinks.Endpoint) error {\n60:  \n61:  func (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n62:  \treturn d.Endpoints\n63:  }\n64:  \n65: +func (d *DefaultNode) EndpointsWithParked() []clablinks.Endpoint {\n66: +\tif d.parkingNode == nil {\n67: +\t\treturn d.Endpoints\n68: +\t}\n69: +\treturn append(slices.Clone(d.Endpoints), d.parkingNode.GetEndpoints()...)\n70: +}\n71: +\n72:  // GetLinkEndpointType returns a veth link endpoint type for default nodes.\n73:  // The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\n74:  func (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n75:  \treturn clablinks.LinkEndpointTypeVeth\n76:  }\n77: diff --git a/nodes/iol/iol.go b/nodes/iol/iol.go\n78: index 5f31e62..54840e7 100644\n79: --- a/nodes/iol/iol.go\n80: +++ b/nodes/iol/iol.go\n81: @@ -226,11 +226,11 @@ func (n *iol) ensureNumSlotsEnv() {\n82:  \t}\n83:  \n84:  \tintfIdxRegexp := regexp.MustCompile(`\\d+`)\n85:  \tneeded := n.mgmtSlot + 1\n86:  \n87: -\tfor _, ep := range n.Endpoints {\n88: +\tfor _, ep := range n.EndpointsWithParked() {\n89:  \t\tx, _ := strconv.Atoi(intfIdxRegexp.FindString(ep.GetIfaceName()))\n90:  \t\tif slot, _ := n.iolPortForLinuxIdx(x); slot+1 > needed {\n91:  \t\t\tneeded = slot + 1\n92:  \t\t}\n93:  \t}\n94: @@ -336,14 +336,15 @@ func (n *iol) CreateIOLFiles(ctx context.Context) error {\n95:  \tif !clabutils.FileExists(path.Join(n.Cfg.LabDir, n.nvramFile)) {\n96:  \t\t// create nvram file\n97:  \t\tclabutils.CreateFile(path.Join(n.Cfg.LabDir, n.nvramFile), \"\")\n98:  \t\tn.firstBoot = true\n99:  \t}\n100: -\n101:  \t// create these files so the bind monut doesn't automatically\n102:  \t// make folders.\n103: -\tclabutils.CreateFile(path.Join(n.Cfg.LabDir, \"boot_config.txt\"), \"\")\n104: +\tif bootCfg := path.Join(n.Cfg.LabDir, \"boot_config.txt\"); !clabutils.FileExists(bootCfg) {\n105: +\t\tclabutils.CreateFile(bootCfg, \"\")\n106: +\t}\n107:  \n108:  \treturn n.GenInterfaceConfig(ctx)\n109:  }\n110:  \n111:  // Generate interfaces configuration for IOL (and iouyap/netmap).\n112: @@ -366,11 +367,11 @@ func (n *iol) GenInterfaceConfig(_ context.Context) error {\n113:  \tslot, port := 0, 0\n114:  \n115:  \t// Regexp to pull number out of linux'ethX' interface naming\n116:  \tIntfRegExpr := regexp.MustCompile(`\\d+`)\n117:  \n118: -\tfor _, intf := range n.Endpoints {\n119: +\tfor _, intf := range n.EndpointsWithParked() {\n120:  \t\t// get numeric interface number and cast to int\n121:  \t\tx, _ := strconv.Atoi(IntfRegExpr.FindString(intf.GetIfaceName()))\n122:  \n123:  \t\t// Interface naming is Ethernet{slot}/{port}. Each slot contains max 4 ports\n124:  \t\tslot, port = n.iolPortForLinuxIdx(x)\n125: diff --git a/nodes/linux/linux.go b/nodes/linux/linux.go\n126: index 020a155..eb7b3aa 100644\n127: --- a/nodes/linux/linux.go\n128: +++ b/nodes/linux/linux.go\n129: @@ -73,11 +73,11 @@ func (n *linux) Init(cfg *clabtypes.NodeConfig, opts ...clabnodes.NodeOption) er\n130:  \n131:  func (n *linux) Deploy(ctx context.Context, _ *clabnodes.DeployParams) error {\n132:  \t// Set the \"CLAB_INTFS\" variable to the number of interfaces\n133:  \t// Which is required by vrnetlab to determine if all configured interfaces are present\n134:  \t// such that the internal VM can be started with these interfaces assigned.\n135: -\tn.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(n.GetEndpoints()))\n136: +\tn.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(n.EndpointsWithParked()))\n137:  \n138:  \tcID, err := n.Runtime.CreateContainer(ctx, n.Cfg)\n139:  \tif err != nil {\n140:  \t\treturn err\n141:  \t}\n\n(End of file - total 141 lines)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/docs/manual/kinds/cisco_iol.md b/docs/manual/kinds/cisco_iol.md\nindex 9fffb3c..4539c1e 100644\n--- a/docs/manual/kinds/cisco_iol.md\n+++ b/docs/manual/kinds/cisco_iol.md\n@@ -49,10 +49,24 @@ to connect to a `bash` shell of a running -{{ kind_short_display_name }}- contai\n \n ```bash\n docker exec -it <container-name/id> bash\n ```\n \n+///\n+/// tab | Telnet\n+to connect to the -{{ kind_short_display_name }}- console via telnet\n+\n+```bash\n+telnet <container-name/id> 5000\n+```\n+\n+The console is served on the node's management address, so it stays reachable when the IOS management configuration is broken. After the node boots, press Enter first: IOS ignores console input until it receives a lone Enter.\n+",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/docs/manual/kinds/cisco_iol.md b/docs/manual/kinds/cisco_iol.md\nindex 9fffb3c..4539c1e 100644\n--- a/docs/manual/kinds/cisco_iol.md\n+++ b/docs/manual/kinds/cisco_iol.md\n@@ -49,10 +49,24 @@ to connect to a `bash` shell of a running -{{ kind_short_display_name }}- contai\n \n ```bash\n docker exec -it <container-name/id> bash\n ```\n \n+///\n+/// tab | Telnet\n+to connect to the -{{ kind_short_display_name }}- console via telnet\n+\n+```bash\n+telnet <container-name/id> 5000\n+```\n+\n+The console is served on the node's management address, so it stays reachable when the IOS management configuration is broken. After the node boots, press Enter first: IOS ignores console input until it receives a lone Enter.\n+\n+/// warning | Console requires a recent image\n+The telnet console requires an -{{ kind_short_display_name }}- image built with srl-labs/vrnetlab after November 2026. Images built from an older vrnetlab revision do not serve a console on port 5000.\n+///\n+\n ///\n \n /// note\n Default credentials: `admin:admin`\n ///\ndiff --git a/nodes/default_node.go b/nodes/default_node.go\nindex 2469363..fc7acd3 100644\n--- a/nodes/default_node.go\n+++ b/nodes/default_node.go\n@@ -11,10 +11,11 @@ import (\n \t\"os\"\n \t\"path\"\n \t\"path/filepath\"\n \t\"reflect\"\n \t\"regexp\"\n+\t\"slices\"\n \t\"strconv\"\n \t\"strings\"\n \t\"sync\"\n \n \t\"github.com/charmbracelet/log\"\n@@ -188,11 +189,11 @@ func (d *DefaultNode) Deploy(ctx context.Context, _ *DeployParams) error {\n \t// Set the \"CLAB_INTFS\" variable to the number of interfaces (endpoints) a node has.\n \t// This env var does not count in the eth0 interface that is automatically created by the\n \t// container runtime. This env var is used by some containers (e.g. vrnetlab systems) to\n \t// postpone the startup until all interfaces\n \t// have been added to the container namespace.\n-\td.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(d.GetEndpoints()))\n+\td.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(d.EndpointsWithParked()))\n \n \t// create the container\n \tcID, err := d.Runtime.CreateContainer(ctx, d.Cfg)\n \tif err != nil {\n \t\treturn err\n@@ -1109,10 +1110,17 @@ func (d *DefaultNode) ReleaseEndpoint(e clablinks.Endpoint) error {\n \n func (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n \treturn d.Endpoints\n }\n \n+func (d *DefaultNode) EndpointsWithParked() []clablinks.Endpoint {\n+\tif d.parkingNode == nil {\n+\t\treturn d.Endpoints\n+\t}\n+\treturn append(slices.Clone(d.Endpoints), d.parkingNode.GetEndpoints()...)\n+}\n+\n // GetLinkEndpointType returns a veth link endpoint type for default nodes.\n // The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\n func (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n \treturn clablinks.LinkEndpointTypeVeth\n }\ndiff --git a/nodes/iol/iol.go b/nodes/iol/iol.go\nindex 5f31e62..54840e7 100644\n--- a/nodes/iol/iol.go\n+++ b/nodes/iol/iol.go\n@@ -226,11 +226,11 @@ func (n *iol) ensureNumSlotsEnv() {\n \t}\n \n \tintfIdxRegexp := regexp.MustCompile(`\\d+`)\n \tneeded := n.mgmtSlot + 1\n \n-\tfor _, ep := range n.Endpoints {\n+\tfor _, ep := range n.EndpointsWithParked() {\n \t\tx, _ := strconv.Atoi(intfIdxRegexp.FindString(ep.GetIfaceName()))\n \t\tif slot, _ := n.iolPortForLinuxIdx(x); slot+1 > needed {\n \t\t\tneeded = slot + 1\n \t\t}\n \t}\n@@ -336,14 +336,15 @@ func (n *iol) CreateIOLFiles(ctx context.Context) error {\n \tif !clabutils.FileExists(path.Join(n.Cfg.LabDir, n.nvramFile)) {\n \t\t// create nvram file\n \t\tclabutils.CreateFile(path.Join(n.Cfg.LabDir, n.nvramFile), \"\")\n \t\tn.firstBoot = true\n \t}\n-\n \t// create these files so the bind monut doesn't automatically\n \t// make folders.\n-\tclabutils.CreateFile(path.Join(n.Cfg.LabDir, \"boot_config.txt\"), \"\")\n+\tif bootCfg := path.Join(n.Cfg.LabDir, \"boot_config.txt\"); !clabutils.FileExists(bootCfg) {\n+\t\tclabutils.CreateFile(bootCfg, \"\")\n+\t}\n \n \treturn n.GenInterfaceConfig(ctx)\n }\n \n // Generate interfaces configuration for IOL (and iouyap/netmap).\n@@ -366,11 +367,11 @@ func (n *iol) GenInterfaceConfig(_ context.Context) error {\n \tslot, port := 0, 0\n \n \t// Regexp to pull number out of linux'ethX' interface naming\n \tIntfRegExpr := regexp.MustCompile(`\\d+`)\n \n-\tfor _, intf := range n.Endpoints {\n+\tfor _, intf := range n.EndpointsWithParked() {\n \t\t// get numeric interface number and cast to int\n \t\tx, _ := strconv.Atoi(IntfRegExpr.FindString(intf.GetIfaceName()))\n \n \t\t// Interface naming is Ethernet{slot}/{port}. Each slot contains max 4 ports\n \t\tslot, port = n.iolPortForLinuxIdx(x)\ndiff --git a/nodes/linux/linux.go b/nodes/linux/linux.go\nindex 020a155..eb7b3aa 100644\n--- a/nodes/linux/linux.go\n+++ b/nodes/linux/linux.go\n@@ -73,11 +73,11 @@ func (n *linux) Init(cfg *clabtypes.NodeConfig, opts ...clabnodes.NodeOption) er\n \n func (n *linux) Deploy(ctx context.Context, _ *clabnodes.DeployParams) error {\n \t// Set the \"CLAB_INTFS\" variable to the number of interfaces\n \t// Which is required by vrnetlab to determine if all configured interfaces are present\n \t// such that the internal VM can be started with these interfaces assigned.\n-\tn.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(n.GetEndpoints()))\n+\tn.Config().Env[clabconstants.ClabEnvIntfs] = strconv.Itoa(len(n.EndpointsWithParked()))\n \n \tcID, err := n.Runtime.CreateContainer(ctx, n.Cfg)\n \tif err != nil {\n \t\treturn err\n \t}",
+                "lineStart": 1,
+                "lineEnd": 141,
+                "totalLines": 141,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793626446484,
+              "end": 1793626446491
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c779a9d001Pqc5kzp0Qr6gc5",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c7773dc00152jBmBvxsQX7RM",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 24185,
+            "input": 1081,
+            "output": 13,
+            "reasoning": 755,
+            "cache": {
+              "read": 22336,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19c779aa7001cgR6iG5zmSzL7u",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626446503,
+          "completed": 1793626463653
+        },
+        "parentID": "msg_19c77236c001reBY8fH89VdUj9",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sCcjsX",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 26816,
+          "input": 2038,
+          "output": 29,
+          "reasoning": 685,
+          "cache": {
+            "read": 24064,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19c77a06c0018nvMFm024G3JPH",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c779aa7001cgR6iG5zmSzL7u"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19c77a06e001bjgQAENmZLwoAT",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c779aa7001cgR6iG5zmSzL7u",
+          "text": "The diff is complete and matches my earlier analysis. Now finalize.\n\nFindings list:\n1. P4: No runnable check for the new `EndpointsWithParked` helper (ponytail \"one runnable check\" rule). Location: head nodes/default_node.go:1115-1120.\n\nThat's the only actionable finding. Let me also consider whether to flag the `slices.Clone` allocation being called per-Deploy... trivial cost. No.\n\nConsider whether to flag the doc claim \"The console is served on the node's management address\" — this is a doc claim I cannot verify against image behavior (external, \"after November 2026\" is unverifiable). The `telnet <container-name/id> 5000` pattern matches pre-existing doc conventions in vr-sros.md, openbsd.md, dell_sonic.md, etc. Not flagging.\n\nSchema check: no schema-relevant changes (CLAB_INTFS env var, not topology schema). N/A.\n\nCoverage notes:\n- All 4 changed paths traced; callers, parking ownership model (exclusive, moveEndpoint releases/adapts), apply ordering (park → delete → deploy → restore), Deploy/PreDeploy invocation points verified.\n- Doc claims about vrnetlab image build dates and console availability are external to the repo and unverifiable by source inspection; the `telnet <container-name/id>` phrasing matches the pre-existing convention used by other kinds' docs (e.g., vr-sros.md, openbsd.md), so no doc finding.\n- No tests executed; source-only review.\n- Verified no double-counting: `ParkEndpoints` empties `d.Endpoints` before `parkingNode` is non-nil (ParkEndpoints sets d.Endpoints = [] after moving), and restore failure keeps exclusive ownership; `GenericLinkNode.AdoptEndpoint` guards duplicate iface-name tracking.\n- Boot-config guard change is behavior-neutral in the normal flow (PostDeploy `GenBootConfig` overwrites) and preserves config between PreDeploy and PostDeploy; only differs when PostDeploy is skipped.\n- No schema changes required; env var change is outside `clab.schema.json` domain.\n\nWait — one thing to double-check for correctness of my claim \"ParkEndpoints empties d.Endpoints\": from my summary, \"ParkEndpoints (default_node.go:1176-1245) moves endpoints via moveEndpoint\". Let me quickly verify that ParkEndpoints moves ALL endpoints (so d.Endpoints is empty), not a subset — because if a subset is moved and a subset remains, EndpointsWithParked is still correct (union). Either way correct. But let me confirm there's no double count in the \"reuse parkingNode from failed restore\" path: EndpointsWithParked = d.Endpoints (restored subset) + p.GetEndpoints() (remaining parked) = union = correct.\n\nActually, let me also double check the fail-deploy path: after StartContainer fails, RestoreEndpoints runs (default_node.go Deploy error path) — from my summary: \"default_node.go Deploy... calls Stop on failure\"? My summary said \"Start on failure\" — not needed for the review.\n\nLet me quickly verify ParkEndpoints once more to ground the no-double-count claim. I read it before (1176-1245). Good enough — but let me re-read to be certain since it's central.",
+          "time": {
+            "start": 1793626447982,
+            "end": 1793626463634
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_19c77dd940016opHAG9uIf62ww",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c779aa7001cgR6iG5zmSzL7u",
+          "callID": "call_a8acc5978c8d44d985d684e6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node.go",
+              "limit": 90,
+              "offset": 1174
+            },
+            "output": "<path>/source/head/nodes/default_node.go</path>\n<type>file</type>\n<content>\n1174: }\n1175: \n1176: // ParkEndpoints moves all tracked endpoints into the node-owned parking namespace.\n1177: func (d *DefaultNode) ParkEndpoints(ctx context.Context) error {\n1178: \tparkPath, err := clabutils.CreateOrGetNamedNetNS(d.parkingNetNSName())\n1179: \tif err != nil {\n1180: \t\treturn fmt.Errorf(\"failed to create parking netns for node %q: %w\", d.Cfg.ShortName, err)\n1181: \t}\n1182: \t// Reuse the parking node retained by a failed restore so it keeps the parked endpoints.\n1183: \tparkingNode := d.parkingNode\n1184: \treused := parkingNode != nil\n1185: \tif !reused {\n1186: \t\tparkingNode = clablinks.NewParkingNode(d.Cfg.LongName, parkPath)\n1187: \t}\n1188: \n1189: \tif err := parkingNode.CaptureFrom(ctx, d); err != nil {\n1190: \t\tif !reused {\n1191: \t\t\t_ = d.cleanupParkingNetNS()\n1192: \t\t}\n1193: \t\treturn err\n1194: \t}\n1195: \n1196: \tif err := parkingNode.RepointSymlink(); err != nil {\n1197: \t\trepointErr := fmt.Errorf(\"failed to repoint symlink for node %q: %w\", d.Cfg.ShortName, err)\n1198: \t\tif _, restoreErr := parkingNode.RestoreTo(ctx, d); restoreErr != nil {\n1199: \t\t\t// Keep the parking netns and its endpoints so a later restore can recover them.\n1200: \t\t\td.parkingNode = parkingNode\n1201: \t\t\treturn errors.Join(repointErr, restoreErr)\n1202: \t\t}\n1203: \t\td.parkingNode = nil\n1204: \t\tif cleanupErr := d.cleanupParkingNetNS(); cleanupErr != nil {\n1205: \t\t\treturn errors.Join(repointErr, cleanupErr)\n1206: \t\t}\n1207: \t\treturn repointErr\n1208: \t}\n1209: \td.parkingNode = parkingNode\n1210: \n1211: \treturn nil\n1212: }\n1213: \n1214: // RestoreEndpoints tries to get the parking node to unpark its interfaces.\n1215: func (d *DefaultNode) RestoreEndpoints(ctx context.Context) error {\n1216: \tparkPath, err := d.parkingNetNSPath()\n1217: \tif err != nil {\n1218: \t\t// No parking netns means the node had no parked interfaces - e.g. it was\n1219: \t\t// stopped outside of containerlab (so its interfaces were never parked) or\n1220: \t\t// it has no dataplane links. Nothing to restore.\n1221: \t\td.parkingNode = nil\n1222: \t\tlog.Debugf(\"node %q has no parking netns, nothing to restore\", d.Cfg.ShortName)\n1223: \t\treturn nil\n1224: \t}\n1225: \tparkingNode := d.parkingNode\n1226: \tif parkingNode == nil {\n1227: \t\tparkingNode = clablinks.NewParkingNode(d.Cfg.LongName, parkPath)\n1228: \t}\n1229: \n1230: \trestored, err := parkingNode.RestoreTo(ctx, d)\n1231: \tif err != nil {\n1232: \t\treturn err\n1233: \t}\n1234: \n1235: \tfor _, ep := range restored {\n1236: \t\tlog.Info(\"Restored link\", \"node\", d.Cfg.ShortName, \"interface\", ep.GetIfaceName())\n1237: \t}\n1238: \n1239: \tif err := d.cleanupParkingNetNS(); err != nil {\n1240: \t\treturn fmt.Errorf(\"failed to cleanup parking netns for node %q: %w\", d.Cfg.ShortName, err)\n1241: \t}\n1242: \td.parkingNode = nil\n1243: \n1244: \treturn nil\n1245: }\n1246: \n1247: func (d *DefaultNode) Stop(ctx context.Context) error {\n1248: \tcfg := d.Config()\n1249: \n1250: \tif d.ShouldSkipLifecycle() {\n1251: \t\tlog.Debugf(\"node %q skips lifecycle stop\", cfg.ShortName)\n1252: \t\treturn nil\n1253: \t}\n1254: \n1255: \tstatus := d.OverwriteNode.GetContainerStatus(ctx)\n1256: \tswitch status {\n1257: \tcase clabruntime.Stopped:\n1258: \t\tlog.Debugf(\"node %q already stopped, skipping\", cfg.ShortName)\n1259: \t\treturn nil\n1260: \tcase clabruntime.NotFound:\n1261: \t\treturn fmt.Errorf(\"node %q container %q not found\", cfg.ShortName, cfg.LongName)\n1262: \t}\n1263: \n\n(Showing lines 1174-1263 of 1338. Use offset=1264 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node.go",
+            "metadata": {
+              "preview": "}\n\n// ParkEndpoints moves all tracked endpoints into the node-owned parking namespace.\nfunc (d *DefaultNode) ParkEndpoints(ctx context.Context) error {\n\tparkPath, err := clabutils.CreateOrGetNamedNetNS(d.parkingNetNSName())\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create parking netns for node %q: %w\", d.Cfg.ShortName, err)\n\t}\n\t// Reuse the parking node retained by a failed restore so it keeps the parked endpoints.\n\tparkingNode := d.parkingNode\n\treused := parkingNode != nil\n\tif !reused {\n\t\tparkingNode = clablinks.NewParkingNode(d.Cfg.LongName, parkPath)\n\t}\n\n\tif err := parkingNode.CaptureFrom(ctx, d); err != nil {\n\t\tif !reused {\n\t\t\t_ = d.cleanupParkingNetNS()\n\t\t}\n\t\treturn err",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node.go",
+                "text": "}\n\n// ParkEndpoints moves all tracked endpoints into the node-owned parking namespace.\nfunc (d *DefaultNode) ParkEndpoints(ctx context.Context) error {\n\tparkPath, err := clabutils.CreateOrGetNamedNetNS(d.parkingNetNSName())\n\tif err != nil {\n\t\treturn fmt.Errorf(\"failed to create parking netns for node %q: %w\", d.Cfg.ShortName, err)\n\t}\n\t// Reuse the parking node retained by a failed restore so it keeps the parked endpoints.\n\tparkingNode := d.parkingNode\n\treused := parkingNode != nil\n\tif !reused {\n\t\tparkingNode = clablinks.NewParkingNode(d.Cfg.LongName, parkPath)\n\t}\n\n\tif err := parkingNode.CaptureFrom(ctx, d); err != nil {\n\t\tif !reused {\n\t\t\t_ = d.cleanupParkingNetNS()\n\t\t}\n\t\treturn err\n\t}\n\n\tif err := parkingNode.RepointSymlink(); err != nil {\n\t\trepointErr := fmt.Errorf(\"failed to repoint symlink for node %q: %w\", d.Cfg.ShortName, err)\n\t\tif _, restoreErr := parkingNode.RestoreTo(ctx, d); restoreErr != nil {\n\t\t\t// Keep the parking netns and its endpoints so a later restore can recover them.\n\t\t\td.parkingNode = parkingNode\n\t\t\treturn errors.Join(repointErr, restoreErr)\n\t\t}\n\t\td.parkingNode = nil\n\t\tif cleanupErr := d.cleanupParkingNetNS(); cleanupErr != nil {\n\t\t\treturn errors.Join(repointErr, cleanupErr)\n\t\t}\n\t\treturn repointErr\n\t}\n\td.parkingNode = parkingNode\n\n\treturn nil\n}\n\n// RestoreEndpoints tries to get the parking node to unpark its interfaces.\nfunc (d *DefaultNode) RestoreEndpoints(ctx context.Context) error {\n\tparkPath, err := d.parkingNetNSPath()\n\tif err != nil {\n\t\t// No parking netns means the node had no parked interfaces - e.g. it was\n\t\t// stopped outside of containerlab (so its interfaces were never parked) or\n\t\t// it has no dataplane links. Nothing to restore.\n\t\td.parkingNode = nil\n\t\tlog.Debugf(\"node %q has no parking netns, nothing to restore\", d.Cfg.ShortName)\n\t\treturn nil\n\t}\n\tparkingNode := d.parkingNode\n\tif parkingNode == nil {\n\t\tparkingNode = clablinks.NewParkingNode(d.Cfg.LongName, parkPath)\n\t}\n\n\trestored, err := parkingNode.RestoreTo(ctx, d)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tfor _, ep := range restored {\n\t\tlog.Info(\"Restored link\", \"node\", d.Cfg.ShortName, \"interface\", ep.GetIfaceName())\n\t}\n\n\tif err := d.cleanupParkingNetNS(); err != nil {\n\t\treturn fmt.Errorf(\"failed to cleanup parking netns for node %q: %w\", d.Cfg.ShortName, err)\n\t}\n\td.parkingNode = nil\n\n\treturn nil\n}\n\nfunc (d *DefaultNode) Stop(ctx context.Context) error {\n\tcfg := d.Config()\n\n\tif d.ShouldSkipLifecycle() {\n\t\tlog.Debugf(\"node %q skips lifecycle stop\", cfg.ShortName)\n\t\treturn nil\n\t}\n\n\tstatus := d.OverwriteNode.GetContainerStatus(ctx)\n\tswitch status {\n\tcase clabruntime.Stopped:\n\t\tlog.Debugf(\"node %q already stopped, skipping\", cfg.ShortName)\n\t\treturn nil\n\tcase clabruntime.NotFound:\n\t\treturn fmt.Errorf(\"node %q container %q not found\", cfg.ShortName, cfg.LongName)\n\t}\n",
+                "lineStart": 1174,
+                "lineEnd": 1263,
+                "totalLines": 1338,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793626463640,
+              "end": 1793626463647
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c77dda1001XPVymgaPaf3I1l",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c779aa7001cgR6iG5zmSzL7u",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 26816,
+            "input": 2038,
+            "output": 29,
+            "reasoning": 685,
+            "cache": {
+              "read": 24064,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19c77ddaa001pnR5yK3p656wku",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626463658,
+          "completed": 1793626487938
+        },
+        "parentID": "msg_19c77236c001reBY8fH89VdUj9",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sCcjsX",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 28117,
+          "input": 1324,
+          "output": 29,
+          "reasoning": 140,
+          "cache": {
+            "read": 26624,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19c78380f001V2WlQPDrjOmNIt",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77ddaa001pnR5yK3p656wku"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19c783812001Lt8neCZV2is5Oc",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77ddaa001pnR5yK3p656wku",
+          "text": "Confirmed. Ownership is exclusive; `EndpointsWithParked` union is correct. The analysis is complete.\n\nFinal findings: only the P4 test-gap finding. Let me write the Markdown review and the JSON.\n\nFor the JSON location of the finding: head, nodes/default_node.go, lines 1115-1120 (the EndpointsWithParked function). Let me get exact lines: from the diff, the function was added after GetEndpoints at line ~1113; diff hunk header says \"@@ -1109,10 +1110,17 @@ func (d *DefaultNode) ReleaseEndpoint...\" with the added block. Let me verify exact line numbers in head file.",
+          "time": {
+            "start": 1793626486802,
+            "end": 1793626487914
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_19c783c6c001eKiuoSE8tqCXVk",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77ddaa001pnR5yK3p656wku",
+          "callID": "call_f4880e5d74a3422d978c38b8",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node.go",
+              "limit": 18,
+              "offset": 1108
+            },
+            "output": "<path>/source/head/nodes/default_node.go</path>\n<type>file</type>\n<content>\n1108: \treturn fmt.Errorf(\"node %q does not own endpoint %q\", d.Cfg.ShortName, e.GetIfaceName())\n1109: }\n1110: \n1111: func (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n1112: \treturn d.Endpoints\n1113: }\n1114: \n1115: func (d *DefaultNode) EndpointsWithParked() []clablinks.Endpoint {\n1116: \tif d.parkingNode == nil {\n1117: \t\treturn d.Endpoints\n1118: \t}\n1119: \treturn append(slices.Clone(d.Endpoints), d.parkingNode.GetEndpoints()...)\n1120: }\n1121: \n1122: // GetLinkEndpointType returns a veth link endpoint type for default nodes.\n1123: // The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\n1124: func (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n1125: \treturn clablinks.LinkEndpointTypeVeth\n\n(Showing lines 1108-1125 of 1338. Use offset=1126 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node.go",
+            "metadata": {
+              "preview": "\treturn fmt.Errorf(\"node %q does not own endpoint %q\", d.Cfg.ShortName, e.GetIfaceName())\n}\n\nfunc (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n\treturn d.Endpoints\n}\n\nfunc (d *DefaultNode) EndpointsWithParked() []clablinks.Endpoint {\n\tif d.parkingNode == nil {\n\t\treturn d.Endpoints\n\t}\n\treturn append(slices.Clone(d.Endpoints), d.parkingNode.GetEndpoints()...)\n}\n\n// GetLinkEndpointType returns a veth link endpoint type for default nodes.\n// The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\nfunc (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n\treturn clablinks.LinkEndpointTypeVeth",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node.go",
+                "text": "\treturn fmt.Errorf(\"node %q does not own endpoint %q\", d.Cfg.ShortName, e.GetIfaceName())\n}\n\nfunc (d *DefaultNode) GetEndpoints() []clablinks.Endpoint {\n\treturn d.Endpoints\n}\n\nfunc (d *DefaultNode) EndpointsWithParked() []clablinks.Endpoint {\n\tif d.parkingNode == nil {\n\t\treturn d.Endpoints\n\t}\n\treturn append(slices.Clone(d.Endpoints), d.parkingNode.GetEndpoints()...)\n}\n\n// GetLinkEndpointType returns a veth link endpoint type for default nodes.\n// The LinkEndpointTypeVeth indicates a veth endpoint which doesn't require special handling.\nfunc (*DefaultNode) GetLinkEndpointType() clablinks.LinkEndpointType {\n\treturn clablinks.LinkEndpointTypeVeth",
+                "lineStart": 1108,
+                "lineEnd": 1125,
+                "totalLines": 1338,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793626487921,
+              "end": 1793626487932
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c783c7e001BgOPrUIFzbL6ji",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c77ddaa001pnR5yK3p656wku",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 28117,
+            "input": 1324,
+            "output": 29,
+            "reasoning": 140,
+            "cache": {
+              "read": 26624,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_19c783c880011xE5b9jxUj1F8U",
+        "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+        "time": {
+          "created": 1793626487944,
+          "completed": 1793626516511
+        },
+        "parentID": "msg_19c77236c001reBY8fH89VdUj9",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sCcjsX",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 30863,
+          "input": 491,
+          "output": 2396,
+          "reasoning": 72,
+          "cache": {
+            "read": 27904,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_19c786c4e001N7mjIYU3CEcibL",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c783c880011xE5b9jxUj1F8U"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_19c786c4f001foIehWixI6Jvsc",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c783c880011xE5b9jxUj1F8U",
+          "text": "All verified. Now write the final review. Permalink root: https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/\n\nOne finding (P4). Coverage complete (source-only; tests not executed — disclosed).",
+          "time": {
+            "start": 1793626500175,
+            "end": 1793626500554
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_19c786dcb001dKheiSnU0NteOg",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c783c880011xE5b9jxUj1F8U",
+          "text": "## PR Review: parked-endpoint awareness for `CLAB_INTFS` and Cisco IOL config generation\n\n### Summary of the change\n\nThe PR makes endpoint-derived work account for **parked endpoints** (the interface-parking feature that pre-exists at the base revision):\n\n- `nodes/default_node.go:1115` adds `EndpointsWithParked()`, which returns the node's own endpoints plus the endpoints retained in its parking namespace (`d.parkingNode.GetEndpoints()`).\n- `CLAB_INTFS` is now computed from that union in both `nodes/default_node.go:194` and the `linux` kind's `Deploy` override (`nodes/linux/linux.go:78`), so vrnetlab-based images no longer see an interface count of `0` (or a partial count) while endpoints sit in the parking netns during recreate/apply.\n- `nodes/iol/iol.go` uses the same union for `CLAB_IOL_NUM_SLOTS` derivation (`ensureNumSlotsEnv`, line 231) and for `NETMAP`/`iouyap.ini`/boot-config interface generation (`GenInterfaceConfig`, line 372), preserving slot requirements and IPv4/IPv6 interface metadata across a recreate.\n- `CreateIOLFiles` now only creates `boot_config.txt` when it does not exist (mirroring the pre-existing `nvram` guard), so the generated boot config survives between `PreDeploy` and `PostDeploy` instead of being truncated to an empty file mid-deploy.\n- `docs/manual/kinds/cisco_iol.md` gains a Telnet console tab with reachability explanation and a recency warning.\n\n### Verification performed\n\n- Traced the apply ordering in `core/apply.go` (delete endpoints → park recreated nodes → delete nodes → deploy → restore → links → post-deploy) and `core/lifecycle.go` (`parkRecreatedNodes`/`restoreRecreatedNodes`): parked endpoints are in place during `PreDeploy` and `Deploy` of recreated nodes, which is exactly the window the new counting targets.\n- Verified the ownership model prevents double counting: parking is exclusive (`ParkEndpoints` moves all tracked endpoints into the parking node via `moveEndpoint`, which releases from the owner and adopts into the destination; `GenericLinkNode.AdoptEndpoint` guards duplicate tracking in `links/generic_link_node.go:74-81`), and a failed restore keeps the split consistent (`d.Endpoints` = restored subset, `parkingNode` = remainder), so the union returned by `EndpointsWithParked` is always exactly the full endpoint set.\n- Confirmed no other `Deploy` override sets `CLAB_INTFS` (`nodes/linux/linux.go` is the only duplicate besides `DefaultNode.Deploy`), so no kind is left out of the fix; vrnetlab-based kinds inherit it via `DefaultNode` embedding (`nodes/vr_node.go:26-32`).\n- Checked `boot_config.txt` behavior: in a normal deploy, `PostDeploy` → `GenBootConfig` overwrites the file, so the new existence guard is behavior-neutral there, and it removes the mid-deploy window where the file was truncated to empty while the container may already boot.\n- Checked the mkdocs tab structure in `cisco_iol.md`: the Telnet tab is adjacent to the `bash` tab (no blank line between the closing and opening `///`), the nested `/// warning` is closed before the tab is closed, so the grouping renders correctly.\n- No schema impact: `CLAB_INTFS` and `CLAB_IOL_NUM_SLOTS` are environment variables, not topology properties, so `clab.schema.json` needs no counterpart change.\n\n### Findings\n\n| Priority | Title | Location |\n|---|---|---|\n| P4 | Add a runnable check for `EndpointsWithParked` | `nodes/default_node.go:1115-1120` |\n\n<details>\n<summary><strong>P4 — Add a runnable check for <code>EndpointsWithParked</code></strong></summary>\n\n**Location:** [nodes/default_node.go L1115-L1120](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/nodes/default_node.go#L1115-L1120)\n\n**Problem:** The new `EndpointsWithParked` helper is the single source of truth for `CLAB_INTFS` (both `DefaultNode.Deploy` and `linux.Deploy`), for `CLAB_IOL_NUM_SLOTS` derivation, and for IOL's `NETMAP`/boot-config generation, but no test exercises it. The repository rules call for at least one runnable check per new capability, and this helper is pure in-memory logic, so a check is cheap. Existing tests (`nodes/iol/iol_test.go`, `nodes/default_node_test.go`) cover neither the parking-node case nor the \"endpoints retained after a failed restore\" split.\n\n**Trigger:** A future refactor of parking or endpoint tracking (for example, a change to when `parkingNode` is set, or to `GetEndpoints` on `GenericLinkNode`) silently breaks the union semantics — e.g. double-counting after a failed restore — and no test notices.\n\n**Impact:** Regression protection only; current behavior was verified correct by source inspection. This is an optional, proportionate hardening.\n\n**Suggestion:** Add a small table-driven test in `nodes/default_node_test.go` covering three cases: no parking node (returns the same backing slice), endpoints plus a parking node with retained endpoints (union, and the returned slice does not alias `d.Endpoints`), and a failed-restore split where some endpoints are owned by the node and the rest by the parking node. If desired, one `iol_test.go` case can assert that a parked endpoint with a high interface index raises the derived `CLAB_IOL_NUM_SLOTS` value.\n\n</details>\n\n### Coverage notes\n\n- **Complete (source-only).** All four changed paths were reviewed in full, along with the callers, the parking ownership model (`links/parking_node.go`, `links/endpoint.go`, `links/generic_link_node.go`), and the apply/deploy ordering (`core/apply.go`, `core/deploy.go`, `core/lifecycle.go`, `core/topology_reconcile.go`). No blocking defect was found in the changed code.\n- **Tests were not executed**; the review is based on source inspection. The only runnable-check gap identified is the P4 finding above.\n- **Documentation claims about external artifacts are unverifiable from this repository**: the statement that the Telnet console requires a vrnetlab image built after November 2026 and that the console is served on the node's management address depend on image-side behavior outside this repo. The `telnet <container-name/id> 5000` phrasing matches the pre-existing convention used across other kinds' docs (e.g. `vr-sros.md`, `openbsd.md`, `dell_sonic.md`), so it was not flagged as a doc defect.\n- `boot_config.txt` guard: confirmed behavior-neutral in the normal flow (`GenBootConfig` overwrites in `PostDeploy`) and intentional in the recreate flow; the only visible difference is when `PostDeploy` is skipped or fails, which is the fix's purpose.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Add a runnable check for `EndpointsWithParked`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/default_node.go\",\n        \"start\": 1115,\n        \"end\": 1120\n      },\n      \"problem\": \"The new `EndpointsWithParked` helper is the single source of truth for `CLAB_INTFS` (in both `DefaultNode.Deploy` and `linux.Deploy`), for `CLAB_IOL_NUM_SLOTS` derivation in `ensureNumSlotsEnv`, and for IOL's `NETMAP`/boot-config generation in `GenInterfaceConfig`, but no test exercises it. The repository rules call for at least one runnable check per new capability, and this helper is pure in-memory logic, so a check is cheap.\",\n      \"trigger\": \"A future refactor of parking or endpoint tracking (for example, a change to when `d.parkingNode` is set, or to `GenericLinkNode.GetEndpoints`) silently breaks the union semantics, such as double-counting endpoints after a failed restore, and no test notices.\",\n      \"impact\": \"Regression protection only; current behavior was verified correct by source inspection, including the exclusive-ownership model that prevents double counting.\",\n      \"suggestion\": \"Add a small table-driven test in `nodes/default_node_test.go` covering three cases: no parking node (returns the same backing slice), endpoints plus a parking node with retained endpoints (union, and the returned slice does not alias `d.Endpoints` thanks to `slices.Clone`), and a failed-restore split where some endpoints are owned by the node and the rest by the parking node. Optionally add one `iol_test.go` case asserting that a parked endpoint with a high interface index raises the derived `CLAB_IOL_NUM_SLOTS` value.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review; no tests or code were executed. All four changed paths were reviewed in full with their callers and surrounding parking infrastructure.\",\n      \"Verified the apply ordering (park recreated nodes before deploy, restore after deploy) so parked endpoints are present during `PreDeploy`/`Deploy`, which is the window the new counting targets.\",\n      \"Verified no double counting: parking is exclusive (`moveEndpoint` releases from the owner and adopts into the destination; `GenericLinkNode.AdoptEndpoint` guards duplicate tracking), and a failed restore keeps a consistent split, so the union from `EndpointsWithParked` equals the full endpoint set.\",\n      \"Confirmed `nodes/linux/linux.go` is the only `Deploy` override that sets `CLAB_INTFS` besides `DefaultNode.Deploy`, so no other kind is left out; vrnetlab-based kinds inherit the fix via `DefaultNode` embedding.\",\n      \"`boot_config.txt` existence guard is behavior-neutral in the normal flow (`GenBootConfig` overwrites in `PostDeploy`) and removes the mid-deploy empty-config window; only differs when `PostDeploy` is skipped or fails, which is the fix's purpose.\",\n      \"No schema impact: `CLAB_INTFS` and `CLAB_IOL_NUM_SLOTS` are environment variables, not topology properties, so `clab.schema.json` needs no counterpart change.\",\n      \"Doc claims about the Telnet console (reachability on the management address, vrnetlab images built after November 2026) depend on image-side behavior external to this repository and could not be verified from source; the `telnet <container-name/id> 5000` phrasing matches the pre-existing convention in other kinds' docs, so no documentation finding was raised.\",\n      \"The mkdocs tab structure in `docs/manual/kinds/cisco_iol.md` was checked: the Telnet tab is adjacent to the `bash` tab and the nested `/// warning` is closed before the tab block, so grouping renders correctly.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793626500555,
+            "end": 1793626516502
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_19c78ac1a00175ORv4qX2X6b1z",
+          "sessionID": "ses_e638cccc7ffeOuK6KJ6dJVefvG",
+          "messageID": "msg_19c783c880011xE5b9jxUj1F8U",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 30863,
+            "input": 491,
+            "output": 2396,
+            "reasoning": 72,
+            "cache": {
+              "read": 27904,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - Add a runnable check for `EndpointsWithParked`** | [nodes/default&#95;node.go:1115-1120](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/nodes/default_node.go#L1115-L1120) |\n\n## P4 - Add a runnable check for `EndpointsWithParked`\n\n**Location:** [nodes/default&#95;node.go:1115-1120](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/nodes/default_node.go#L1115-L1120)\n\n**Problem:** The new `EndpointsWithParked` helper is the single source of truth for `CLAB_INTFS` &#40;in both `DefaultNode.Deploy` and `linux.Deploy`&#41;, for `CLAB_IOL_NUM_SLOTS` derivation in `ensureNumSlotsEnv`, and for IOL&#39;s `NETMAP`/boot-config generation in `GenInterfaceConfig`, but no test exercises it. The repository rules call for at least one runnable check per new capability, and this helper is pure in-memory logic, so a check is cheap.\n\n**Trigger:** A future refactor of parking or endpoint tracking &#40;for example, a change to when `d.parkingNode` is set, or to `GenericLinkNode.GetEndpoints`&#41; silently breaks the union semantics, such as double-counting endpoints after a failed restore, and no test notices.\n\n**Impact:** Regression protection only; current behavior was verified correct by source inspection, including the exclusive-ownership model that prevents double counting.\n\n**Suggested correction:** Add a small table-driven test in [`nodes/default_node_test.go`](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/nodes/default_node_test.go#L1-L1) covering three cases&#58; no parking node &#40;returns the same backing slice&#41;, endpoints plus a parking node with retained endpoints &#40;union, and the returned slice does not alias `d.Endpoints` thanks to `slices.Clone`&#41;, and a failed-restore split where some endpoints are owned by the node and the rest by the parking node. Optionally add one [`iol_test.go`](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/nodes/iol/iol_test.go#L1-L1) case asserting that a parked endpoint with a high interface index raises the derived `CLAB_IOL_NUM_SLOTS` value.\n\n\n## Coverage\n\n- Source-only review; no tests or code were executed. All four changed paths were reviewed in full with their callers and surrounding parking infrastructure.\n- Verified the apply ordering &#40;park recreated nodes before deploy, restore after deploy&#41; so parked endpoints are present during `PreDeploy`/`Deploy`, which is the window the new counting targets.\n- Verified no double counting&#58; parking is exclusive &#40;`moveEndpoint` releases from the owner and adopts into the destination; `GenericLinkNode.AdoptEndpoint` guards duplicate tracking&#41;, and a failed restore keeps a consistent split, so the union from `EndpointsWithParked` equals the full endpoint set.\n- Confirmed [`nodes/linux/linux.go`](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/nodes/linux/linux.go#L1-L1) is the only `Deploy` override that sets `CLAB_INTFS` besides `DefaultNode.Deploy`, so no other kind is left out; vrnetlab-based kinds inherit the fix via `DefaultNode` embedding.\n- `boot_config.txt` existence guard is behavior-neutral in the normal flow &#40;`GenBootConfig` overwrites in `PostDeploy`&#41; and removes the mid-deploy empty-config window; only differs when `PostDeploy` is skipped or fails, which is the fix&#39;s purpose.\n- No schema impact&#58; `CLAB_INTFS` and `CLAB_IOL_NUM_SLOTS` are environment variables, not topology properties, so [`clab.schema.json`](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/schemas/clab.schema.json#L1-L1) needs no counterpart change.\n- Doc claims about the Telnet console &#40;reachability on the management address, vrnetlab images built after November 2026&#41; depend on image-side behavior external to this repository and could not be verified from source; the `telnet <container-name/id> 5000` phrasing matches the pre-existing convention in other kinds&#39; docs, so no documentation finding was raised.\n- The mkdocs tab structure in [`docs/manual/kinds/cisco_iol.md`](https://github.com/srl-labs/containerlab/blob/d9659751f42ec30e7a6fd71290286329a00c2410/docs/manual/kinds/cisco_iol.md#L1-L1) was checked&#58; the Telnet tab is adjacent to the `bash` tab and the nested `/// warning` is closed before the tab block, so grouping renders correctly.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Add a runnable check for `EndpointsWithParked`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/default_node.go\",\n        \"start\": 1115,\n        \"end\": 1120\n      },\n      \"problem\": \"The new `EndpointsWithParked` helper is the single source of truth for `CLAB_INTFS` (in both `DefaultNode.Deploy` and `linux.Deploy`), for `CLAB_IOL_NUM_SLOTS` derivation in `ensureNumSlotsEnv`, and for IOL's `NETMAP`/boot-config generation in `GenInterfaceConfig`, but no test exercises it. The repository rules call for at least one runnable check per new capability, and this helper is pure in-memory logic, so a check is cheap.\",\n      \"trigger\": \"A future refactor of parking or endpoint tracking (for example, a change to when `d.parkingNode` is set, or to `GenericLinkNode.GetEndpoints`) silently breaks the union semantics, such as double-counting endpoints after a failed restore, and no test notices.\",\n      \"impact\": \"Regression protection only; current behavior was verified correct by source inspection, including the exclusive-ownership model that prevents double counting.\",\n      \"suggestion\": \"Add a small table-driven test in `nodes/default_node_test.go` covering three cases: no parking node (returns the same backing slice), endpoints plus a parking node with retained endpoints (union, and the returned slice does not alias `d.Endpoints` thanks to `slices.Clone`), and a failed-restore split where some endpoints are owned by the node and the rest by the parking node. Optionally add one `iol_test.go` case asserting that a parked endpoint with a high interface index raises the derived `CLAB_IOL_NUM_SLOTS` value.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review; no tests or code were executed. All four changed paths were reviewed in full with their callers and surrounding parking infrastructure.\",\n      \"Verified the apply ordering (park recreated nodes before deploy, restore after deploy) so parked endpoints are present during `PreDeploy`/`Deploy`, which is the window the new counting targets.\",\n      \"Verified no double counting: parking is exclusive (`moveEndpoint` releases from the owner and adopts into the destination; `GenericLinkNode.AdoptEndpoint` guards duplicate tracking), and a failed restore keeps a consistent split, so the union from `EndpointsWithParked` equals the full endpoint set.\",\n      \"Confirmed `nodes/linux/linux.go` is the only `Deploy` override that sets `CLAB_INTFS` besides `DefaultNode.Deploy`, so no other kind is left out; vrnetlab-based kinds inherit the fix via `DefaultNode` embedding.\",\n      \"`boot_config.txt` existence guard is behavior-neutral in the normal flow (`GenBootConfig` overwrites in `PostDeploy`) and removes the mid-deploy empty-config window; only differs when `PostDeploy` is skipped or fails, which is the fix's purpose.\",\n      \"No schema impact: `CLAB_INTFS` and `CLAB_IOL_NUM_SLOTS` are environment variables, not topology properties, so `clab.schema.json` needs no counterpart change.\",\n      \"Doc claims about the Telnet console (reachability on the management address, vrnetlab images built after November 2026) depend on image-side behavior external to this repository and could not be verified from source; the `telnet <container-name/id> 5000` phrasing matches the pre-existing convention in other kinds' docs, so no documentation finding was raised.\",\n      \"The mkdocs tab structure in `docs/manual/kinds/cisco_iol.md` was checked: the Telnet tab is adjacent to the `bash` tab and the nested `/// warning` is closed before the tab block, so grouping renders correctly.\"\n    ]\n  }\n}\n```"
 }
