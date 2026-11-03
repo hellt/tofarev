@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "0581db29d40ff5d50b64dce371fb0c0f500406e5",
-  "updatedAt": "2026-11-03T17:35:52.494Z",
-  "state": "running",
+  "updatedAt": "2026-11-03T17:37:11.275Z",
+  "state": "completed",
   "info": {
     "id": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 252350,
-      "output": 1243,
-      "reasoning": 10857,
+      "input": 308131,
+      "output": 7209,
+      "reasoning": 16323,
       "cache": {
-        "read": 1038144,
+        "read": 1536384,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793727217436,
-      "updated": 1793727348766
+      "updated": 1793727431215
     }
   },
   "messages": [
@@ -3249,7 +3249,8 @@
         "id": "msg_1a27b401a001QALCPdQ6d6p6MP",
         "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
         "time": {
-          "created": 1793727348762
+          "created": 1793727348762,
+          "completed": 1793727353965
         },
         "parentID": "msg_1a27945c8001CVMRXWzE1rIB7s",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -3262,14 +3263,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 79520,
+          "input": 2260,
+          "output": 28,
+          "reasoning": 560,
           "cache": {
-            "read": 0,
+            "read": 76672,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -3283,12 +3286,1240 @@
           "id": "prt_1a27b46fe001692b3L691D5EuH",
           "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
           "messageID": "msg_1a27b401a001QALCPdQ6d6p6MP",
-          "text": "",
+          "text": "Existing test uses same patterns; the new test compiles similarly. `ParkingNode` implements `links.Node` presumably (it's used as a node in link code, e.g., `captureCandidates(ctx, src Node)` where src is DefaultNode... wait, in ParkEndpoints, `parkingNode.CaptureFrom(ctx, d)` — d is DefaultNode passed as Node. And in topology_reconcile `c.applyParkingLinkNode(nodeName)` returns a parkingNode used as `n`. So ParkingNode satisfies links.Node. Good.\n\nOne more check in the new test: `if tt.parked != nil && len(d.Endpoints) > 0 && &got[0] == &d.Endpoints[0]`. In the \"all parked\" case, owned is nil so `d.Endpoints` is nil — `slices.Clone(nil)` returns nil! Wait: `slices.Clone(d.Endpoints)` with empty/nil slice returns nil (Clone returns nil for empty input — actually `slices.Clone` on empty slice returns empty slice `[]T{}`? Let me recall: `slices.Clone` is `append(S(nil), s...)`, which for nil input returns nil. Then `append(nil, parked...)` allocates. So got = parked endpoints only. `len(d.Endpoints) > 0` false → alias check skipped. Fine.\n\nIn \"owned and parked split\" case: owned = [\"eth3\"], d.Endpoints has len 1 but grown cap 4 (via slices.Grow). Clone copies → new backing array → no aliasing. Good.\n\nBut wait — there's a subtlety in the alias check: `&got[0] == &d.Endpoints[0]` compares addresses of endpoint slice elements. Clone allocates a new array, so addresses differ. OK.\n\nNow, is `slices.Grow(d.Endpoints, 4)` correct? `slices.Grow` returns a slice with at least len+4 capacity — \"Spare capacity lets a missing clone show up as aliasing.\" OK, deliberate.\n\nTest assertion `if len(d.Endpoints) != len(tt.owned)` — for \"all parked\", tt.owned is nil, len 0; d.Endpoints nil → 0. OK.\n\nNow the docs: check `docs/cmd/save.md` claim vs. c9s runtime — saveWithLabRuntime, does it propagate errors? It was unchanged in this PR. If saveWithLabRuntime swallows errors, the doc's blanket claim \"When save fails, it will exit with a non-zero return code\" would be inaccurate for c9s. Let me read saveWithLabRuntime fully (lines 392-430).",
           "time": {
-            "start": 1793727350526
+            "start": 1793727350526,
+            "end": 1793727353937
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27b54550012EH2207uSIF29e",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b401a001QALCPdQ6d6p6MP",
+          "callID": "call_2a1d663cdbcf4b93b97e296d",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/labruntime.go",
+              "limit": 50,
+              "offset": 392
+            },
+            "output": "<path>/source/head/core/labruntime.go</path>\n<type>file</type>\n<content>\n392: func (c *CLab) saveWithLabRuntime(ctx context.Context, opts *SaveOptions) error {\n393: \tif opts.copyDst != \"\" {\n394: \t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n395: \t\tif err != nil {\n396: \t\t\treturn err\n397: \t\t}\n398: \t\topts.copyDst = resolvedDst\n399: \t}\n400: \n401: \tresult, err := c.LabRuntime.Save(ctx, clablabruntime.SaveRequest{\n402: \t\tIdentity: c.labRuntimeIdentity,\n403: \t\tName:     c.Config.Name,\n404: \t\tNodes:    c.nodeFilter,\n405: \t\tCopy:     opts.copyDst != \"\",\n406: \t})\n407: \tif err != nil {\n408: \t\treturn err\n409: \t}\n410: \n411: \tif opts.copyDst == \"\" || result == nil {\n412: \t\treturn nil\n413: \t}\n414: \n415: \treturn c.copyLabRuntimeSavedFiles(result, opts.copyDst)\n416: }\n417: \n418: func (c *CLab) containersFromLabState(\n419: \tstate *clablabruntime.LabState,\n420: ) []clabruntime.GenericContainer {\n421: \tif state == nil {\n422: \t\treturn nil\n423: \t}\n424: \n425: \tnodes := state.Nodes\n426: \tif len(nodes) == 0 && c.Config.Topology != nil {\n427: \t\tnodeNames := make([]string, 0, len(c.Config.Topology.Nodes))\n428: \t\tfor nodeName := range c.Config.Topology.Nodes {\n429: \t\t\tnodeNames = append(nodeNames, nodeName)\n430: \t\t}\n431: \t\tsort.Strings(nodeNames)\n432: \n433: \t\tnodes = make([]clablabruntime.NodeState, 0, len(nodeNames))\n434: \t\tfor _, nodeName := range nodeNames {\n435: \t\t\tnodes = append(nodes, clablabruntime.NodeState{\n436: \t\t\t\tName:  nodeName,\n437: \t\t\t\tKind:  c.Config.Topology.GetNodeKind(nodeName),\n438: \t\t\t\tImage: c.Config.Topology.GetNodeImage(nodeName),\n439: \t\t\t\tState: state.State,\n440: \t\t\t\tReady: state.Ready,\n441: \t\t\t})\n\n(Showing lines 392-441 of 827. Use offset=442 to continue.)\n</content>",
+            "title": "source/head/core/labruntime.go",
+            "metadata": {
+              "preview": "func (c *CLab) saveWithLabRuntime(ctx context.Context, opts *SaveOptions) error {\n\tif opts.copyDst != \"\" {\n\t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\topts.copyDst = resolvedDst\n\t}\n\n\tresult, err := c.LabRuntime.Save(ctx, clablabruntime.SaveRequest{\n\t\tIdentity: c.labRuntimeIdentity,\n\t\tName:     c.Config.Name,\n\t\tNodes:    c.nodeFilter,\n\t\tCopy:     opts.copyDst != \"\",\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif opts.copyDst == \"\" || result == nil {",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/labruntime.go",
+                "text": "func (c *CLab) saveWithLabRuntime(ctx context.Context, opts *SaveOptions) error {\n\tif opts.copyDst != \"\" {\n\t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\topts.copyDst = resolvedDst\n\t}\n\n\tresult, err := c.LabRuntime.Save(ctx, clablabruntime.SaveRequest{\n\t\tIdentity: c.labRuntimeIdentity,\n\t\tName:     c.Config.Name,\n\t\tNodes:    c.nodeFilter,\n\t\tCopy:     opts.copyDst != \"\",\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif opts.copyDst == \"\" || result == nil {\n\t\treturn nil\n\t}\n\n\treturn c.copyLabRuntimeSavedFiles(result, opts.copyDst)\n}\n\nfunc (c *CLab) containersFromLabState(\n\tstate *clablabruntime.LabState,\n) []clabruntime.GenericContainer {\n\tif state == nil {\n\t\treturn nil\n\t}\n\n\tnodes := state.Nodes\n\tif len(nodes) == 0 && c.Config.Topology != nil {\n\t\tnodeNames := make([]string, 0, len(c.Config.Topology.Nodes))\n\t\tfor nodeName := range c.Config.Topology.Nodes {\n\t\t\tnodeNames = append(nodeNames, nodeName)\n\t\t}\n\t\tsort.Strings(nodeNames)\n\n\t\tnodes = make([]clablabruntime.NodeState, 0, len(nodeNames))\n\t\tfor _, nodeName := range nodeNames {\n\t\t\tnodes = append(nodes, clablabruntime.NodeState{\n\t\t\t\tName:  nodeName,\n\t\t\t\tKind:  c.Config.Topology.GetNodeKind(nodeName),\n\t\t\t\tImage: c.Config.Topology.GetNodeImage(nodeName),\n\t\t\t\tState: state.State,\n\t\t\t\tReady: state.Ready,\n\t\t\t})",
+                "lineStart": 392,
+                "lineEnd": 441,
+                "totalLines": 827,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793727353947,
+              "end": 1793727353957
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27b5468001o96NPpLi6kOwWg",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b401a001QALCPdQ6d6p6MP",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 79520,
+            "input": 2260,
+            "output": 28,
+            "reasoning": 560,
+            "cache": {
+              "read": 76672,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27b5475001BfGBJ8u0gbyJ7a",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727353973,
+          "completed": 1793727360543
+        },
+        "parentID": "msg_1a27945c8001CVMRXWzE1rIB7s",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 80840,
+          "input": 744,
+          "output": 21,
+          "reasoning": 715,
+          "cache": {
+            "read": 79360,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27b5c3c001MbOS15yqEWmwRR",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b5475001BfGBJ8u0gbyJ7a"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27b5c40001wML8YgX2kSFfcI",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b5475001BfGBJ8u0gbyJ7a",
+          "text": "saveWithLabRuntime propagates errors from `LabRuntime.Save` — OK, docs claim holds there too (node-level per-node reporting depends on the c9s runtime's Save implementation, out of scope).\n\nNow let me consider remaining checks:\n\n1. Schema: no topology schema changes; `EndpointsWithParked` internal. Nothing to check in `schemas/clab.schema.json`.\n\n2. Docs: cisco_iol.md — \"built with srl-labs/vrnetlab after November 2026\" — hmm, is the date plausible? Today is Nov 3, 2026. \"after November 2026\" would mean after Nov 1 2026? Fine-ish. But is there any vrnetlab repo doc? Not in this repo. Coverage note: image-level behavior unverifiable from this repo.\n\nWait — actually, should I check whether the IOL container actually exposes/serves port 5000? The iol.go has no console/port 5000 logic. The doc example `telnet <container-name/id> 5000` — from the host, `<container-name>` resolves via /etc/hosts (containerlab adds node names to /etc/hosts pointing to mgmt IPs). \"The console is served on the node's management address\" — consistent. OK.\n\n3. One more possible issue: `docs/cmd/save.md` line 7 says \"When `save` fails, it will exit with a non-zero return code and reports each node that failed configuration save.\" — accurate for Docker runtime path now. Good.\n\n4. Now think about `errors.Join` and node-filter: `c.Nodes` contains only filtered nodes? Presumably set by node filter. Unchanged.\n\n5. Check `getnodes` for save — Save uses `c.Nodes`, populated by `GetNodes` with filter. Fine.\n\nNow, another potential issue: in `Save`, `errs` ordering — errors.Join output order follows errs slice order which follows map iteration order (random). Not a correctness issue.\n\nAlso: `err` shadowing — none.\n\nNow consider `EndpointsWithParked` when parkingNode != nil but `d.Endpoints` may contain endpoints with duplicate iface names as parked? No — parking removes from d.Endpoints.\n\nWait, actually — check: when ParkEndpoints → CaptureFrom moves endpoints; does it remove them from d.Endpoints? captureCandidates reads src.GetEndpoints() and moves; moveEndpoint — does it call src.ReleaseEndpoint? Let me check moveEndpoint in links. If parked endpoints remain in d.Endpoints AND in parkingNode.GetEndpoints(), EndpointsWithParked would double count → CLAB_INTFS inflated (e.g., 4 instead of 2) → vrnetlab would wait for 4 interfaces forever → hang. That's important! Let me check how endpoints are transferred between node and parking node.\n\nIn `DiscoverOwnedEndpoints` (lines 98-161): it does `p.ReleaseEndpoint(ep)` then `ep.SetNode(original); original.AdoptEndpoint(ep)` for endpoints in p that no longer exist in the netns. And for interfaces in the netns not tracked by original: `ep.GetNode().ReleaseEndpoint(ep)` then `ep.SetNode(p); p.AdoptEndpoint(ep)`. So ownership tracking: when an endpoint moves from node to parking node, the parking node adopts it and the node releases it? Where does that happen for CaptureFrom? `moveEndpoint(ctx, ep, p)` — check its implementation.",
+          "time": {
+            "start": 1793727355968,
+            "end": 1793727360515
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27b6e07001AKwmo6iK2hlRTu",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b5475001BfGBJ8u0gbyJ7a",
+          "callID": "call_e2a362376bf9491582f9f976",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/links",
+              "pattern": "func moveEndpoint"
+            },
+            "output": "Found 1 matches\n/source/head/links/endpoint.go:\n  Line 164: func moveEndpoint(ctx context.Context, e Endpoint, dst Node) error {\n",
+            "title": "func moveEndpoint",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793727360524,
+              "end": 1793727360536
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27b6e1b001PGw3TCHsolNQGf",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b5475001BfGBJ8u0gbyJ7a",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 80840,
+            "input": 744,
+            "output": 21,
+            "reasoning": 715,
+            "cache": {
+              "read": 79360,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27b6e26001joETCCtggOPe3y",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727360550,
+          "completed": 1793727362369
+        },
+        "parentID": "msg_1a27945c8001CVMRXWzE1rIB7s",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 80906,
+          "input": 237,
+          "output": 28,
+          "reasoning": 1,
+          "cache": {
+            "read": 80640,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27b74d8001ZQJ5QVc31P01Uh",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b6e26001joETCCtggOPe3y"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27b752a001FvFgjkcG6UHTU3",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b6e26001joETCCtggOPe3y",
+          "callID": "call_170ad8f206bc40c09042c7e6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/endpoint.go",
+              "limit": 80,
+              "offset": 120
+            },
+            "output": "<path>/source/head/links/endpoint.go</path>\n<type>file</type>\n<content>\n120: func (e *EndpointGeneric) GetVars() map[string]any {\n121: \treturn e.Vars\n122: }\n123: \n124: func (e *EndpointGeneric) GetLink() Link {\n125: \treturn e.Link\n126: }\n127: \n128: func (e *EndpointGeneric) GetNode() Node {\n129: \treturn e.Node\n130: }\n131: \n132: func (e *EndpointGeneric) SetNode(node Node) {\n133: \te.Node = node\n134: }\n135: \n136: func (*EndpointGeneric) IsRuntimeDiscovered() bool {\n137: \treturn false\n138: }\n139: \n140: func (e *EndpointGeneric) Remove(ctx context.Context) error {\n141: \treturn e.GetNode().ExecFunction(ctx, func(ns.NetNS) error {\n142: \t\tbrSideEp, err := netlink.LinkByName(e.GetIfaceName())\n143: \t\t_, notfound := err.(netlink.LinkNotFoundError)\n144: \n145: \t\tswitch {\n146: \t\tcase notfound:\n147: \t\t\t// interface is not present, all good\n148: \t\t\treturn nil\n149: \t\tcase err != nil:\n150: \t\t\treturn err\n151: \t\t}\n152: \t\tlog.Debugf(\n153: \t\t\t\"Removing interface %q from namespace %q\",\n154: \t\t\te.GetIfaceName(),\n155: \t\t\te.GetNode().GetShortName(),\n156: \t\t)\n157: \t\treturn netlink.LinkDel(brSideEp)\n158: \t})\n159: }\n160: \n161: // moveEndpoint moves the endpoint's interface into dst's namespace and transfers ownership.\n162: // The interface is left in the DOWN state; callers that need it active should follow up with\n163: // Endpoint.Activate once all endpoints are in place.\n164: func moveEndpoint(ctx context.Context, e Endpoint, dst Node) error {\n165: \tsrc := e.GetNode()\n166: \tif src == nil {\n167: \t\treturn fmt.Errorf(\"endpoint %q has no source node\", e.GetIfaceName())\n168: \t}\n169: \n170: \tif dst == nil {\n171: \t\treturn fmt.Errorf(\"endpoint %q has no destination node\", e.GetIfaceName())\n172: \t}\n173: \n174: \tif src == dst {\n175: \t\treturn nil\n176: \t}\n177: \n178: \tif !slices.Contains(src.GetEndpoints(), e) {\n179: \t\treturn fmt.Errorf(\"node %q does not own endpoint %q\", src.GetShortName(), e.GetIfaceName())\n180: \t}\n181: \n182: \tfor _, owned := range dst.GetEndpoints() {\n183: \t\tif owned == e {\n184: \t\t\treturn fmt.Errorf(\n185: \t\t\t\t\"node %q already owns endpoint %q\",\n186: \t\t\t\tdst.GetShortName(),\n187: \t\t\t\te.GetIfaceName(),\n188: \t\t\t)\n189: \t\t}\n190: \t\tif owned.GetIfaceName() == e.GetIfaceName() {\n191: \t\t\treturn fmt.Errorf(\n192: \t\t\t\t\"node %q already tracks interface %q\",\n193: \t\t\t\tdst.GetShortName(),\n194: \t\t\t\te.GetIfaceName(),\n195: \t\t\t)\n196: \t\t}\n197: \t}\n198: \n199: \tif err := ensureOwnershipAltName(ctx, e); err != nil {\n\n(Showing lines 120-199 of 324. Use offset=200 to continue.)\n</content>",
+            "title": "source/head/links/endpoint.go",
+            "metadata": {
+              "preview": "func (e *EndpointGeneric) GetVars() map[string]any {\n\treturn e.Vars\n}\n\nfunc (e *EndpointGeneric) GetLink() Link {\n\treturn e.Link\n}\n\nfunc (e *EndpointGeneric) GetNode() Node {\n\treturn e.Node\n}\n\nfunc (e *EndpointGeneric) SetNode(node Node) {\n\te.Node = node\n}\n\nfunc (*EndpointGeneric) IsRuntimeDiscovered() bool {\n\treturn false\n}\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/endpoint.go",
+                "text": "func (e *EndpointGeneric) GetVars() map[string]any {\n\treturn e.Vars\n}\n\nfunc (e *EndpointGeneric) GetLink() Link {\n\treturn e.Link\n}\n\nfunc (e *EndpointGeneric) GetNode() Node {\n\treturn e.Node\n}\n\nfunc (e *EndpointGeneric) SetNode(node Node) {\n\te.Node = node\n}\n\nfunc (*EndpointGeneric) IsRuntimeDiscovered() bool {\n\treturn false\n}\n\nfunc (e *EndpointGeneric) Remove(ctx context.Context) error {\n\treturn e.GetNode().ExecFunction(ctx, func(ns.NetNS) error {\n\t\tbrSideEp, err := netlink.LinkByName(e.GetIfaceName())\n\t\t_, notfound := err.(netlink.LinkNotFoundError)\n\n\t\tswitch {\n\t\tcase notfound:\n\t\t\t// interface is not present, all good\n\t\t\treturn nil\n\t\tcase err != nil:\n\t\t\treturn err\n\t\t}\n\t\tlog.Debugf(\n\t\t\t\"Removing interface %q from namespace %q\",\n\t\t\te.GetIfaceName(),\n\t\t\te.GetNode().GetShortName(),\n\t\t)\n\t\treturn netlink.LinkDel(brSideEp)\n\t})\n}\n\n// moveEndpoint moves the endpoint's interface into dst's namespace and transfers ownership.\n// The interface is left in the DOWN state; callers that need it active should follow up with\n// Endpoint.Activate once all endpoints are in place.\nfunc moveEndpoint(ctx context.Context, e Endpoint, dst Node) error {\n\tsrc := e.GetNode()\n\tif src == nil {\n\t\treturn fmt.Errorf(\"endpoint %q has no source node\", e.GetIfaceName())\n\t}\n\n\tif dst == nil {\n\t\treturn fmt.Errorf(\"endpoint %q has no destination node\", e.GetIfaceName())\n\t}\n\n\tif src == dst {\n\t\treturn nil\n\t}\n\n\tif !slices.Contains(src.GetEndpoints(), e) {\n\t\treturn fmt.Errorf(\"node %q does not own endpoint %q\", src.GetShortName(), e.GetIfaceName())\n\t}\n\n\tfor _, owned := range dst.GetEndpoints() {\n\t\tif owned == e {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q already owns endpoint %q\",\n\t\t\t\tdst.GetShortName(),\n\t\t\t\te.GetIfaceName(),\n\t\t\t)\n\t\t}\n\t\tif owned.GetIfaceName() == e.GetIfaceName() {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"node %q already tracks interface %q\",\n\t\t\t\tdst.GetShortName(),\n\t\t\t\te.GetIfaceName(),\n\t\t\t)\n\t\t}\n\t}\n\n\tif err := ensureOwnershipAltName(ctx, e); err != nil {",
+                "lineStart": 120,
+                "lineEnd": 199,
+                "totalLines": 324,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793727362351,
+              "end": 1793727362361
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27b753d001cdUxtqoJtUSQGA",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b6e26001joETCCtggOPe3y",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 80906,
+            "input": 237,
+            "output": 28,
+            "reasoning": 1,
+            "cache": {
+              "read": 80640,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27b7547001HkLuqevQV0D7VN",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727362375,
+          "completed": 1793727364401
+        },
+        "parentID": "msg_1a27945c8001CVMRXWzE1rIB7s",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 81704,
+          "input": 779,
+          "output": 28,
+          "reasoning": 1,
+          "cache": {
+            "read": 80896,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27b7cc8001hpPrWNlKh4X7zk",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7547001HkLuqevQV0D7VN"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27b7d18001JsGfHrhxgDRnTi",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7547001HkLuqevQV0D7VN",
+          "callID": "call_72304946c49d4cf6b5d5c387",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/endpoint.go",
+              "limit": 50,
+              "offset": 199
+            },
+            "output": "<path>/source/head/links/endpoint.go</path>\n<type>file</type>\n<content>\n199: \tif err := ensureOwnershipAltName(ctx, e); err != nil {\n200: \t\treturn err\n201: \t}\n202: \n203: \tif err := moveLink(ctx, src, e.GetIfaceName(), dst); err != nil {\n204: \t\treturn err\n205: \t}\n206: \n207: \tif err := src.ReleaseEndpoint(e); err != nil {\n208: \t\treturn err\n209: \t}\n210: \te.SetNode(dst)\n211: \tif err := dst.AdoptEndpoint(e); err != nil {\n212: \t\te.SetNode(src)\n213: \t\t_ = src.AdoptEndpoint(e)\n214: \t\treturn fmt.Errorf(\n215: \t\t\t\"endpoint %q moved but destination ownership update failed: %w\",\n216: \t\t\te.GetIfaceName(),\n217: \t\t\terr,\n218: \t\t)\n219: \t}\n220: \n221: \treturn nil\n222: }\n223: \n224: // Activate brings the endpoint's interface up in its current namespace.\n225: func (e *EndpointGeneric) Activate(ctx context.Context) error {\n226: \treturn e.GetNode().ExecFunction(ctx, func(_ ns.NetNS) error {\n227: \t\tlink, err := netlink.LinkByName(e.GetIfaceName())\n228: \t\tif err != nil {\n229: \t\t\treturn err\n230: \t\t}\n231: \t\treturn netlink.LinkSetUp(link)\n232: \t})\n233: }\n234: \n235: func ensureOwnershipAltName(ctx context.Context, e Endpoint) error {\n236: \treturn e.GetNode().ExecFunction(ctx, func(_ ns.NetNS) error {\n237: \t\tlink, err := netlink.LinkByName(e.GetIfaceName())\n238: \t\tif err != nil {\n239: \t\t\treturn err\n240: \t\t}\n241: \n242: \t\treturn addOwnershipAltName(link, e)\n243: \t})\n244: }\n245: \n246: // HasSameNodeAndInterface returns true if the given endpoint has the same node and interface name\n247: // as the `ept` endpoint.\n248: func (e *EndpointGeneric) HasSameNodeAndInterface(ept Endpoint) bool {\n\n(Showing lines 199-248 of 324. Use offset=249 to continue.)\n</content>",
+            "title": "source/head/links/endpoint.go",
+            "metadata": {
+              "preview": "\tif err := ensureOwnershipAltName(ctx, e); err != nil {\n\t\treturn err\n\t}\n\n\tif err := moveLink(ctx, src, e.GetIfaceName(), dst); err != nil {\n\t\treturn err\n\t}\n\n\tif err := src.ReleaseEndpoint(e); err != nil {\n\t\treturn err\n\t}\n\te.SetNode(dst)\n\tif err := dst.AdoptEndpoint(e); err != nil {\n\t\te.SetNode(src)\n\t\t_ = src.AdoptEndpoint(e)\n\t\treturn fmt.Errorf(\n\t\t\t\"endpoint %q moved but destination ownership update failed: %w\",\n\t\t\te.GetIfaceName(),\n\t\t\terr,\n\t\t)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/endpoint.go",
+                "text": "\tif err := ensureOwnershipAltName(ctx, e); err != nil {\n\t\treturn err\n\t}\n\n\tif err := moveLink(ctx, src, e.GetIfaceName(), dst); err != nil {\n\t\treturn err\n\t}\n\n\tif err := src.ReleaseEndpoint(e); err != nil {\n\t\treturn err\n\t}\n\te.SetNode(dst)\n\tif err := dst.AdoptEndpoint(e); err != nil {\n\t\te.SetNode(src)\n\t\t_ = src.AdoptEndpoint(e)\n\t\treturn fmt.Errorf(\n\t\t\t\"endpoint %q moved but destination ownership update failed: %w\",\n\t\t\te.GetIfaceName(),\n\t\t\terr,\n\t\t)\n\t}\n\n\treturn nil\n}\n\n// Activate brings the endpoint's interface up in its current namespace.\nfunc (e *EndpointGeneric) Activate(ctx context.Context) error {\n\treturn e.GetNode().ExecFunction(ctx, func(_ ns.NetNS) error {\n\t\tlink, err := netlink.LinkByName(e.GetIfaceName())\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn netlink.LinkSetUp(link)\n\t})\n}\n\nfunc ensureOwnershipAltName(ctx context.Context, e Endpoint) error {\n\treturn e.GetNode().ExecFunction(ctx, func(_ ns.NetNS) error {\n\t\tlink, err := netlink.LinkByName(e.GetIfaceName())\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\treturn addOwnershipAltName(link, e)\n\t})\n}\n\n// HasSameNodeAndInterface returns true if the given endpoint has the same node and interface name\n// as the `ept` endpoint.\nfunc (e *EndpointGeneric) HasSameNodeAndInterface(ept Endpoint) bool {",
+                "lineStart": 199,
+                "lineEnd": 248,
+                "totalLines": 324,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793727364383,
+              "end": 1793727364392
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27b7d2b001kOQqFr96Q0ubXa",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7547001HkLuqevQV0D7VN",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 81704,
+            "input": 779,
+            "output": 28,
+            "reasoning": 1,
+            "cache": {
+              "read": 80896,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27b7d36001TXJFtqeE433qWp",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727364406,
+          "completed": 1793727381319
+        },
+        "parentID": "msg_1a27945c8001CVMRXWzE1rIB7s",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 84588,
+          "input": 574,
+          "output": 37,
+          "reasoning": 2313,
+          "cache": {
+            "read": 81664,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27b84010013sT6TQMTF4r29x",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7d36001TXJFtqeE433qWp"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27b8404001i4iFxGYbxQocgm",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7d36001TXJFtqeE433qWp",
+          "text": "`moveEndpoint` transfers ownership: src.ReleaseEndpoint → dst.AdoptEndpoint. So when parking, endpoints are removed from `d.Endpoints` and added to `parkingNode.GetEndpoints()`. No double counting in `EndpointsWithParked`. \n\nBut wait — `moveEndpoint` checks `if src == dst { return nil }` — src here is `e.GetNode()`. Hmm, in `ParkEndpoints`, endpoints owned by `d` are moved to parking node. But wait — the endpoint's `GetNode()` — when the node is a DefaultNode, the endpoints were adopted with `ep.SetNode(d)`. OK.\n\nBut there's a subtlety in `ParkEndpoints`: `parkingNode.CaptureFrom(ctx, d)` — `d` is `*DefaultNode` used as `src Node`. CaptureFrom → captureCandidates(ctx, src) gets `src.GetEndpoints()`. Fine.\n\nSo no double-count. But what about the \"reused parking node after failed restore\" case (line 1183-1189)? If restore failed midway, some endpoints moved back to d (moved list rolled back), some still in p. d.Endpoints and p.GetEndpoints() are disjoint since moveEndpoint maintains disjointness. Good.\n\nHmm — but one more: in RestoreEndpoints failure path — `d.parkingNode = parkingNode` is only set in ParkEndpoints failure path (line 1200). In RestoreTo failure, the endpoint objects remain owned by p (moveEndpoint rolls back ownership). OK.\n\nNow the important consideration for `Deploy` with parked endpoints: DefaultNode.Deploy sets CLAB_INTFS to owned+parked. But when is Deploy called in the recreate flow? In the apply flow: park → recreate container (deployNode → node.Deploy) → restore. So during Deploy, endpoints are parked. CLAB_INTFS = owned (0 or remaining) + parked = total. Good — that's exactly the fix. Before this change, CLAB_INTFS would be 0 during recreate → vrnetlab would start the VM immediately with fewer interfaces. Makes sense.\n\nAlso `iol.ensureNumSlotsEnv` and `GenInterfaceConfig` during redeploy: PreDeploy runs after parking? In the apply/redeploy flow, PreDeploy runs before creating the new container. Since parking happened before, parked endpoints are counted. Good.\n\nWait — but there's a subtlety: during initial deploy, parked == nil, so behavior identical to before. During recreate, parked counted. What about `RestoreEndpoints` after recreate: it restores and sets d.parkingNode = nil. Good.\n\nNow, what about the case where PreDeploy → Deploy for a node whose endpoints are parked, and the restore FAILS after deploy? Then d.parkingNode stays (in ParkEndpoints failure path) — wait, restore failure in apply flow: `restoreRecreatedNodes` returns error, `node.RestoreEndpoints` — if RestoreTo fails, parkingNode keeps endpoints and d.parkingNode remains as set by ParkEndpoints (line 1209 sets d.parkingNode = parkingNode always after successful capture). So after a failed restore, d.parkingNode != nil with parked endpoints. Next redeploy: PreDeploy/Deploy counts parked again. Consistent.\n\nOK. Now — the `sros` node overrides ParkEndpoints/RestoreEndpoints (line 1838-1899) wrapping DefaultNode's. Fine.\n\nNow let's think about whether `EndpointsWithParked` should have been added to the `nodes.Node` interface for other node kinds that override Deploy and set CLAB_INTFS. Only linux and DefaultNode set CLAB_INTFS. sros? Let me check sros Deploy — does it override Deploy and set CLAB_INTFS? grep ClabEnvIntfs showed only linux.go and default_node.go. Good.\n\nAre there other nodes with their own Deploy that set CLAB_INTFS indirectly through d.DefaultNode.Deploy? All inherit DefaultNode.Deploy unless overridden. Fine.\n\nWhat about other interface-count-sensitive logic in nodes that should include parked endpoints? E.g., ceos? vrnetlab-based nodes rely on CLAB_INTFS only. IOL counts slots (fixed). xrd XR_INTERFACES (fixed). The three callers updated look complete. But let me also check `iol.CheckInterfaceName` and `iol.Deploy` (does iol override Deploy?). From the grep of iol.go functions: Init, ensureNumSlotsEnv, PreDeploy, PostDeploy, Start, CreateIOLFiles, GenInterfaceConfig, GenBootConfig... no Deploy override. Good.\n\nNow, one more thing: `iol.GenInterfaceConfig` writes NETMAP entries for parked interfaces. NETMAP maps linux ethX to IOL slot/port with the node PID. Since parked interfaces will be restored into the recreated container, generating NETMAP for them is correct.\n\nNow the last item to scrutinize: `nodes/iol/iol.go` `CreateIOLFiles` — removing the blank line above the comment is cosmetic.\n\nNow, the ponytail rule: \"non-trivial logic leaves ONE runnable check behind\". save_test.go added; default_node_test.go added. Good.\n\nAnother possible finding: `errors.Join(errs...)` when all errs are nil returns nil — good.\n\nPotential P4: in `Save`, the pattern `errs = append(errs, nil); i := len(errs) - 1` is more convoluted than preallocating; and it has the race. One finding covers both.\n\nNow — is there anything about `docs/manual/kinds/cisco_iol.md` claim \"The console is served on the node's management address, so it stays reachable when the IOS management configuration is broken.\" Can't verify; also whether vrnetlab exposes 5000 — the container must listen on 0.0.0.0:5000. Not verifiable from repo. Coverage note.\n\nAnother check: `docs/cmd/save.md` — the doc says \"reports each node that failed configuration save\". With `errors.Join`, the CLI error output prints each node's error on separate lines. Cobra prints the error via Execute — yes.\n\nLet me also double check there's no test for `Save` in clabernetes path etc. Not needed.\n\nNow — one more potential correctness check on the race claim: the test `TestSaveReturnsNodeErrors` with 3 mocked nodes — mock SaveConfig returns immediately; the goroutines may all complete before... Actually, could the race detector flag within this very test? `go test -race` would run; goroutine 1 writes errs[0] while main appends errs[1] — timing dependent; may or may not trigger. Since no -race in CI, it likely goes unnoticed. Still report as P2? I think P2 is defensible as a correctness/reliability defect (data race is undefined behavior in Go). I'll report P2.\n\nHmm, let me reconsider once more whether the write `errs[i] = ...` really reads the shared `errs` variable... The closure signature: `go func(node clabnodes.Node) { ... }(node)`. Inside it references `errs` and `i`. `errs` is an outer local variable → captured by reference (since the closure outlives the defining iteration and `errs` is reassigned later). Yes.\n\nActually hold on, one more consideration — could the Go compiler optimize so that the goroutine captures a copy of the slice header at `go` statement time? Go closures capture variables by reference, period (escape analysis may stack-allocate the variable, but sharing semantics remain by-reference). So the goroutine reads the current value of `errs` when it executes `errs[i] = ...`. Race confirmed.\n\nSeverity: I'll go with P2 (data race; memory-model violation; would fail `go test -race`; currently value-safe only because the backing array never reallocates given exact capacity, which is a fragile invariant).\n\nNow the second thing to scrutinize: `EndpoointsWithParked` returns `d.Endpoints` (shared slice) when no parking node. Callers only read. But future callers might append to the returned slice — that's a footgun; the test only guards aliasing in the parked case. Karpathy/ponytail: keep simple; a doc comment would help. This is minor — maybe P4: \"EndpointsWithParked returns the live d.Endpoints slice when nothing is parked; callers appending to the result would corrupt node state\". Given the method's purpose (count/iterate), it's fine. I could mention as P4 with suggestion to add a doc comment. Hmm — is it worth a finding? It's a real API hazard but speculative. The method has no doc comment. I'd include as P4 optional: add a doc comment noting the returned slice must not be mutated, or always clone. Actually, ponytail says avoid unnecessary code; the simplest correct fix is a doc comment. I'll include as P4.\n\nThird: check whether the telnet doc statement conflicts with anything — skip.\n\nNow also check the CI formatting: nothing supplied; no make format claims.\n\nFourth: check `save_test.go` uses `clabmocksmocknodes` import naming — odd but valid (package mocknodes). Fine.\n\nNow, one more check: does `DefaultNode` get `EndpoointsWithParked` used anywhere with mutation? No.\n\nAlso confirm `slices` import added to default_node.go — yes (diff line 198). And in default_node_test.go — added.\n\nLet me also verify there are no other callers of `GetEndpoints()` whose behavior should change for parked endpoints in ways this PR missed but materially matters. Examples: `core/topology_reconcile.go` `applyKnownEndpointNames`, `desiredEndpointSet` — those operate on planned topology endpoints, not parked. `deploy.go` deploys endpoints after container creation — DeployEndpoints uses d.Endpoints (owned only) — parked endpoints are deployed by restoreRecreatedNodes, correct.\n\n`CheckInterfaceName` for xrd iterates n.Endpoints — during a recreate with parked endpoints, CheckInterfaceName runs at config-parse time (before parking), so owned list is complete. OK.\n\nWhat about `iol` — `verifyIfHostEndpointsExist`? Not relevant.\n\nNow, is there any place that counts endpoints for `CLAB_INTFS` for nodes with `OverwriteNode`? No.\n\nOne more area: `nodes/sros/sros.go` overrides RestoreEndpoints/ParkEndpoints — does sros set CLAB_INTFS? It uses DefaultNode.Deploy presumably. Fine.\n\nLet me also double-check `vrnetlab`-based node kinds use DefaultNode.Deploy — yes generally.\n\nNow docs: is there documentation for the parking/recreate feature that mentions CLAB_INTFS? Not needed.\n\nFinally, check that the `docs/cmd/save.md` addition is in the right place and no other doc (e.g., release notes) needed. The release-note-review rule exists (.cursor/rules/release-note-review.mdc) — check it briefly? It's a rule for PR review: check whether a release note is needed. Let me read it (12 lines).",
+          "time": {
+            "start": 1793727366148,
+            "end": 1793727381234
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27bbef6001mooYpU5kfbJCLr",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7d36001TXJFtqeE433qWp",
+          "callID": "call_001e844d547e4d6ca7933b01",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/.cursor/rules/release-note-review.mdc"
+            },
+            "output": "<path>/source/head/.cursor/rules/release-note-review.mdc</path>\n<type>file</type>\n<content>\n1: ---\n2: description: Verify release-note mutability when reviewing PR documentation\n3: alwaysApply: true\n4: ---\n5: \n6: # Release-note review\n7: \n8: When reviewing a PR, inspect any changes under `docs/rn/`:\n9: \n10: - Verify the target release is still unreleased before treating the change as valid.\n11: - Treat release notes for published releases as immutable; flag edits or additions there.\n12: - Recommend moving new content to the next unreleased release note or the appropriate evergreen documentation.\n\n(End of file - total 12 lines)\n</content>",
+            "title": "source/head/.cursor/rules/release-note-review.mdc",
+            "metadata": {
+              "preview": "---\ndescription: Verify release-note mutability when reviewing PR documentation\nalwaysApply: true\n---\n\n# Release-note review\n\nWhen reviewing a PR, inspect any changes under `docs/rn/`:\n\n- Verify the target release is still unreleased before treating the change as valid.\n- Treat release notes for published releases as immutable; flag edits or additions there.\n- Recommend moving new content to the next unreleased release note or the appropriate evergreen documentation.",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/.cursor/rules/release-note-review.mdc",
+                "text": "---\ndescription: Verify release-note mutability when reviewing PR documentation\nalwaysApply: true\n---\n\n# Release-note review\n\nWhen reviewing a PR, inspect any changes under `docs/rn/`:\n\n- Verify the target release is still unreleased before treating the change as valid.\n- Treat release notes for published releases as immutable; flag edits or additions there.\n- Recommend moving new content to the next unreleased release note or the appropriate evergreen documentation.",
+                "lineStart": 1,
+                "lineEnd": 12,
+                "totalLines": 12,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793727381244,
+              "end": 1793727381252
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27bbf28001Cpx3MJ98VrEN7C",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7d36001TXJFtqeE433qWp",
+          "callID": "call_7155d5498bbf4c6fa1f7d1bd",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/.cursor/rules/git-mutations.mdc"
+            },
+            "output": "<path>/source/head/.cursor/rules/git-mutations.mdc</path>\n<type>file</type>\n<content>\n1: ---\n2: description: Require explicit user authorization for Git mutations\n3: alwaysApply: true\n4: ---\n5: \n6: # Git mutation policy\n7: \n8: - Never automatically commit, amend, push, force-push, or create/update a pull request.\n9: - Leave ordinary fixes as working-tree changes unless the user explicitly requests the specific Git or GitHub action.\n10: - A request to implement or fix code alone does not authorize a commit or push.\n\n(End of file - total 10 lines)\n</content>",
+            "title": "source/head/.cursor/rules/git-mutations.mdc",
+            "metadata": {
+              "preview": "---\ndescription: Require explicit user authorization for Git mutations\nalwaysApply: true\n---\n\n# Git mutation policy\n\n- Never automatically commit, amend, push, force-push, or create/update a pull request.\n- Leave ordinary fixes as working-tree changes unless the user explicitly requests the specific Git or GitHub action.\n- A request to implement or fix code alone does not authorize a commit or push.",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/.cursor/rules/git-mutations.mdc",
+                "text": "---\ndescription: Require explicit user authorization for Git mutations\nalwaysApply: true\n---\n\n# Git mutation policy\n\n- Never automatically commit, amend, push, force-push, or create/update a pull request.\n- Leave ordinary fixes as working-tree changes unless the user explicitly requests the specific Git or GitHub action.\n- A request to implement or fix code alone does not authorize a commit or push.",
+                "lineStart": 1,
+                "lineEnd": 10,
+                "totalLines": 10,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793727381294,
+              "end": 1793727381311
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27bbf42001hgD6WWhpb6zK5l",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27b7d36001TXJFtqeE433qWp",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 84588,
+            "input": 574,
+            "output": 37,
+            "reasoning": 2313,
+            "cache": {
+              "read": 81664,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a27bbf49001tVz84614P9nT7Q",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727381321
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_1a27bbf4b0019mSF3ZIYSfFN2g",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bbf49001tVz84614P9nT7Q",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_1a27afb39001KHwqWqDAexFxTJ"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27bbf6e001G5XTvEC47Dah4l",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727381358,
+          "completed": 1793727392901
+        },
+        "parentID": "msg_1a27bbf49001tVz84614P9nT7Q",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 32224,
+          "input": 30385,
+          "output": 1827,
+          "reasoning": 12,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27bc968001pJh6OPnCDlqfIu",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bbf6e001G5XTvEC47Dah4l"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27bc96b0015PO1YYaCPa4vCs",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bbf6e001G5XTvEC47Dah4l",
+          "text": "Produce the structured summary of the review-in-progress.",
+          "time": {
+            "start": 1793727383915,
+            "end": 1793727384008
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a27bc9cb001PQRGmJv3mGi7JP",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bbf6e001G5XTvEC47Dah4l",
+          "text": "## Objective\n- Review read-only PR snapshot at /source (containerlab repo) against standards.json rules (karpathy-guidelines.mdc, ponytail.mdc), all 9 changed paths, plus callers/tests/docs/schema; then return a trusted result schema. Source-only review, no test execution — must disclose that limitation.\n\n## Important Details\n- Head: 0581db29d40ff5d50b64dce371fb0c0f500406e5; base/target: 91c22792bf11b95fcc34d8b882d745bd3f13083a (mergeBase same). Snapshot complete (`manifest.json` readable).\n- 9 changed paths (manifest): M core/save.go; A core/save_test.go; M docs/cmd/save.md; M docs/manual/kinds/cisco_iol.md; M nodes/default_node.go; M nodes/default_node_test.go; M nodes/iol/iol.go; M nodes/linux/linux.go; M nodes/xrd/xrd.go.\n- PR theme 1: `CLab.Save` (core/save.go) now collects per-node errors concurrently into `errs` slice and returns `errors.Join(errs...)` instead of logging and returning nil. New test `TestSaveReturnsNodeErrors` in core/save_test.go with `mocks/mocknodes` MockNode.\n- PR theme 2: new `DefaultNode.EndpointsWithParked()` (nodes/default_node.go:1115) = `slices.Clone(d.Endpoints)` + `d.parkingNode.GetEndpoints()` when parkingNode != nil; used in `Deploy` CLAB_INTFS (default_node.go:194), linux.go:78, iol.go `ensureNumSlotsEnv` (:231) and `GenInterfaceConfig` (:372), xrd.go `genInterfacesEnv` (:199). ParkingNode API in links/parking_node.go (CaptureFrom/RestoreTo/RepointSymlink; GetEndpoints/AddEndpoint via GenericLinkNode).\n- PR theme 3: iol.go `CreateIOLFiles` only creates boot_config.txt if missing (line 343) — fixes truncation on redeploy (GenBootConfig regenerates it in PostDeploy; consistent with nvram FileExists guard). boot_config.txt is bind-mounted as /iol/config.txt (iol.go:167).\n- PR theme 4: docs — docs/cmd/save.md documents non-zero exit on save failure (verified: cmd/save.go:31 returns `c.Save(...)` from RunE). docs/manual/kinds/cisco_iol.md adds Telnet tab (port 5000, \"press Enter first\", warning that console requires image built with srl-labs/vrnetlab after November 2026); tab/admonition nesting verified structurally valid; image claims unverifiable (coverage note).\n- Key finding (candidate): **data race in core/save.go** — goroutine closure captures `errs` by reference; `errs[i] = ...` reads the slice header concurrently with main loop's `errs = append(errs, nil)` (no happens-before edge for post-`go`-statement appends). Race detector flaggable; value-benign in practice only because `make([]error, 0, len(c.Nodes))` prevents reallocation (ptr stable). Suggested fix: preallocate `errs := make([]error, len(c.Nodes))` and index without appending. Lean P2 (correctness/memory-model), arguably P3 given practical benignity.\n- `i := len(errs)-1` is per-iteration local — no loop-variable capture bug.\n- `errors.Join` skips nils; test's `strings.Count(err.Error(), \"save failed\")` unaffected by \"save copy failed\" messages (different wording).\n- Parking flow verified: core/lifecycle.go `parkRecreatedNodes` → deploy (recreate) → `restoreRecreatedNodes`; PreDeploy/Deploy run while endpoints parked, so counting parked endpoints is correct intent. `EndpointsWithParked` not on `Node` interface (concrete types only — no interface change needed). No -race in CI workflows found (grep of .github/workflows for \"go test|golangci\" only shows lint + clabernetes core tests).\n- First `/source` directory read was denied by permission rules (read /source/* is allowed; plain \"*\" reads denied).\n- Only node kinds touched; other CLAB_INTFS setters (grep ClabEnvIntfs): only constants/env.go, linux.go, default_node.go.\n\n## Work State\n### Completed\n- Read standards.json + both rule files, manifest.json, diff.txt (all 9 paths covered by diff).\n- Read head/core/save.go (full), head/core/save_test.go, head/cmd/save.go, head/docs/cmd/save.md, docs/manual/kinds/cisco_iol.md section (lines 30-85), nodes/linux/linux.go (relevant), head/nodes/xrd/xrd.go (relevant), iol.go (Init/ensureNumSlotsEnv/PreDeploy/CreateIOLFiles/GenInterfaceConfig/GenBootConfig sections).\n- Read default_node.go: lines 40-79 (parkingNode field), 180-239 (Deploy with CLAB_INTFS), 1100-1260 (GetEndpoints/EndpointsWithParked/DeployEndpoints/GetState).\n- Grepped: EndpointsWithParked (8 hits), parkingNode (25 hits), ClabEnvIntfs (4 hits), errors.Join in core (10 hits — no preallocated-index pattern found: `make([]error, len(` → no matches), saveWithLabRuntime (core/labruntime.go:392, unchanged), ParkEndpoints/RestoreEndpoints callers, links/parking_node.go full.\n- Verified docs claims against cmd/save.go error propagation; verified IOL boot_config lifecycle; confirmed EndpointsWithParked not needed on Node interface.\n- Formed main finding: data race on `errs` slice header in CLab.Save.\n\n### Active\n- Final review assembly: severity calibration for the save.go data race; drafting coverage/limitations (no test execution; vrnetlab image claims unverifiable; no -race in CI found — pending final confirm via Makefile golangci-lint targets if desired).\n\n### Blocked\n- (none)\n\n## Next Move\n1. Optionally confirm whether golangci-lint/Makefile enables govet race-ish checks (low value — finding stands on memory-model grounds).\n2. Produce final trusted result schema output: findings (data race in core/save.go CLab.Save, recommended preallocated-index fix), per-path coverage notes for all 9 changed paths, and disclosed limitation that review is source-only without executing tests.\n\n## Relevant Files\n- /source/manifest.json — inventory of all 9 changed paths.\n- /source/diff.txt — full diff for all changed files.\n- /source/head/core/save.go — primary finding site: concurrent `errs` slice access in `CLab.Save` goroutines (lines 40-70).\n- /source/head/core/save_test.go — new test `TestSaveReturnsNodeErrors` (mocks, errors.Is/substring assertions).\n- /source/head/nodes/default_node.go — `EndpointsWithParked` (:1115), `parkingNode` field (:65), `Deploy` CLAB_INTFS (:194).\n- /source/head/nodes/iol/iol.go — `ensureNumSlotsEnv` (:223), `CreateIOLFiles` boot_config guard (:343), `GenInterfaceConfig` (:351+), `GenBootConfig` (:421).\n- /source/head/nodes/linux/linux.go — `Deploy` override with CLAB_INTFS (:78).\n- /source/head/nodes/xrd/xrd.go — `genInterfacesEnv` uses parked endpoints (:199).\n- /source/head/nodes/default_node_test.go — new test `TestDefaultNodeEndpointsWithParked` (:56-106) using `clablinks.NewParkingNode`.\n- /source/head/docs/cmd/save.md — new non-zero-exit claim (:7).\n- /source/head/docs/manual/kinds/cisco_iol.md — new Telnet tab + warning (:55-68).\n- /source/head/links/parking_node.go — ParkingNode lifecycle (CaptureFrom/RestoreTo/RepointSymlink).\n- /source/head/core/lifecycle.go — park→deploy→restore sequence validating parked-endpoint semantics.\n- /source/head/cmd/save.go — confirms error propagation to cobra RunE (exit code contract).\n- /source/head/constants/env.go — `ClabEnvIntfs` definition.\n- /source/standards/karpathy-guidelines.mdc, /source/standards/ponytail.mdc — review behavioral rules (surgical changes, simplest solution).",
+          "time": {
+            "start": 1793727384011,
+            "end": 1793727392893
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27bec80001wpE97G54bFSomn",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bbf6e001G5XTvEC47Dah4l",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 32224,
+            "input": 30385,
+            "output": 1827,
+            "reasoning": 12,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a27bec870013mrnNyoYC5GopS",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727392903
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1a27bec89001vgRLYxhEGBb3s7",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bec870013mrnNyoYC5GopS",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1793727392905,
+            "end": 1793727392905
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27bec90001xVH01xobIPECsr",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727392912,
+          "completed": 1793727400072
+        },
+        "parentID": "msg_1a27bec870013mrnNyoYC5GopS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 17196,
+          "input": 16441,
+          "output": 39,
+          "reasoning": 716,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27bf64a001TGmwnS7F9SNBpm",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bec90001xVH01xobIPECsr"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27bf64c001J2IiJwWuSk59aV",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bec90001xVH01xobIPECsr",
+          "text": "The release-note-review rule: check if there are changes under `docs/rn/`. From the changed paths: docs/cmd/save.md, docs/manual/kinds/cisco_iol.md — no docs/rn/ changes. So the rule doesn't flag anything; no release note added for user-visible changes. The rule says inspect changes under docs/rn/ — there are none. Should I flag that user-visible behavior changes (save exit code) lack a release note? The rule only mandates checking existing docs/rn/ changes, not adding one. I'll note it in coverage, not a finding.\n\nNow I have everything I need. Let me finalize.\n\nFindings:\n\n1. P2 — Data race on `errs` slice in `CLab.Save` (core/save.go:40-63). Goroutines write `errs[i]` while the main goroutine appends to `errs` — concurrent access to the same slice variable without synchronization. Value-benign in practice (capacity exact, no reallocation), but a memory-model violation that `go test -race` would flag. Fix: preallocate `errs := make([]error, len(c.Nodes))` and assign by index without append (pattern already used in `labruntime/clabernetes/workers.go:45`).\n\n2. P4 — `EndpointsWithParked` returns the live `d.Endpoints` backing array when no parking node is set; no doc comment warns callers not to mutate. Suggest a short doc comment (or always clone). Optional.\n\nAnything else? Let me reconsider the IOL boot_config guard. `CreateIOLFiles` — only creates boot_config.txt if missing. Wait, one more consideration: what if the user intentionally modifies config.txt and wants to reset? Edge case, not a defect.\n\nLet me also double check the diff for default_node.go once more — the import of `slices`. Confirmed in diff (line 198: + \"slices\").\n\nIs there a missing test for `Save`'s copyDst error path? The new test only covers SaveConfig errors. The old behavior logged copy errors; the new one returns them — no test covers the copy-error propagation. Minor coverage gap — mention in coverage notes rather than a finding (verification check 6: recommend smallest useful check — a test with copyDst pointing to an unwritable path). Actually, I could make this a P4 finding: \"no check covers copy-error propagation in Save\". Hmm, the ponytail rule says non-trivial logic leaves one runnable check behind. The copy-error path is part of the changed behavior (previously logged-only, now returned). A tiny test addition would cover it. I'll include as P4.\n\nActually wait — let me re-read the new test to make sure there isn't already a copy test... The test file has only TestSaveReturnsNodeErrors (and the base had no tests for Save? base core/save_test.go — the file is new in this PR, \"A core/save_test.go\"). So yes, only one test.\n\nHmm, also: does the new test actually exercise the concurrent path deterministically? With 3 nodes and mocked SaveConfig returning immediately, the race may not trigger deterministically — fine, the test asserts error aggregation, not the race.\n\nNow, one more potential issue with the new test: `c := makeCLab(t)` — helper defined in another test file in package core (makeCLab exists in core package tests? Let me verify it exists).",
+          "time": {
+            "start": 1793727395404,
+            "end": 1793727399983
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c0831001WzBVDySXzItwth",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bec90001xVH01xobIPECsr",
+          "callID": "call_3ebcd6d79f414120b5f714dc",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core",
+              "pattern": "func makeCLab"
+            },
+            "output": "No files found",
+            "title": "func makeCLab",
+            "metadata": {
+              "matches": 0,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793727399991,
+              "end": 1793727400003
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c0863001uejZ4s8X1jOa6B",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bec90001xVH01xobIPECsr",
+          "callID": "call_e25c2f6daca74a77af153cbd",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core",
+              "pattern": "mocknodes"
+            },
+            "output": "Found 74 matches\n/source/head/core/network_test.go:\n  Line 21: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 83: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 341: \t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 386: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 433: \t\t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 476: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 506: \t\t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 849: \t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 927: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n\n/source/head/core/tailscale_test.go:\n  Line 18: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 576: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 700: \trunning := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 701: \tmissing := clabmocksmocknodes.NewMockNode(ctrl)\n\n\n/source/head/core/deploy_test.go:\n  Line 21: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 112: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 126: \ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 127: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 158: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 202: \t\t\ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 203: \t\t\tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 271: \ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 272: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 302: \t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 344: \t\t\ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 345: \t\t\tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 417: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 456: \ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 457: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n\n/source/head/core/clab_test.go:\n  Line 19: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 31: \tmockNode1 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 41: \tmockNode2 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 74: \tmockNode3 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 112: \tmockNode4 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 124: \tmockNode5 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 256: \tfailingNode := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 273: \tblockedNode := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 367: \th1 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 388: \th2 := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 463: \tmockNode := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n  Line 487: \tdependerMock := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n\n/source/head/core/network_mode_test.go:\n  Line 10: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 35: \t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 131: \t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 245: \t\tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n\n/source/head/core/save_test.go:\n  Line 9: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 44: \t\t\t\tn := clabmocksmocknodes.NewMockNode(ctrl)\n\n\n/source/head/core/dependency_manager/dependency_node_test.go:\n  Line 8: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 23: \t\tmn := clabmocksmocknodes.NewMockNode(mockCtrl)\n\n\n/source/head/core/apply_test.go:\n  Line 16: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 149: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 210: \tmockNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 543: \tmanagedNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 544: \texternalNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 577: \texternalNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 680: \t\t\tmockNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 734: \t\t\tmockNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 778: \texternalNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 809: \tmockNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 918: \ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 919: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 953: \ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 954: \tmid := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 955: \tleaf := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 987: \ttarget := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 988: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1016: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1053: \tsidecar := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1074: \tmockNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1133: \t\t\tbr := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1179: \tmockNode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1273: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n  Line 1303: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n\n\n/source/head/core/state_test.go:\n  Line 9: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\n  Line 26: \tnode := clabmocksmocknodes.NewMockNode(ctrl)\n",
+            "title": "mocknodes",
+            "metadata": {
+              "matches": 74,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793727400040,
+              "end": 1793727400065
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27c08840018yzr37r6qNU6l1",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27bec90001xVH01xobIPECsr",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 17196,
+            "input": 16441,
+            "output": 39,
+            "reasoning": 716,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27c088f001Fjb96G0x3YBtva",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727400079,
+          "completed": 1793727401890
+        },
+        "parentID": "msg_1a27bec870013mrnNyoYC5GopS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 18960,
+          "input": 1707,
+          "output": 15,
+          "reasoning": 86,
+          "cache": {
+            "read": 17152,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27c0d69001g9sPF6YuCcoHR7",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c088f001Fjb96G0x3YBtva"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27c0d6b001Xh92moQ3cUSYiO",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c088f001Fjb96G0x3YBtva",
+          "text": "`makeCLab` doesn't exist in core tests — but the new test in save_test.go might use a different helper. Let me re-read save_test.go head fully to check what helpers it uses (e.g., `newClabForTest` or similar). Earlier I read the diff of save_test.go: it used `c := makeCLab(t)`? Let me re-read the actual head file.",
+          "time": {
+            "start": 1793727401323,
+            "end": 1793727401871
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c0f91001Kc0RNG2JHpR15p",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c088f001Fjb96G0x3YBtva",
+          "callID": "call_d9b3c9fda37145418b974e97",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/save_test.go"
+            },
+            "output": "<path>/source/head/core/save_test.go</path>\n<type>file</type>\n<content>\n1: package core\n2: \n3: import (\n4: \t\"context\"\n5: \t\"errors\"\n6: \t\"strings\"\n7: \t\"testing\"\n8: \n9: \tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n10: \tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n11: \t\"go.uber.org/mock/gomock\"\n12: )\n13: \n14: func TestSaveReturnsNodeErrors(t *testing.T) {\n15: \terrBoom := errors.New(\"boom\")\n16: \n17: \ttests := []struct {\n18: \t\tname    string\n19: \t\tfailing map[string]bool\n20: \t\twantErr []string // substrings the joined error must contain; nil means no error\n21: \t}{\n22: \t\t{name: \"all nodes save\", failing: nil},\n23: \t\t{\n24: \t\t\tname:    \"one node fails\",\n25: \t\t\tfailing: map[string]bool{\"r2\": true},\n26: \t\t\twantErr: []string{`node \"r2\" save failed: boom`},\n27: \t\t},\n28: \t\t{\n29: \t\t\tname:    \"every node fails\",\n30: \t\t\tfailing: map[string]bool{\"r1\": true, \"r2\": true, \"r3\": true},\n31: \t\t\twantErr: []string{\n32: \t\t\t\t`node \"r1\" save failed: boom`,\n33: \t\t\t\t`node \"r2\" save failed: boom`,\n34: \t\t\t\t`node \"r3\" save failed: boom`,\n35: \t\t\t},\n36: \t\t},\n37: \t}\n38: \n39: \tfor _, tt := range tests {\n40: \t\tt.Run(tt.name, func(t *testing.T) {\n41: \t\t\tctrl := gomock.NewController(t)\n42: \t\t\tc := &CLab{Nodes: map[string]clabnodes.Node{}}\n43: \t\t\tfor _, name := range []string{\"r1\", \"r2\", \"r3\"} {\n44: \t\t\t\tn := clabmocksmocknodes.NewMockNode(ctrl)\n45: \t\t\t\tn.EXPECT().GetShortName().Return(name).AnyTimes()\n46: \t\t\t\tvar err error\n47: \t\t\t\tif tt.failing[name] {\n48: \t\t\t\t\terr = errBoom\n49: \t\t\t\t}\n50: \t\t\t\tn.EXPECT().SaveConfig(gomock.Any()).Return(nil, err)\n51: \t\t\t\tc.Nodes[name] = n\n52: \t\t\t}\n53: \n54: \t\t\terr := c.Save(context.Background())\n55: \n56: \t\t\tif tt.wantErr == nil {\n57: \t\t\t\tif err != nil {\n58: \t\t\t\t\tt.Fatalf(\"got error %v, want nil\", err)\n59: \t\t\t\t}\n60: \t\t\t\treturn\n61: \t\t\t}\n62: \t\t\tif !errors.Is(err, errBoom) {\n63: \t\t\t\tt.Fatalf(\"got error %v, want it to wrap %v\", err, errBoom)\n64: \t\t\t}\n65: \t\t\tfor _, want := range tt.wantErr {\n66: \t\t\t\tif !strings.Contains(err.Error(), want) {\n67: \t\t\t\t\tt.Errorf(\"error %q does not contain %q\", err, want)\n68: \t\t\t\t}\n69: \t\t\t}\n70: \t\t\tif got := strings.Count(err.Error(), \"save failed\"); got != len(tt.wantErr) {\n71: \t\t\t\tt.Errorf(\"error reports %d failures, want %d: %q\", got, len(tt.wantErr), err)\n72: \t\t\t}\n73: \t\t})\n74: \t}\n75: }\n\n(End of file - total 75 lines)\n</content>",
+            "title": "source/head/core/save_test.go",
+            "metadata": {
+              "preview": "package core\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"strings\"\n\t\"testing\"\n\n\tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\t\"go.uber.org/mock/gomock\"\n)\n\nfunc TestSaveReturnsNodeErrors(t *testing.T) {\n\terrBoom := errors.New(\"boom\")\n\n\ttests := []struct {\n\t\tname    string\n\t\tfailing map[string]bool\n\t\twantErr []string // substrings the joined error must contain; nil means no error",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/save_test.go",
+                "text": "package core\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"strings\"\n\t\"testing\"\n\n\tclabmocksmocknodes \"github.com/srl-labs/containerlab/mocks/mocknodes\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\t\"go.uber.org/mock/gomock\"\n)\n\nfunc TestSaveReturnsNodeErrors(t *testing.T) {\n\terrBoom := errors.New(\"boom\")\n\n\ttests := []struct {\n\t\tname    string\n\t\tfailing map[string]bool\n\t\twantErr []string // substrings the joined error must contain; nil means no error\n\t}{\n\t\t{name: \"all nodes save\", failing: nil},\n\t\t{\n\t\t\tname:    \"one node fails\",\n\t\t\tfailing: map[string]bool{\"r2\": true},\n\t\t\twantErr: []string{`node \"r2\" save failed: boom`},\n\t\t},\n\t\t{\n\t\t\tname:    \"every node fails\",\n\t\t\tfailing: map[string]bool{\"r1\": true, \"r2\": true, \"r3\": true},\n\t\t\twantErr: []string{\n\t\t\t\t`node \"r1\" save failed: boom`,\n\t\t\t\t`node \"r2\" save failed: boom`,\n\t\t\t\t`node \"r3\" save failed: boom`,\n\t\t\t},\n\t\t},\n\t}\n\n\tfor _, tt := range tests {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\tctrl := gomock.NewController(t)\n\t\t\tc := &CLab{Nodes: map[string]clabnodes.Node{}}\n\t\t\tfor _, name := range []string{\"r1\", \"r2\", \"r3\"} {\n\t\t\t\tn := clabmocksmocknodes.NewMockNode(ctrl)\n\t\t\t\tn.EXPECT().GetShortName().Return(name).AnyTimes()\n\t\t\t\tvar err error\n\t\t\t\tif tt.failing[name] {\n\t\t\t\t\terr = errBoom\n\t\t\t\t}\n\t\t\t\tn.EXPECT().SaveConfig(gomock.Any()).Return(nil, err)\n\t\t\t\tc.Nodes[name] = n\n\t\t\t}\n\n\t\t\terr := c.Save(context.Background())\n\n\t\t\tif tt.wantErr == nil {\n\t\t\t\tif err != nil {\n\t\t\t\t\tt.Fatalf(\"got error %v, want nil\", err)\n\t\t\t\t}\n\t\t\t\treturn\n\t\t\t}\n\t\t\tif !errors.Is(err, errBoom) {\n\t\t\t\tt.Fatalf(\"got error %v, want it to wrap %v\", err, errBoom)\n\t\t\t}\n\t\t\tfor _, want := range tt.wantErr {\n\t\t\t\tif !strings.Contains(err.Error(), want) {\n\t\t\t\t\tt.Errorf(\"error %q does not contain %q\", err, want)\n\t\t\t\t}\n\t\t\t}\n\t\t\tif got := strings.Count(err.Error(), \"save failed\"); got != len(tt.wantErr) {\n\t\t\t\tt.Errorf(\"error reports %d failures, want %d: %q\", got, len(tt.wantErr), err)\n\t\t\t}\n\t\t})\n\t}\n}",
+                "lineStart": 1,
+                "lineEnd": 75,
+                "totalLines": 75,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793727401877,
+              "end": 1793727401884
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27c0f9f001KqSCwdUbywYP9i",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c088f001Fjb96G0x3YBtva",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 18960,
+            "input": 1707,
+            "output": 15,
+            "reasoning": 86,
+            "cache": {
+              "read": 17152,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27c0fa8001j6jWmPCSxHQzZv",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727401896,
+          "completed": 1793727405996
+        },
+        "parentID": "msg_1a27bec870013mrnNyoYC5GopS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 20156,
+          "input": 824,
+          "output": 50,
+          "reasoning": 338,
+          "cache": {
+            "read": 18944,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27c1594001A9EjQbgT2L9Bk4",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c0fa8001j6jWmPCSxHQzZv"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27c1596001Mdr22VBMsScpGz",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c0fa8001j6jWmPCSxHQzZv",
+          "text": "The test constructs `&CLab{Nodes: ...}` directly — no `makeCLab` helper. Good, it compiles. It builds CLab without TopoPaths — `Save` with `c.LabRuntime == nil` and `opts.copyDst == \"\"` → straight to per-node goroutines. MockNode.EXPECT().SaveConfig(gomock.Any()).Return(nil, err) — SaveConfig returns (*SaveConfigResult, error) presumably. Good.\n\nNote: `Save` calls `node.SaveConfig(ctx)` then on success checks `opts.copyDst == \"\"` → returns. MockNode has no other expectations needed. Good.\n\nOne thing: in the \"all nodes save\" case, `err` is nil and `Save` returns nil. Good.\n\nNow, the diff for save_test.go earlier showed `mocks/mocknodes` and `NewMockNode` — consistent.\n\nEverything checks out. Let me also verify the head diff once more for anything I might have missed in files I read via diff only: `nodes/xrd/xrd.go` genInterfacesEnv — read via head (relevant section). `iol.go` — read. OK.\n\nOne more check — the `Makefile` targets for lint to confirm `govet` runs (whether race detection via go vet's race analyzer... go vet doesn't detect this). Not needed.\n\nLet me also quickly verify that `docs/cmd/save.md` matches cobra help generation. The docs are generated from cobra (docs/cmd/*.md generated?). Check if docs/cmd files are generated by a script — if so, hand-edits may be overwritten. Let me check quickly.",
+          "time": {
+            "start": 1793727403414,
+            "end": 1793727405775
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c1ed30017jPQxgZzsXJidV",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c0fa8001j6jWmPCSxHQzZv",
+          "callID": "call_e34e7933cbe9441b949a3046",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "docs/cmd"
+            },
+            "output": "Found 17 matches\n/source/head/docs/cmd/start.md:\n  Line 17: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/generate.md:\n  Line 11: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/capture.md:\n  Line 14: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/destroy.md:\n  Line 7: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/redeploy.md:\n  Line 33: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/validate.md:\n  Line 19: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/save.md:\n  Line 26: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/completion.md:\n  Line 7: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/restart.md:\n  Line 3: --8<-- \"docs/cmd/start.md:lifecycle-commands\"\n\n  Line 13: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n  Line 43: --8<-- \"docs/cmd/start.md:limitations\"\n\n\n/source/head/docs/cmd/exec.md:\n  Line 19: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/graph.md:\n  Line 14: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/logs.md:\n  Line 7: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n\n/source/head/docs/cmd/stop.md:\n  Line 3: --8<-- \"docs/cmd/start.md:lifecycle-commands\"\n\n  Line 11: --8<-- \"docs/cmd/deploy.md:env-vars-flags\"\n\n  Line 41: --8<-- \"docs/cmd/start.md:limitations\"\n",
+            "title": "docs/cmd",
+            "metadata": {
+              "matches": 17,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793727405785,
+              "end": 1793727405806
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c1f7b001bKoZ8ENy3ZfNUl",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c0fa8001j6jWmPCSxHQzZv",
+          "callID": "call_9bef1f494ae643fca45b7166",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "generated|AUTOGEN|do not edit",
+              "include": "docs/cmd/*.md"
+            },
+            "output": "Found 11 matches\n/source/head/docs/cmd/generate.md:\n  Line 7: With this command it is possible to generate definition file for a CLOS fabric by just providing the number of nodes on each tier. The generated topology can be saved in a file or immediately scheduled for deployment.\n\n  Line 23: With the global `--name` flag a user sets the name of the lab that will be generated.\n\n  Line 75: When `--deploy` flag is present, the lab deployment process starts using the generated topology definition file.\n\n  Line 77: The generated definition file is first saved by the path set with `--file` or, if file path is not set, by the default path of `<lab-name>.clab.yml`. Then the equivalent of the `deploy -t <file> --reconfigure` command is executed.\n\n  Line 89: With `--file` flag it's possible to save the generated topology definition in a file by a given path.\n\n\n/source/head/docs/cmd/deploy.md:\n  Line 54: - the generated configuration artifacts need to change\n\n  Line 224: See documentation on [Generated topologies](../manual/topo-def-file.md#generated-topologies) for more information and examples on how to use these variables.\n\n  Line 228: The local `--reconfigure | -c` flag instructs containerlab to first **destroy** the lab and all its directories and then start the deployment process. That will result in a clean (re)deployment where every configuration artefact will be generated (TLS, node config) from scratch.\n\n  Line 383: `spec.expose.exposeType` on the generated `Topology`, or on the generated\n\n\n/source/head/docs/cmd/graph.md:\n  Line 115: A single path `/` is served, where the graph is generated based on either a default template or on the template supplied using `--template`.\n\n  Line 145: With `--mermaid-direction` flag provided with `--mermaid` flag, containerlab adjusts [direction](https://mermaid.js.org/syntax/flowchart.html#direction) of the generated graph. Accepted values are TB, TD, BT, RL, and LR.\n",
+            "title": "generated|AUTOGEN|do not edit",
+            "metadata": {
+              "matches": 11,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793727405952,
+              "end": 1793727405985
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27c1fa5001An5yRi4lXtEuCP",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c0fa8001j6jWmPCSxHQzZv",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 20156,
+            "input": 824,
+            "output": 50,
+            "reasoning": 338,
+            "cache": {
+              "read": 18944,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27c1fb7001GOwZ9z4zwG7Xl4",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727406007,
+          "completed": 1793727409634
+        },
+        "parentID": "msg_1a27bec870013mrnNyoYC5GopS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 21484,
+          "input": 1098,
+          "output": 26,
+          "reasoning": 392,
+          "cache": {
+            "read": 19968,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27c240700145NDRUdGMmjAiu",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c1fb7001GOwZ9z4zwG7Xl4"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27c240a001K9aSHHyGJ4l4oL",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c1fb7001GOwZ9z4zwG7Xl4",
+          "text": "The docs/cmd files are not auto-generated (they contain custom prose with mkdocs snippets). The edit to save.md is fine.\n\nNow let me finalize. I have all the material. Compose the final review.\n\nFindings list:\n1. P2 — Data race on `errs` in `CLab.Save` (core/save.go:40-63, head). Fix: preallocate and index-assign (pattern exists at labruntime/clabernetes/workers.go:45).\n2. P4 — `EndpointsWithParked` returns live slice; no doc comment. (nodes/default_node.go:1115-1127). Suggest doc comment.\n3. P4 — No check covers copy-error propagation in `Save` (core/save.go:53-58). Previously logged-only, now returned; suggest one table case in save_test.go with a copyDst that fails (e.g., copy to an unwritable path) — hmm, but the test builds CLab without TopoPaths; copySavedConfig with a mock node: set copyDst to a path under t.TempDir() made read-only? Simpler: expect error from copySavedConfig. Actually simplest: use `t.TempDir()` + create a file where node dir would be, forcing MkdirAll failure. Or mock `Config()` to return nil → \"node config missing\" error. Actually SaveConfig returns result; copySavedConfig calls node.Config() — mock returns nil → error \"node config missing\". That's a clean minimal test case: set `opts.copyDst` via `WithCopyOutDst?` — check the SaveOption name. In cmd/save.go: `o.ToClabSaveOptions()`. SaveOption functions: check core/save.go options — there must be a `WithCopyOutDst`. The diff showed resolveCopyOutDst uses opts.copyDst. Let me check the option constructor name quickly to make the suggestion accurate.",
+          "time": {
+            "start": 1793727407114,
+            "end": 1793727409605
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c2dc8001TWQgyRkQvh7tKy",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c1fb7001GOwZ9z4zwG7Xl4",
+          "callID": "call_8f210642e815474abf441e11",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core",
+              "pattern": "func With\\w+Save|copyDst"
+            },
+            "output": "Found 13 matches\n/source/head/core/save.go:\n  Line 32: \tif opts.copyDst != \"\" {\n\n  Line 33: \t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n\n  Line 37: \t\topts.copyDst = resolvedDst\n\n  Line 57: \t\t\tif opts.copyDst == \"\" {\n\n  Line 61: \t\t\tif err := c.copySavedConfig(ctx, result, node, opts.copyDst); err != nil {\n\n\n/source/head/core/labruntime.go:\n  Line 393: \tif opts.copyDst != \"\" {\n\n  Line 394: \t\tresolvedDst, err := c.resolveCopyOutDst(opts.copyDst)\n\n  Line 398: \t\topts.copyDst = resolvedDst\n\n  Line 405: \t\tCopy:     opts.copyDst != \"\",\n\n  Line 411: \tif opts.copyDst == \"\" || result == nil {\n\n  Line 415: \treturn c.copyLabRuntimeSavedFiles(result, opts.copyDst)\n\n\n/source/head/core/options_save.go:\n  Line 8: \tcopyDst string\n\n  Line 19: \t\to.copyDst = dst\n",
+            "title": "func With\\w+Save|copyDst",
+            "metadata": {
+              "matches": 13,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793727409613,
+              "end": 1793727409628
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27c2dde001A2v44He1YOauHq",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c1fb7001GOwZ9z4zwG7Xl4",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 21484,
+            "input": 1098,
+            "output": 26,
+            "reasoning": 392,
+            "cache": {
+              "read": 19968,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27c2de8001fg1JdYB777wVZM",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727409640,
+          "completed": 1793727411113
+        },
+        "parentID": "msg_1a27bec870013mrnNyoYC5GopS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 21743,
+          "input": 479,
+          "output": 15,
+          "reasoning": 1,
+          "cache": {
+            "read": 21248,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27c336f00157xvrPJxrAmF5B",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c2de8001fg1JdYB777wVZM"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a27c338c001pcGHXlIqHpSyjU",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c2de8001fg1JdYB777wVZM",
+          "callID": "call_c0b9292591374f32b26c27b6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/options_save.go"
+            },
+            "output": "<path>/source/head/core/options_save.go</path>\n<type>file</type>\n<content>\n1: package core\n2: \n3: // SaveOption is a type used for functional options for the CLab Save method.\n4: type SaveOption func(o *SaveOptions)\n5: \n6: // SaveOptions represents the options for saving lab configs.\n7: type SaveOptions struct {\n8: \tcopyDst string\n9: }\n10: \n11: // NewSaveOptions returns a new save options object.\n12: func NewSaveOptions() *SaveOptions {\n13: \treturn &SaveOptions{}\n14: }\n15: \n16: // WithCopyOut sets the destination directory for the copied saved configs.\n17: func WithCopyOut(dst string) SaveOption {\n18: \treturn func(o *SaveOptions) {\n19: \t\to.copyDst = dst\n20: \t}\n21: }\n\n(End of file - total 21 lines)\n</content>",
+            "title": "source/head/core/options_save.go",
+            "metadata": {
+              "preview": "package core\n\n// SaveOption is a type used for functional options for the CLab Save method.\ntype SaveOption func(o *SaveOptions)\n\n// SaveOptions represents the options for saving lab configs.\ntype SaveOptions struct {\n\tcopyDst string\n}\n\n// NewSaveOptions returns a new save options object.\nfunc NewSaveOptions() *SaveOptions {\n\treturn &SaveOptions{}\n}\n\n// WithCopyOut sets the destination directory for the copied saved configs.\nfunc WithCopyOut(dst string) SaveOption {\n\treturn func(o *SaveOptions) {\n\t\to.copyDst = dst\n\t}",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/options_save.go",
+                "text": "package core\n\n// SaveOption is a type used for functional options for the CLab Save method.\ntype SaveOption func(o *SaveOptions)\n\n// SaveOptions represents the options for saving lab configs.\ntype SaveOptions struct {\n\tcopyDst string\n}\n\n// NewSaveOptions returns a new save options object.\nfunc NewSaveOptions() *SaveOptions {\n\treturn &SaveOptions{}\n}\n\n// WithCopyOut sets the destination directory for the copied saved configs.\nfunc WithCopyOut(dst string) SaveOption {\n\treturn func(o *SaveOptions) {\n\t\to.copyDst = dst\n\t}\n}",
+                "lineStart": 1,
+                "lineEnd": 21,
+                "totalLines": 21,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793727411089,
+              "end": 1793727411106
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27c33a5001YWP4Nx4f5cV6zb",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c2de8001fg1JdYB777wVZM",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 21743,
+            "input": 479,
+            "output": 15,
+            "reasoning": 1,
+            "cache": {
+              "read": 21248,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a27c33af001wcLbTQ7cl1Eucj",
+        "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+        "time": {
+          "created": 1793727411119,
+          "completed": 1793727431200
+        },
+        "parentID": "msg_1a27bec870013mrnNyoYC5GopS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-wSJbx6",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 26132,
+          "input": 253,
+          "output": 3852,
+          "reasoning": 331,
+          "cache": {
+            "read": 21696,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a27c3852001YklYmp0OaC9k4M",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c33af001wcLbTQ7cl1Eucj"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a27c3855001NjsMaDynCdwsR7",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c33af001wcLbTQ7cl1Eucj",
+          "text": "Good — `WithCopyOut` is the option. For the test suggestion: `c.Save(context.Background(), WithCopyOut(t.TempDir()))` with a mock whose `SaveConfig` returns a result with `ConfigPath` set and whose `Config()` returns nil → `copySavedConfig` returns \"node config missing\" error. Minimal.\n\nNow finalize the review. Findings:\n\n1. P2 — data race on `errs` slice in `CLab.Save`.\n2. P4 — `EndpointsWithParked` returns live slice without doc comment (optional maintainability).\n3. P4 — no check covers copy-error propagation in `Save`.\n\nCoverage notes: source-only review, no execution; cisco_iol image claims unverifiable; no schema changes needed; docs/rn untouched so release-note rule not applicable.\n\nLine anchors:\n- head core/save.go: goroutines lines 39-63; anchor 41-62.\n- head nodes/default_node.go EndpointsWithParked: 1115-1127. Verify exact lines: I read lines 1100-1260 earlier... Actually I read default_node.go lines 1100-1260 in the earlier turn? The summary says I read 1100-1260 and EndpointsWithParked is at :1115. I'll trust the summary: EndpointsWithParked at line 1115-1127.\n- test copy gap: head/core/save_test.go:14-75 → anchor around 39-74? Use 14-75.\n\nMarkdown table ordered P0-P4.\n\nNow write the final review + JSON.",
+          "time": {
+            "start": 1793727412309,
+            "end": 1793727413966
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a27c3ed10012Qft87aAC6xcnb",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c33af001wcLbTQ7cl1Eucj",
+          "text": "All verification steps are complete. Here is the final review.\n\n---\n\n# Code Review: save error propagation and parked-endpoint accounting\n\n## Summary\n\nThis PR makes two behavior changes and one fix: (1) `CLab.Save` now aggregates per-node save errors concurrently and returns them via `errors.Join` instead of logging and returning `nil`, with a new table-driven test in `core/save_test.go`; (2) node kinds that depend on the `CLAB_INTFS` environment variable (default node, `linux`, `cisco_iol`, `xrd`) now count parked endpoints during a parking/recreate cycle via the new `DefaultNode.EndpointsWithParked()` helper, which is verified to be consistent with the park → recreate → restore sequence in `core/lifecycle.go` and with the ownership transfer in `links/endpoint.go` (`moveEndpoint` releases from the source node before adopting into the parking node, so there is no double counting); (3) `CreateIOLFiles` no longer truncates an existing `boot_config.txt`, fixing config loss on redeploy since `GenBootConfig` regenerates the file in `PostDeploy`. The documentation changes (`docs/cmd/save.md` exit-code claim, `docs/manual/kinds/cisco_iol.md` Telnet tab) match the implementation as far as this repository can verify them.\n\nOne real defect was found: the concurrent error collection in `CLab.Save` accesses the `errs` slice variable from goroutines while the main goroutine keeps appending to it, which is a data race on the slice header (benign in value only because the backing array is preallocated with exact capacity, but still undefined behavior and `go test -race` flaggable).\n\n## Findings\n\n| Priority | Count | Summary |\n| --- | --- | --- |\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 1 | Data race on the `errs` slice in `CLab.Save` |\n| P3 | 0 | — |\n| P4 | 2 | `EndpointsWithParked` returns the live slice with no doc comment; no check covers `Save` copy-error propagation |\n\n### [P2] Data race on the `errs` slice in `CLab.Save`\n\n**Location:** [core/save.go](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save.go#L41-L62) (introduced by this PR; the base version had no shared error slice).\n\n**Problem:** The loop launches one goroutine per node. Each goroutine captures the outer `errs` variable by reference and executes `errs[i] = ...` (which reads the current slice header to locate the backing array), while the main goroutine continues the loop and executes `errs = append(errs, nil)`. There is no happens-before edge between a later `append` and an earlier goroutine's read/write of the `errs` variable, so the goroutines and the main loop race on the slice header under the Go memory model. In practice the race is value-benign only because `errs` is created with `make([]error, 0, len(c.Nodes))`, so `append` never reallocates and the backing-array pointer stays stable — but that invariant is implicit, fragile (any future change to the capacity expression reintroduces lost writes), and `go test -race` (including the new `TestSaveReturnsNodeErrors`, which exercises this exact code with three goroutines) will flag it when race mode is enabled anywhere in the pipeline.\n\n**Trigger:** Any `clab save` invocation on the Docker runtime path (two or more nodes); deterministically detectable under `go test -race` in `core`.\n\n**Impact:** Undefined behavior per the Go memory model. Today it manifests only as race-detector reports and lost-error risk if the preallocation ever changes; it is a latent reliability defect rather than an observed failure.\n\n**Correction:** Preallocate by length and assign by index, removing the append entirely:\n\n```go\nerrs := make([]error, len(c.Nodes))\ni := 0\nfor _, node := range c.Nodes {\n    i := i\n    i++\n    go func(node clabnodes.Node) {\n        defer wg.Done()\n        ...\n errs[i] = ...\n    }(node)\n}\n```\n\nThis is already the established in-repo pattern — `labruntime/clabernetes/workers.go:45` uses exactly `errs := make([]error, len(items))` with indexed assignment from worker goroutines — so the fix also removes the awkward `errs = append(errs, nil); i := len(errs)-1` idiom. (Note: `i` is already a per-iteration local, so there is no loop-variable capture bug; the issue is solely the concurrent slice-header access.)\n\n### [P4] `EndpointsWithParked` returns the live `d.Endpoints` slice with no usage contract\n\n**Location:** [nodes/default_node.go](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/default_node.go#L1115-L1127).\n\n**Problem:** When `d.parkingNode` is nil (the steady-state case for every normal deploy), the method returns `d.Endpoints` itself, sharing the node's backing array with the caller. When the parking node is set, `slices.Clone` deliberately protects against aliasing (and the new `TestDefaultNodeEndpointsWithParked` asserts this), but the common case has no such protection and the method carries no doc comment stating the contract.\n\n**Trigger:** A future caller that appends to or mutates the returned slice (e.g., appending an endpoint before `AdoptEndpoint`, which grows the shared array and can overwrite the node's state).\n\n**Impact:** None today — all four current callers (`DefaultNode.Deploy`, `linux.Deploy`, `iol.ensureNumSlotsEnv`/`GenInterfaceConfig`, `xrd.genInterfacesEnv`) only read the result. This is a latent API hazard, not a current defect.\n\n**Correction:** Add a short doc comment to `EndpointsWithParked` stating that the returned slice must not be mutated (mirroring the guarantee the parked branch already provides). Optionally, always `slices.Clone` for uniformity — but a comment is the proportionate fix.\n\n### [P4] No check covers the newly propagated copy-out errors in `Save`\n\n**Location:** [core/save.go](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save.go#L57-L63) and [core/save_test.go](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save_test.go#L14-L75).\n\n**Problem:** The PR changes two error paths in `Save`: `SaveConfig` failures (now covered by `TestSaveReturnsNodeErrors`) and `copySavedConfig` failures, which the base version only logged (`core/save.go:58` base) and which are now returned to the caller. The new test exercises only the first path; the second changed behavior is untested.\n\n**Trigger:** `clab save --copy-out <dst>` where the copy fails, e.g., the mock's `Config()` returns `nil` (producing `node config missing`) or the destination cannot be created.\n\n**Impact:** A regression that silently drops or mis-reports copy failures would not be caught. Low risk, since `copySavedConfig` itself is unchanged, but the changed contract is the reason this path matters now.\n\n**Correction:** Add one table case to `TestSaveReturnsNodeErrors` (or a sibling test) that calls `c.Save(context.Background(), WithCopyOut(t.TempDir()))` with a mock whose `SaveConfig` returns a populated `*nodes.SaveConfigResult` and whose `Config()` returns `nil`; assert the joined error contains `node config missing`. This is a ~10-line addition using the existing mock.\n\n## Coverage Notes\n\n- This is a source-only review: no code was executed, so no tests were run and no race or formatting failures were observed directly. Compilation of the new tests was checked statically against the referenced symbols (`links.NewEndpointGeneric`, `links.NewEndpointVeth`, `Node.AdoptEndpoint`/`ReleaseEndpoint`, `links.NewParkingNode`, `mocknodes.NewMockNode`), all of which exist with compatible signatures.\n- The CI workflows do not run Go tests with `-race` (only golangci-lint and clabernetes core tests were found), which is why the P2 race is unlikely to surface in current CI; the finding stands on memory-model grounds regardless.\n- `docs/manual/kinds/cisco_iol.md` image-level claims (Telnet served on port 5000 on the management address; availability only in `srl-labs/vrnetlab` images built after November 2026) describe behavior of the external `vrnetlab` project and cannot be verified from this repository; the tab/admonition nesting was checked structurally and is valid.\n- The release-note rule (`.cursor/rules/release-note-review.mdc`) was checked: no files under `docs/rn/` are touched by this PR, so the rule raises nothing; whether maintainers want a release note for the `save` exit-code change is a maintainer decision, not a defect.\n- No topology schema changes are involved (`EndpointsWithParked` and the save behavior are internal APIs), so `schemas/clab.schema.json` was not consulted beyond confirming the PR does not touch it.\n- All nine changed paths were inspected, including their base versions; the parking/recreate flow was traced through `core/lifecycle.go`, `core/apply.go`, and `links/parking_node.go` to confirm the parked-endpoint counting is correct and free of double counting, including the failed-restore path where `d.parkingNode` is retained.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P2\",\n      \"title\": \"Data race on the `errs` slice in `CLab.Save`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/save.go\",\n        \"start\": 41,\n        \"end\": 62\n      },\n      \"problem\": \"The per-node goroutines launched in `CLab.Save` capture the outer `errs` variable by reference and execute `errs[i] = ...` while the main goroutine continues to run `errs = append(errs, nil)`. There is no happens-before edge between a goroutine's access and the main loop's later appends, so the goroutines and the main loop race on the slice header. The race is value-benign today only because `errs` is created with `make([]error, 0, len(c.Nodes))`, so `append` never reallocates the backing array; that invariant is implicit and fragile, and `go test -race` (including the new `TestSaveReturnsNodeErrors`, which spawns three such goroutines) flags it whenever race mode is enabled.\",\n      \"trigger\": \"Any `clab save` on the Docker runtime path with two or more nodes; detectable by running `go test -race ./core/`, which the CI workflows currently do not do.\",\n      \"impact\": \"Undefined behavior under the Go memory model. No lost writes occur today because the backing array is never reallocated, but any future change to the capacity expression reintroduces the risk of silently dropping node save errors, and race-detector builds will report the race.\",\n      \"suggestion\": \"Preallocate by length and assign by index: `errs := make([]error, len(c.Nodes))` with each goroutine writing `errs[i]` for its pre-assigned index and no appends anywhere. This matches the existing in-repo pattern in `labruntime/clabernetes/workers.go:45` (`errs := make([]error, len(items))`) and also removes the awkward `errs = append(errs, nil); i := len(errs)-1` idiom. Note that `i` is already a per-iteration local, so there is no loop-variable capture issue; the defect is solely the concurrent slice-header access.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`EndpointsWithParked` returns the live `d.Endpoints` slice with no usage contract\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/default_node.go\",\n        \"start\": 1115,\n        \"end\": 1127\n      },\n      \"problem\": \"When `d.parkingNode` is nil, which is the steady state for every normal deploy, `EndpointsWithParked` returns `d.Endpoints` itself, sharing the node's backing array with the caller. The parked branch deliberately clones (`slices.Clone`, asserted by `TestDefaultNodeEndpointsWithParked`), but the common case has no such protection and the method has no doc comment stating the contract.\",\n      \"trigger\": \"A future caller that appends to or mutates the returned slice, for example appending an endpoint before `AdoptEndpoint`, which grows the shared backing array and can corrupt node state.\",\n      \"impact\": \"No current caller mutates the result; all four call sites only read it. This is a latent API hazard, not an active defect.\",\n      \"suggestion\": \"Add a short doc comment to `EndpointsWithParked` stating that the returned slice must not be mutated, mirroring the aliasing guarantee the parked branch already provides. Optionally always `slices.Clone`, but a comment is the proportionate fix.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No check covers the newly propagated `copySavedConfig` errors in `Save`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/save_test.go\",\n        \"start\": 14,\n        \"end\": 75\n      },\n      \"problem\": \"This PR changes two error paths in `Save`: `SaveConfig` failures (covered by the new `TestSaveReturnsNodeErrors`) and `copySavedConfig` failures, which the base version only logged and which are now returned to the caller. The new test exercises only the first path, so the second changed contract is untested.\",\n      \"trigger\": \"Running `clab save --copy-out <dst>` where the copy fails, for example when `node.Config()` returns nil, producing the `node config missing` error from `copySavedConfig`.\",\n      \"impact\": \"A regression that drops or mis-reports copy failures would go unnoticed. Risk is low because `copySavedConfig` itself is unchanged, but the propagation change is exactly what the PR introduces.\",\n      \"suggestion\": \"Add one table case to `TestSaveReturnsNodeErrors` (or a sibling test) that calls `c.Save(context.Background(), WithCopyOut(t.TempDir()))` with a mock whose `SaveConfig` returns a populated `*nodes.SaveConfigResult` and whose `Config()` returns nil, then asserts the joined error contains `node config missing`. This is roughly a ten-line addition using the existing mock.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no code was executed, so no tests were run and no race or formatting failures were observed directly; compilation of the new tests was checked statically against existing symbols (`links.NewEndpointGeneric`, `links.NewEndpointVeth`, `Node.AdoptEndpoint`/`ReleaseEndpoint`, `links.NewParkingNode`, `mocknodes.NewMockNode`).\",\n      \"All nine changed paths were inspected with their base versions: core/save.go, core/save_test.go, docs/cmd/save.md, docs/manual/kinds/cisco_iol.md, nodes/default_node.go, nodes/default_node_test.go, nodes/iol/iol.go, nodes/linux/linux.go, nodes/xrd/xrd.go.\",\n      \"The park -> recreate -> restore flow was traced through core/lifecycle.go, core/apply.go, links/parking_node.go, and links/endpoint.go (`moveEndpoint` releases from the source node before adopting into the parking node), confirming parked-endpoint counting in `EndpointsWithParked` is correct and free of double counting, including the failed-restore path where `d.parkingNode` is retained.\",\n      \"Only node kinds that set `CLAB_INTFS` were updated (`linux`, `default_node` consumers `iol` and `xrd`); a grep for `ClabEnvIntfs` confirms no other call sites exist, and `EndpointsWithParked` is only needed on the concrete `DefaultNode` type, not the `nodes.Node` interface.\",\n      \"CI workflows run golangci-lint and clabernetes core tests but no Go tests with `-race`, which is why the P2 race is unlikely to surface in current CI; the finding stands on memory-model grounds.\",\n      \"The image-level claims in docs/manual/kinds/cisco_iol.md (Telnet on port 5000, availability only in `srl-labs/vrnetlab` images built after November 2026) describe external `vrnetlab` behavior and cannot be verified from this repository; the tab/admonition nesting was checked structurally and is valid.\",\n      \"The release-note rule (.cursor/rules/release-note-review.mdc) was checked: no files under docs/rn/ are touched, so it raises nothing; whether the `save` exit-code change warrants a release note is a maintainer decision.\",\n      \"No topology schema changes are involved, so schemas/clab.schema.json was not consulted beyond confirming the PR does not touch it.\",\n      \"docs/cmd/save.md files are hand-written prose (not generated), and the new non-zero-exit claim matches `cmd/save.go` returning `c.Save(...)` from `RunE` as well as error propagation through `saveWithLabRuntime` for the clabernetes runtime path.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793727413969,
+            "end": 1793727431189
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a27c821b001zIYwtFCBHBkPz6",
+          "sessionID": "ses_e5d86c0e3ffewb7YIp28Y7acJ6",
+          "messageID": "msg_1a27c33af001wcLbTQ7cl1Eucj",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 26132,
+            "input": 253,
+            "output": 3852,
+            "reasoning": 331,
+            "cache": {
+              "read": 21696,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P2 - Data race on the `errs` slice in `CLab.Save`** | [core/save.go:41-62](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save.go#L41-L62) |\n| **P4 - `EndpointsWithParked` returns the live `d.Endpoints` slice with no usage contract** | [nodes/default&#95;node.go:1115-1127](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/default_node.go#L1115-L1127) |\n| **P4 - No check covers the newly propagated `copySavedConfig` errors in `Save`** | [core/save&#95;test.go:14-75](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save_test.go#L14-L75) |\n\n## P2 - Data race on the `errs` slice in `CLab.Save`\n\n**Location:** [core/save.go:41-62](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save.go#L41-L62)\n\n**Problem:** The per-node goroutines launched in `CLab.Save` capture the outer `errs` variable by reference and execute `errs[i] = ...` while the main goroutine continues to run `errs = append(errs, nil)`. There is no happens-before edge between a goroutine&#39;s access and the main loop&#39;s later appends, so the goroutines and the main loop race on the slice header. The race is value-benign today only because `errs` is created with `make([]error, 0, len(c.Nodes))`, so `append` never reallocates the backing array; that invariant is implicit and fragile, and `go test -race` &#40;including the new `TestSaveReturnsNodeErrors`, which spawns three such goroutines&#41; flags it whenever race mode is enabled.\n\n**Trigger:** Any `clab save` on the Docker runtime path with two or more nodes; detectable by running `go test -race ./core/`, which the CI workflows currently do not do.\n\n**Impact:** Undefined behavior under the Go memory model. No lost writes occur today because the backing array is never reallocated, but any future change to the capacity expression reintroduces the risk of silently dropping node `save` errors, and race-detector builds will report the race.\n\n**Suggested correction:** Preallocate by length and assign by index&#58; `errs := make([]error, len(c.Nodes))` with each goroutine writing `errs[i]` for its pre-assigned index and no appends anywhere. This matches the existing in-repo pattern in [`labruntime/clabernetes/workers.go:45`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/labruntime/clabernetes/workers.go#L45-L45) &#40;`errs := make([]error, len(items))`&#41; and also removes the awkward `errs = append(errs, nil); i := len(errs)-1` idiom. Note that `i` is already a per-iteration local, so there is no loop-variable capture issue; the defect is solely the concurrent slice-header access.\n\n\n## P4 - `EndpointsWithParked` returns the live `d.Endpoints` slice with no usage contract\n\n**Location:** [nodes/default&#95;node.go:1115-1127](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/default_node.go#L1115-L1127)\n\n**Problem:** When `d.parkingNode` is nil, which is the steady state for every normal deploy, `EndpointsWithParked` returns `d.Endpoints` itself, sharing the node&#39;s backing array with the caller. The parked branch deliberately clones &#40;`slices.Clone`, asserted by `TestDefaultNodeEndpointsWithParked`&#41;, but the common case has no such protection and the method has no doc comment stating the contract.\n\n**Trigger:** A future caller that appends to or mutates the returned slice, for example appending an endpoint before `AdoptEndpoint`, which grows the shared backing array and can corrupt node state.\n\n**Impact:** No current caller mutates the result; all four call sites only read it. This is a latent API hazard, not an active defect.\n\n**Suggested correction:** Add a short doc comment to `EndpointsWithParked` stating that the returned slice must not be mutated, mirroring the aliasing guarantee the parked branch already provides. Optionally always `slices.Clone`, but a comment is the proportionate fix.\n\n\n## P4 - No check covers the newly propagated `copySavedConfig` errors in `Save`\n\n**Location:** [core/save&#95;test.go:14-75](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save_test.go#L14-L75)\n\n**Problem:** This PR changes two error paths in `Save`&#58; `SaveConfig` failures &#40;covered by the new `TestSaveReturnsNodeErrors`&#41; and `copySavedConfig` failures, which the base version only logged and which are now returned to the caller. The new test exercises only the first path, so the second changed contract is untested.\n\n**Trigger:** Running `clab save --copy-out <dst>` where the copy fails, for example when `node.Config()` returns nil, producing the `node config missing` error from `copySavedConfig`.\n\n**Impact:** A regression that drops or mis-reports copy failures would go unnoticed. Risk is low because `copySavedConfig` itself is unchanged, but the propagation change is exactly what the PR introduces.\n\n**Suggested correction:** Add one table case to `TestSaveReturnsNodeErrors` &#40;or a sibling test&#41; that calls `c.Save(context.Background(), WithCopyOut(t.TempDir()))` with a mock whose `SaveConfig` returns a populated `*nodes.SaveConfigResult` and whose `Config()` returns nil, then asserts the joined error contains `node config missing`. This is roughly a ten-line addition using the existing mock.\n\n\n## Coverage\n\n- Source-only review&#58; no code was executed, so no tests were run and no race or formatting failures were observed directly; compilation of the new tests was checked statically against existing symbols &#40;`links.NewEndpointGeneric`, `links.NewEndpointVeth`, `Node.AdoptEndpoint`/`ReleaseEndpoint`, `links.NewParkingNode`, `mocknodes.NewMockNode`&#41;.\n- All nine changed paths were inspected with their base versions&#58; [`core/save.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save.go#L1-L1), [`core/save_test.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/save_test.go#L1-L1), [`docs/cmd/save.md`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/docs/cmd/save.md#L1-L1), [`docs/manual/kinds/cisco_iol.md`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/docs/manual/kinds/cisco_iol.md#L1-L1), [`nodes/default_node.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/default_node.go#L1-L1), [`nodes/default_node_test.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/default_node_test.go#L1-L1), [`nodes/iol/iol.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/iol/iol.go#L1-L1), [`nodes/linux/linux.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/linux/linux.go#L1-L1), [`nodes/xrd/xrd.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/nodes/xrd/xrd.go#L1-L1).\n- The park -&#62; recreate -&#62; restore flow was traced through [`core/lifecycle.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/lifecycle.go#L1-L1), [`core/apply.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/core/apply.go#L1-L1), [`links/parking_node.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/links/parking_node.go#L1-L1), and [`links/endpoint.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/links/endpoint.go#L1-L1) &#40;`moveEndpoint` releases from the source node before adopting into the parking node&#41;, confirming parked-endpoint counting in `EndpointsWithParked` is correct and free of double counting, including the failed-restore path where `d.parkingNode` is retained.\n- Only node kinds that set `CLAB_INTFS` were updated &#40;`linux`, `default_node` consumers `iol` and `xrd`&#41;; a grep for `ClabEnvIntfs` confirms no other call sites exist, and `EndpointsWithParked` is only needed on the concrete `DefaultNode` type, not the `nodes.Node` interface.\n- CI workflows run golangci-lint and clabernetes core tests but no Go tests with `-race`, which is why the P2 race is unlikely to surface in current CI; the finding stands on memory-model grounds.\n- The image-level claims in [`docs/manual/kinds/cisco_iol.md`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/docs/manual/kinds/cisco_iol.md#L1-L1) &#40;Telnet on port 5000, availability only in `srl-labs/vrnetlab` images built after November 2026&#41; describe external `vrnetlab` behavior and cannot be verified from this repository; the tab/admonition nesting was checked structurally and is valid.\n- The release-note rule &#40;[`.cursor/rules/release-note-review.mdc`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/.cursor/rules/release-note-review.mdc#L1-L1)&#41; was checked&#58; no files under docs/rn/ are touched, so it raises nothing; whether the `save` exit-code change warrants a release note is a maintainer decision.\n- No topology schema changes are involved, so [`schemas/clab.schema.json`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/schemas/clab.schema.json#L1-L1) was not consulted beyond confirming the PR does not touch it.\n- [`docs/cmd/save.md`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/docs/cmd/save.md#L1-L1) files are hand-written prose &#40;not generated&#41;, and the new non-zero-exit claim matches [`cmd/save.go`](https://github.com/srl-labs/containerlab/blob/0581db29d40ff5d50b64dce371fb0c0f500406e5/cmd/save.go#L1-L1) returning `c.Save(...)` from `RunE` as well as error propagation through `saveWithLabRuntime` for the clabernetes runtime path.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P2\",\n      \"title\": \"Data race on the `errs` slice in `CLab.Save`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/save.go\",\n        \"start\": 41,\n        \"end\": 62\n      },\n      \"problem\": \"The per-node goroutines launched in `CLab.Save` capture the outer `errs` variable by reference and execute `errs[i] = ...` while the main goroutine continues to run `errs = append(errs, nil)`. There is no happens-before edge between a goroutine's access and the main loop's later appends, so the goroutines and the main loop race on the slice header. The race is value-benign today only because `errs` is created with `make([]error, 0, len(c.Nodes))`, so `append` never reallocates the backing array; that invariant is implicit and fragile, and `go test -race` (including the new `TestSaveReturnsNodeErrors`, which spawns three such goroutines) flags it whenever race mode is enabled.\",\n      \"trigger\": \"Any `clab save` on the Docker runtime path with two or more nodes; detectable by running `go test -race ./core/`, which the CI workflows currently do not do.\",\n      \"impact\": \"Undefined behavior under the Go memory model. No lost writes occur today because the backing array is never reallocated, but any future change to the capacity expression reintroduces the risk of silently dropping node `save` errors, and race-detector builds will report the race.\",\n      \"suggestion\": \"Preallocate by length and assign by index: `errs := make([]error, len(c.Nodes))` with each goroutine writing `errs[i]` for its pre-assigned index and no appends anywhere. This matches the existing in-repo pattern in `labruntime/clabernetes/workers.go:45` (`errs := make([]error, len(items))`) and also removes the awkward `errs = append(errs, nil); i := len(errs)-1` idiom. Note that `i` is already a per-iteration local, so there is no loop-variable capture issue; the defect is solely the concurrent slice-header access.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`EndpointsWithParked` returns the live `d.Endpoints` slice with no usage contract\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/default_node.go\",\n        \"start\": 1115,\n        \"end\": 1127\n      },\n      \"problem\": \"When `d.parkingNode` is nil, which is the steady state for every normal deploy, `EndpointsWithParked` returns `d.Endpoints` itself, sharing the node's backing array with the caller. The parked branch deliberately clones (`slices.Clone`, asserted by `TestDefaultNodeEndpointsWithParked`), but the common case has no such protection and the method has no doc comment stating the contract.\",\n      \"trigger\": \"A future caller that appends to or mutates the returned slice, for example appending an endpoint before `AdoptEndpoint`, which grows the shared backing array and can corrupt node state.\",\n      \"impact\": \"No current caller mutates the result; all four call sites only read it. This is a latent API hazard, not an active defect.\",\n      \"suggestion\": \"Add a short doc comment to `EndpointsWithParked` stating that the returned slice must not be mutated, mirroring the aliasing guarantee the parked branch already provides. Optionally always `slices.Clone`, but a comment is the proportionate fix.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No check covers the newly propagated `copySavedConfig` errors in `Save`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/save_test.go\",\n        \"start\": 14,\n        \"end\": 75\n      },\n      \"problem\": \"This PR changes two error paths in `Save`: `SaveConfig` failures (covered by the new `TestSaveReturnsNodeErrors`) and `copySavedConfig` failures, which the base version only logged and which are now returned to the caller. The new test exercises only the first path, so the second changed contract is untested.\",\n      \"trigger\": \"Running `clab save --copy-out <dst>` where the copy fails, for example when `node.Config()` returns nil, producing the `node config missing` error from `copySavedConfig`.\",\n      \"impact\": \"A regression that drops or mis-reports copy failures would go unnoticed. Risk is low because `copySavedConfig` itself is unchanged, but the propagation change is exactly what the PR introduces.\",\n      \"suggestion\": \"Add one table case to `TestSaveReturnsNodeErrors` (or a sibling test) that calls `c.Save(context.Background(), WithCopyOut(t.TempDir()))` with a mock whose `SaveConfig` returns a populated `*nodes.SaveConfigResult` and whose `Config()` returns nil, then asserts the joined error contains `node config missing`. This is roughly a ten-line addition using the existing mock.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no code was executed, so no tests were run and no race or formatting failures were observed directly; compilation of the new tests was checked statically against existing symbols (`links.NewEndpointGeneric`, `links.NewEndpointVeth`, `Node.AdoptEndpoint`/`ReleaseEndpoint`, `links.NewParkingNode`, `mocknodes.NewMockNode`).\",\n      \"All nine changed paths were inspected with their base versions: `core/save.go`, `core/save_test.go`, `docs/cmd/save.md`, `docs/manual/kinds/cisco_iol.md`, `nodes/default_node.go`, `nodes/default_node_test.go`, `nodes/iol/iol.go`, `nodes/linux/linux.go`, `nodes/xrd/xrd.go`.\",\n      \"The park -> recreate -> restore flow was traced through `core/lifecycle.go`, `core/apply.go`, `links/parking_node.go`, and `links/endpoint.go` (`moveEndpoint` releases from the source node before adopting into the parking node), confirming parked-endpoint counting in `EndpointsWithParked` is correct and free of double counting, including the failed-restore path where `d.parkingNode` is retained.\",\n      \"Only node kinds that set `CLAB_INTFS` were updated (`linux`, `default_node` consumers `iol` and `xrd`); a grep for `ClabEnvIntfs` confirms no other call sites exist, and `EndpointsWithParked` is only needed on the concrete `DefaultNode` type, not the `nodes.Node` interface.\",\n      \"CI workflows run golangci-lint and clabernetes core tests but no Go tests with `-race`, which is why the P2 race is unlikely to surface in current CI; the finding stands on memory-model grounds.\",\n      \"The image-level claims in `docs/manual/kinds/cisco_iol.md` (Telnet on port 5000, availability only in `srl-labs/vrnetlab` images built after November 2026) describe external `vrnetlab` behavior and cannot be verified from this repository; the tab/admonition nesting was checked structurally and is valid.\",\n      \"The release-note rule (`.cursor/rules/release-note-review.mdc`) was checked: no files under docs/rn/ are touched, so it raises nothing; whether the `save` exit-code change warrants a release note is a maintainer decision.\",\n      \"No topology schema changes are involved, so `schemas/clab.schema.json` was not consulted beyond confirming the PR does not touch it.\",\n      \"`docs/cmd/save.md` files are hand-written prose (not generated), and the new non-zero-exit claim matches `cmd/save.go` returning `c.Save(...)` from `RunE` as well as error propagation through `saveWithLabRuntime` for the clabernetes runtime path.\"\n    ]\n  }\n}\n```"
 }
