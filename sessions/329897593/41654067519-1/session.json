@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/vrnetlab",
   "head": "1c29a33a37619b7547248e3b845130ba1f5f8ad0",
-  "updatedAt": "2026-11-03T14:38:36.006Z",
-  "state": "running",
+  "updatedAt": "2026-11-03T14:39:12.580Z",
+  "state": "completed",
   "info": {
     "id": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 434308,
-      "output": 5586,
-      "reasoning": 47971,
+      "input": 488096,
+      "output": 10551,
+      "reasoning": 49341,
       "cache": {
-        "read": 879104,
+        "read": 900672,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793716190960,
-      "updated": 1793716706894
+      "updated": 1793716752493
     }
   },
   "messages": [
@@ -4335,6 +4335,9 @@
         "time": {
           "created": 1793716706867
         },
+        "summary": {
+          "diffs": []
+        },
         "agent": "tofarev",
         "model": {
           "providerID": "tofarev",
@@ -4358,7 +4361,8 @@
         "id": "msg_1a1d8de4a0013MLZ4yeLcsV2WF",
         "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
         "time": {
-          "created": 1793716706890
+          "created": 1793716706890,
+          "completed": 1793716731442
         },
         "parentID": "msg_1a1d8de33001pET7RWke6yehD9",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -4372,14 +4376,16 @@
         "summary": true,
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 37403,
+          "input": 34022,
+          "output": 2848,
+          "reasoning": 533,
           "cache": {
             "read": 0,
             "write": 0
           }
-        }
+        },
+        "finish": "stop"
       },
       "parts": [
         {
@@ -4404,12 +4410,523 @@
           "id": "prt_1a1d8fb72001BHd3QWhvrm5wxn",
           "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
           "messageID": "msg_1a1d8de4a0013MLZ4yeLcsV2WF",
-          "text": "",
+          "text": "## Objective\n- Perform a source-only, read-only PR review of the snapshot at `/source` (repo `srl-labs/vrnetlab`, head `1c29a33a37619b7547248e3b845130ba1f5f8ad0`, base `11dd16f88e2e5990de1061be498577af6c5d3552`), covering all 18 changed paths from `diff.txt`, then emit the trusted result schema (disclosing tests not executed; manifest indicates snapshot incomplete: true → report incomplete coverage).\n\n## Important Details\n- `standards.json` is empty (`[]`) — no rules to apply.\n- 18 changed paths: M `fortinet/common/cli_commands.py`, `common.py`, `features/base.py`, `features/credentials.py`, `features/pki.py`, `features/startup_config.py`, `fos_cli_driver.py`, `fos_commander.py`, `launch.py`, `terminal.py`, `fortigate/README.md`, `fortigate/docker/README.md`, `tests/test_common_stack_boundaries.py`, `tests/test_common_stack_parsing.py`, `tests/test_common_terminal_driver.py`; A `tests/test_common_admin_credentials.py`, `tests/test_common_recovery.py`, `tests/test_common_scope_errors.py`.\n- Read tool: bare `/source` directory read denied; must read specific files; batch independent calls. diff.txt file offsets: cli_commands=1, common=186, features/base=217, credentials=236, pki=301, startup_config=323, fos_cli_driver=387, fos_commander=449, launch=861, terminal=892, README.md=983, docker/README=1004, admin_credentials=1117, recovery=1277, scope_errors=1575, stack_boundaries=1735, stack_parsing=1821, terminal_driver=1948.\n- Corrected file sizes (prior summary's \"truncated at N lines\" was misleading — files are fully read): `fos_commander.py` 687 lines (fully read, re-read lines 1–360 recently), `common.py` 92 lines, `test_common_terminal_driver.py` 332 lines, `cli_commands.py` 207 lines, `env.py` 48 lines.\n- PR theme: FortiOS CLI stack rework — `ContextLossAction` (RESTART_BLOCK/FAIL), `CommandSpec.context_loss`/`continuation`, prompt-context tracking (`CLI_PROMPT_CONTEXT_PATTERN` at `fos_commander.py:30-33`, `BOOTSTRAP_HOSTNAME_REGEX` (bytes literal, GENERIC|DEFAULT|LICENSED alternation), `PROMPT_CONTEXT_REGEX = rb\"(?:[ \\t]+\\([^)]+\\))*\"`), scope-commit failure detection for `closes_scope` (\"next\"/\"end\" always capture; \"Command fail. Return code -N\" always fatal), abort-based context restore, `_recovery_retries` keyed by block_index, `_cleanup_retries` keyed by `id(spec)`, terminal `Data` timeout exposes FULL retained buffer (with `received_new_data` flag), env aliasing FTNT_*/FOS_*, `TRACE_LEVEL`(=9) logging change, `KernelPanicError` handling.\n- env.py `_candidate_names` order verified: aliases → FTNT spelling (if FOS_-prefixed) → original name → legacy_aliases. `has_env`/`get_env` follow same order.\n- Verified analysis conclusions (no P1/P2 defects found):\n  - Driver `process_state`/`_next_state`: unmatched output forwarded to `commander.on_output` once, then replaced with empty `Data`; matched output reaches commander via `on_state` → `on_output`; each byte enters `attempt.output` at most once. `TN_TIMEOUT` gets empty output after full-buffer inspection (intended change).\n  - Context change after `next`/`end` exempted via `_command_may_change_context` (includes \"config \"/\"edit \", {\"next\",\"end\",\"abort\",\"exit\",\"quit\"}, \"set vdom-mode multi-vdom\"; continuation lines exempt→context change is loss); falls through to `_validate_completion` → closes_scope failure always checked (test covers context change to \"interface\").\n  - `_on_session_loss`: `_in_context_reset` check returns early (bounded abort after reconnect); `_in_cleanup` path appends left with `_cleanup_retries`; then `_schedule_feature_cleanup(active, \"interruption\")` + feature `on_session_loss`.\n  - `_restart_active_block` replays via `_replay_context_target = self._block_prompt_context`; `_block_prompt_context` is set at `submit_block` after context extraction (non-None for feature blocks); None target is benign (proceed immediately).\n  - `on_state` order: context extraction (CMD_PROMPT) → `_recover_feature_error` → session-lost handling → `_complete_inflight` → dispatch; CMD_PROMPT sets `_authenticated_once` at top; CREDENTIAL_ACCEPTED sets it and returns.\n  - `fos_commander.py:45 MAX_COMMAND_RECOVERY_RETRIES = 1`.\n  - `_flatten_quoted_lines`: all lines `capture_output=True`; last line `expected_completion_state=CMD_PROMPT` when `validate_prompt`; `continuation = index > 0` (so multi-line last lines are continuation → not closes_scope; SetValue defaults `fail_on_error=True` so failures still detected; plain-string multi-line last-line failures surface via enclosing next/end or are invalid usage). `SetValue`/`splitlines()`/text-mode reads ensure `CommandSpec.__post_init__` \"\\r\"/\"\\n\" ValueError not triggerable from normal paths; `startup-config.cfg` parsing uses `removesuffix(\"\\n\")`, quote/escape/continuation state traced correct (trailing `\\` = line continuation; quote state persists across lines; blank/comment lines inside quotes preserved).\n  - credentials.py: `exit` spec in `admin-relogin` block, `expected_completion_state=FOSCliState.PROVIDE_USERNAME`, `session_loss=CONTINUE` (context_loss defaults FAIL); `on_command_dispatched` activates desired credentials BEFORE exit is sent (login answered with desired creds); `_activate_desired_credentials` idempotent via `_desired_credentials_activated`; session-loss CONTINUE on exit → `_pending.clear()` → reconnect → block complete → `on_complete` → activate.\n  - license.py (`SetLicense`, `WaitForLicenseValidation`): `on_command_executed` is per-feature (not broadcast) — no cross-feature misfire; `LICENSE_FAILURE_PATTERN = re.compile(rb\"(?mi)license install failed\")`; `on_output` search is idempotent (no discard needed). license.py is NOT in the changed file list (context only).\n  - pki.py change is comment/docstring-only; TFTP fallback only triggers on successful scope close (commander always validates next/end) — by design.\n  - startup_config diff = only `_startup_config_commands` added (parse loop refactor); `filter_startup_config_blocks` pre-existing → README `FTNT_FORTIGUARD_HOOKS` env-table omission is pre-existing, not PR-introduced.\n  - terminal.py diff touches `Data`/`expect`/`_discard_prefix` only; reader/writer thread logic (`_ensure_reader`, `_read_forever`, `_ByteQueue`) pre-existing. `stable_match = re.search(regex, consumed)` after `del buffer[:match.end()]` is defensive re-run — negligible cost, no bug. `_ByteQueue` put/get/close semantics verified sound; buffer limit bounds regex re-scan cost (1 MiB cap) — no perf finding.\n  - `fos_cli_driver.set_prompt_patterns`: `re.escape(name_pattern.encode())` only for str; `BOOTSTRAP_HOSTNAME_REGEX` bytes pattern passes through unchanged (correct).\n  - launch.py: `KernelPanicError` caught before generic `Exception` in `bootstrap_spin` (stop + raise); env names resolve via aliases (`FTNT_DISK_SPECS`, `FTNT_LOG_LEVEL`, `FTNT_EXIT_ON_BOOTSTRAP_ERROR`, `FTNT_DNS_PROTOCOL`).\n  - Kernel panic flow: `process_state` calls `commander.on_state(KERNEL_PANIC, Data)` before `_handle_state` raises — matches `test_kernel_panic_requires_kernel_diagnostic_and_raises`.\n- Potential findings so far (all minor):\n  - P4 candidate: docker/README.md new \"Scope-closing commands\" paragraph says `FOS_EXIT_ON_BOOTSTRAP_ERROR=false` while line ~311 of same doc says `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false` — inconsistent env-name spelling in doc introduced by this PR (both spellings functionally accepted via env.py aliases; documented public interface is FTNT_).\n  - P4 candidate: `test_common_stack_boundaries.py` `state_case` has duplicated `completion = (FOSCliState.CMD_PROMPT,)` in two adjacent if branches (lines ~105-108) — mergeable simplification.\n- Prior resolved concerns (keep for reference): duplicate timeout-Data consumption (resolved), None replay-target (benign), `id(spec)`-keyed `_cleanup_retries` (bounded, at most P4), context-loss-before-validation ordering (resolved), `_recover_feature_error` discarding inflight created without write (acceptable), `on_prompt_echo` matched Data no discard → writes `b\"\\r\"` (by design).\n\n## Work State\n### Completed\n- Read `/source/standards.json` (empty), `/source/manifest.json`, and FULL `/source/diff.txt` (offsets 1, 451, 1121) — all 18 hunks reviewed; change attribution established for every file (startup_config filter and README env-table gaps are pre-existing).\n- FULLY read all 18 head files: `cli_commands.py` (207), `common.py` (92), `env.py` (48), `terminal.py`, `fos_commander.py` (687; re-read lines 1–360 for anchors), `fos_cli_driver.py`, `launch.py`, `features/{base,credentials,license,startup_config,pki}.py`, both READMEs (`fortigate/README.md`, `fortigate/docker/README.md`), and ALL six test files (`test_common_stack_parsing.py`, `test_common_stack_boundaries.py`, `test_common_terminal_driver.py` (332), `test_common_admin_credentials.py`, `test_common_recovery.py`, `test_common_scope_errors.py`).\n- Traced and resolved all previously-flagged correctness concerns; verified env aliasing, TRACE_LEVEL logging fix, kernel-panic ordering, startup-config quote parser, credentials relogin flow, PKI fallback design, session/context-loss recovery paths.\n- Test coverage assessed as strong for the new behaviors (abort recovery via serial driver, failed `next`, retained-newline idle read, kernel panic, FTNT_ env aliasing, admin credential relogin, session-loss-during-context-reset).\n\n### Active\n- Finalizing the findings list (currently only two P4 candidates: docker README `FOS_` vs `FTNT_` env-name inconsistency; duplicated `completion = (FOSCliState.CMD_PROMPT,)` branch in `state_case`).\n- Optionally re-read `fos_commander.py` lines ~360–687 to refresh exact content/anchors before writing the report (lines 1–360 are fresh in context).\n\n### Blocked\n- (none)\n\n## Next Move\n1. Optionally re-read `fos_commander.py` offset 360 (through 687) to refresh `_recover_feature_error`, `_inspect_output`, `on_output`, cleanup/`_complete_inflight` bodies for accurate anchors.\n2. Finalize findings (likely: 1× P4 doc inconsistency in `fortigate/docker/README.md` new paragraph naming `FOS_EXIT_ON_BOOTSTRAP_ERROR`; possibly 1× P4 test simplification in `test_common_stack_boundaries.py`), then emit the trusted result schema with disclosure that no tests were executed and manifest `incomplete: true`.\n\n## Relevant Files\n- `/source/manifest.json`, `/source/diff.txt`: inventory and full PR diff (both read; diff line offsets listed in Important Details).\n- `/source/head/fortinet/common/fos_commander.py`: core scheduler; lines 1–360 fresh (CLI_PROMPT_CONTEXT_PATTERN at 30-33, `MAX_COMMAND_RECOVERY_RETRIES` at 45); lines 360–687 summarized only — may re-read for anchors.\n- `/source/head/fortinet/common/cli_commands.py` (207 lines), `common.py` (92), `env.py` (48), `terminal.py`, `fos_cli_driver.py`, `launch.py`: fully read.\n- `/source/head/fortinet/common/features/{base,credentials,license,startup_config,pki}.py`: fully read; license.py and pki.py are context-only (not in changed list; pki diff is comment-only).\n- `/source/head/fortinet/fortigate/README.md`, `/source/head/fortinet/fortigate/docker/README.md`: fully read; docker README lines ~137 and ~311 relevant to the doc-inconsistency finding.\n- `/source/head/fortinet/tests/test_common_*.py`: all fully read; helpers (`SerialConnection`, `RecordingFeature`) in `test_common_stack_parsing.py`; `state_case` duplication in `test_common_stack_boundaries.py` (~lines 105-108).",
           "time": {
-            "start": 1793716714354
+            "start": 1793716714354,
+            "end": 1793716731433
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a1d93e2e001ej1j0FXkYtKUeU",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d8de4a0013MLZ4yeLcsV2WF",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 37403,
+            "input": 34022,
+            "output": 2848,
+            "reasoning": 533,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a1d93e33001yKp1QAF8LFj4JT",
+        "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+        "time": {
+          "created": 1793716731443
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1a1d93e34001lJByK805hq03tJ",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d93e33001yKp1QAF8LFj4JT",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1793716731444,
+            "end": 1793716731444
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a1d93e3a001LR04KuIDHuPU2E",
+        "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+        "time": {
+          "created": 1793716731450,
+          "completed": 1793716733112
+        },
+        "parentID": "msg_1a1d93e33001yKp1QAF8LFj4JT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-cEhPOC",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 6456,
+          "input": 5161,
+          "output": 58,
+          "reasoning": 21,
+          "cache": {
+            "read": 1216,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a1d9435b001HtOgSBB6XsGZrT",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d93e3a001LR04KuIDHuPU2E"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a1d9435d0018ONLhkxd7PFK0c",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d93e3a001LR04KuIDHuPU2E",
+          "text": "Continue: re-read fos_commander.py lines 360-687 for anchors, then finalize.",
+          "time": {
+            "start": 1793716732765,
+            "end": 1793716732970
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a1d9442c001bWePCgjoLo9CG5",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d93e3a001LR04KuIDHuPU2E",
+          "callID": "call_3c26a4a1f62542d490d58bc6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/fortinet/common/fos_commander.py",
+              "offset": 360
+            },
+            "output": "<path>/source/head/fortinet/common/fos_commander.py</path>\n<type>file</type>\n<content>\n360:                 if self._feature_errors:\n361:                     failed = \", \".join(name for name, _error in self._feature_errors)\n362:                     self.logger.error(\n363:                         \"Bootstrap reached the end with %d feature error(s) in %s; \"\n364:                         \"failed work: %s\",\n365:                         len(self._feature_errors),\n366:                         elapsed,\n367:                         failed,\n368:                     )\n369:                 else:\n370:                     self.logger.info(f\"Startup complete in {elapsed}\")\n371:             else:\n372:                 while self._completed_messages:\n373:                     self.logger.info(self._completed_messages.popleft())\n374:             return\n375:         self._active_feature = self._features.popleft()\n376:         self.logger.info(f\"Activating feature {self._active_feature.name}\")\n377:         self._call_feature(self._active_feature.begin_activation)\n378:         if self._pending_feature_error is None:\n379:             self._call_feature(self._active_feature.activate)\n380: \n381:     def _dispatch_next(self):\n382:         if self._inflight or self._recovering or self._pending_feature_error is not None:\n383:             return\n384:         if not self._restore_replay_context():\n385:             return\n386:         if not self._cleanup and self._active_feature is None:\n387:             self._activate_next_feature()\n388:             if self._active_feature is None:\n389:                 return\n390:         if self._cleanup:\n391:             spec = self._cleanup.popleft()\n392:             self._in_cleanup = True\n393:             block_index = None\n394:         elif not self._pending:\n395:             self._call_feature(self._active_feature.on_block_complete)\n396:             return\n397:         else:\n398:             spec = self._pending.popleft()\n399:             self._in_cleanup = False\n400:             block_index = len(self._active_commands) - len(self._pending) - 1\n401:         self._dispatch_command(spec, block_index)\n402: \n403:     def _dispatch_command(self, spec, block_index=None):\n404:         self._attempt_number += 1\n405:         self._inflight = CommandAttempt(spec, self._attempt_number, self._session_epoch)\n406:         self._inflight.prompt_context_before = self._prompt_context\n407:         self._inflight.block_index = block_index\n408:         self._inflight.retry_count = (\n409:             self._cleanup_retries.get(id(spec), 0)\n410:             if self._in_cleanup else self._recovery_retries.get(block_index, 0)\n411:         )\n412:         if self._active_feature and not self._in_context_reset:\n413:             self._call_feature(self._active_feature.on_command_dispatched, self._inflight)\n414:             if self._pending_feature_error is not None:\n415:                 return\n416:         if spec.suppress_output:\n417:             self._suppression.enter_context(self.terminal.suppress_output())\n418:         self.logger.log(\n419:             TRACE_LEVEL,\n420:             f\"Dispatching {(self._active_feature.name if self._active_feature else 'cleanup')}/\"\n421:             f\"{spec.line!r}\"\n422:         )\n423:         self.terminal.write(f\"{spec.line}\\r\")\n424: \n425:     def _complete_inflight(self, state):\n426:         attempt = self._inflight\n427:         self._inflight = None\n428:         self._suppression.close()\n429:         self._suppression = ExitStack()\n430:         attempt.prompt_context_after = self._prompt_context\n431:         if self._in_context_reset:\n432:             self._in_context_reset = False\n433:             self._dispatch_next()\n434:             return\n435:         if state == FOSCliState.CMD_PROMPT and self._prompt_context_changed(attempt):\n436:             self._handle_context_loss(attempt)\n437:             if self._pending_feature_error is not None:\n438:                 self._recover_feature_error()\n439:             else:\n440:                 self._dispatch_next()\n441:             return\n442:         try:\n443:             self._validate_completion(attempt, state)\n444:         except RuntimeError as error:\n445:             if state != FOSCliState.CMD_PROMPT:\n446:                 # An interactive prompt cannot safely advance to another feature.\n447:                 raise\n448:             self._handle_work_error(error)\n449:             if self._pending_feature_error is not None:\n450:                 self._recover_feature_error()\n451:             return\n452:         if self._in_cleanup:\n453:             self._cleanup_retries.pop(id(attempt.spec), None)\n454:             self._in_cleanup = False\n455:             self._dispatch_next()\n456:             return\n457:         if self._is_standard_output_command(attempt.spec):\n458:             self._complete_standard_output_command(attempt)\n459:             if self._pending_feature_error is not None:\n460:                 return\n461:             if not self._recovering:\n462:                 self._dispatch_next()\n463:             return\n464:         completed_feature = self._active_feature\n465:         self._call_feature(completed_feature.on_command_executed, attempt, state)\n466:         if self._pending_feature_error is not None:\n467:             return\n468:         # The callback may have installed another block (confirmation/query path).\n469:         if not self.busy and self._active_feature is completed_feature:\n470:             self._call_feature(completed_feature.on_block_complete)\n471:         if not self._recovering and state in DISPATCHABLE_COMPLETION_STATES:\n472:             self._dispatch_next()\n473: \n474:     @staticmethod\n475:     def _validate_completion(attempt, state):\n476:         if (attempt.spec.closes_scope or attempt.spec.fail_on_error) and (\n477:             failure := COMMAND_FAILURE_PATTERN.search(bytes(attempt.output))\n478:         ):\n479:             raise RuntimeError(\n480:                 f\"FortiOS command {attempt.spec.line!r} failed \"\n481:                 f\"(return code {failure.group(1).decode()})\"\n482:             )\n483:         expected = attempt.spec.expected_completion_state\n484:         if expected is not None and state != expected:\n485:             raise RuntimeError(\n486:                 \"CLI command completed at unexpected prompt: \"\n487:                 f\"expected {expected.name}, received {state.name}\"\n488:             )\n489: \n490:     def _prompt_context_changed(self, attempt):\n491:         before = attempt.prompt_context_before\n492:         after = attempt.prompt_context_after\n493:         return (\n494:             before is not None\n495:             and after is not None\n496:             and before != after\n497:             and not self._command_may_change_context(attempt.spec)\n498:         )\n499: \n500:     def _handle_context_loss(self, attempt):\n501:         reason = (\n502:             \"CLI context changed from \"\n503:             f\"{self._format_prompt_context(attempt.prompt_context_before)} to \"\n504:             f\"{self._format_prompt_context(attempt.prompt_context_after)}\"\n505:         )\n506:         if self._in_cleanup:\n507:             self._handle_work_error(RuntimeError(\n508:                 f\"{reason} during cleanup {attempt.spec.line!r}; no feature block to replay\"\n509:             ))\n510:             return\n511:         action = self._call_feature(self._active_feature.on_context_loss, attempt)\n512:         if self._pending_feature_error is not None:\n513:             return\n514:         if action == ContextLossAction.RESTART_BLOCK:\n515:             self._restart_active_block(attempt, reason)\n516:         elif action == ContextLossAction.FAIL:\n517:             self._handle_work_error(RuntimeError(\n518:                 f\"{reason} during {attempt.spec.line!r}; feature declined replay\"\n519:             ))\n520:         else:\n521:             self._handle_work_error(ValueError(f\"Unsupported context-loss action: {action!r}\"))\n522: \n523:     def _restore_replay_context(self):\n524:         \"\"\"Unwind a surviving partial scope once before replaying its openers.\"\"\"\n525:         target = self._replay_context_target\n526:         if target is None:\n527:             return True\n528:         if self._prompt_context == target:\n529:             self._replay_context_target = None\n530:             return True\n531:         if self._context_reset_attempted:\n532:             self._handle_work_error(RuntimeError(\n533:                 \"Unable to restore CLI context before replay: expected \"\n534:                 f\"{self._format_prompt_context(target)}, received \"\n535:                 f\"{self._format_prompt_context(self._prompt_context or ())}\"\n536:             ))\n537:             if self._pending_feature_error is not None:\n538:                 self._recover_feature_error()\n539:             return False\n540:         self._context_reset_attempted = True\n541:         self._in_context_reset = True\n542:         self._dispatch_command(CommandSpec(\"abort\", suppress_output=True))\n543:         return False\n544: \n545:     @staticmethod\n546:     def _command_may_change_context(spec):\n547:         if spec.continuation:\n548:             return False\n549:         command = spec.line.strip().lower()\n550:         return (\n551:             command.startswith((\"config \", \"edit \"))\n552:             or command in {\"next\", \"end\", \"abort\", \"exit\", \"quit\"}\n553:             or command == \"set vdom-mode multi-vdom\"\n554:         )\n555: \n556:     @staticmethod\n557:     def _extract_prompt_context(output):\n558:         data = bytes(output)\n559:         matches = list(CLI_PROMPT_CONTEXT_PATTERN.finditer(data))\n560:         if not matches:\n561:             return None\n562:         return tuple(\n563:             item.decode(errors=\"replace\")\n564:             for item in re.findall(rb\"\\(([^)]*)\\)\", matches[-1].group(\"context\"))\n565:         )\n566: \n567:     @staticmethod\n568:     def _format_prompt_context(context):\n569:         return \" \".join(f\"({item})\" for item in context) or \"<top-level>\"\n570: \n571:     def _is_standard_output_command(self, spec):\n572:         context = self._standard_output_context\n573:         return context is not None and (\n574:             spec.line == self._CONSOLE_INSPECT_LINE\n575:             or (context.phase == \"set-standard\" and not self._pending)\n576:         )\n577: \n578:     def _complete_standard_output_command(self, attempt):\n579:         context = self._standard_output_context\n580:         if attempt.spec.line == self._CONSOLE_INSPECT_LINE:\n581:             match = self._CONSOLE_OUTPUT_PATTERN.search(bytes(attempt.output))\n582:             if not match or match.group(1) == b\"standard\":\n583:                 if not match:\n584:                     self.logger.warning(\"Could not determine console output mode; assuming standard output\")\n585:                 self._start_standard_output_callback(context)\n586:                 return\n587:             context.phase = \"set-standard\"\n588:             self.submit_block(context.feature, ConfigBlock(\"system console\", [\n589:                 self._CONSOLE_STANDARD_LINE,\n590:             ]))\n591:             return\n592:         if context.phase == \"set-standard\":\n593:             context.restore = True\n594:             self._start_standard_output_callback(context)\n595: \n596:     def _start_standard_output_callback(self, context):\n597:         context.phase = \"active\"\n598:         self._call_feature(context.callback)\n599: \n600:     def _finish_standard_output_context(self, feature):\n601:         context = self._standard_output_context\n602:         if context is None or context.feature is not feature:\n603:             return\n604:         self._standard_output_context = None\n605:         if context.restore:\n606:             self._cleanup.extend(ConfigBlock(\"system console\", [\n607:                 \"set output more\",\n608:             ]).flatten())\n609: \n610:     def _handle_session_loss(self):\n611:         self._session_epoch += 1\n612:         self._recovering = True\n613:         if not self._inflight:\n614:             return\n615:         attempt = self._inflight\n616:         self._inflight = None\n617:         self._suppression.close()\n618:         self._suppression = ExitStack()\n619:         if self._in_context_reset:\n620:             # Login may itself restore the target scope. The pending replay\n621:             # stays bounded by the original command's recovery allowance.\n622:             self._in_context_reset = False\n623:             return\n624:         if self._in_cleanup:\n625:             retries = self._cleanup_retries.get(id(attempt.spec), 0)\n626:             if retries >= self.MAX_COMMAND_RECOVERY_RETRIES:\n627:                 self._handle_work_error(RuntimeError(\n628:                     f\"Session lost repeatedly during cleanup {attempt.spec.line!r}; \"\n629:                     \"retry limit reached\"\n630:                 ))\n631:                 return\n632:             self._cleanup_retries[id(attempt.spec)] = retries + 1\n633:             self._cleanup.appendleft(attempt.spec)\n634:             self._in_cleanup = False\n635:             return\n636:         self._schedule_feature_cleanup(self._active_feature, \"interruption\")\n637:         action = self._call_feature(\n638:             self._active_feature.on_session_loss,\n639:             attempt,\n640:         )\n641:         if self._pending_feature_error is not None:\n642:             return\n643:         self.logger.info(\n644:             f\"Session lost during {self._active_feature.name}/{attempt.spec.line!r}; {action.name.lower()}\"\n645:         )\n646:         action_handlers = {\n647:             SessionLossAction.RESTART_BLOCK: lambda: self._restart_active_block(\n648:                 attempt, \"session lost\"\n649:             ),\n650:             SessionLossAction.COMPLETE_BLOCK: lambda: self._pending.clear(),\n651:             SessionLossAction.CONTINUE: lambda: self._pending.clear(),\n652:             SessionLossAction.FAIL: lambda: self._handle_work_error(\n653:                 RuntimeError(f\"Session lost during {attempt.spec.line!r}\")\n654:             ),\n655:             SessionLossAction.VALIDATE: lambda: self._pending.clear(),\n656:         }\n657:         action_handlers[action]()\n658: \n659:     def _restart_active_block(self, attempt, reason):\n660:         retries = self._recovery_retries.get(attempt.block_index, 0)\n661:         if retries >= self.MAX_COMMAND_RECOVERY_RETRIES:\n662:             self._handle_work_error(RuntimeError(\n663:                 f\"{reason} repeatedly during {attempt.spec.line!r}; \"\n664:                 f\"retry limit reached ({self.MAX_COMMAND_RECOVERY_RETRIES})\"\n665:             ))\n666:             return\n667:         self._recovery_retries[attempt.block_index] = retries + 1\n668:         self._pending = deque(self._active_commands)\n669:         self._replay_context_target = self._block_prompt_context\n670:         self._context_reset_attempted = False\n671:         self.logger.warning(\n672:             \"%s during %s/%r; replaying block (command recovery %d/%d)\",\n673:             reason, self._active_feature.name, attempt.spec.line,\n674:             retries + 1, self.MAX_COMMAND_RECOVERY_RETRIES,\n675:         )\n676: \n677:     def enqueue_runtime_feature(self, feature):\n678:         return self.enqueue_runtime_features([feature])\n679: \n680:     def enqueue_runtime_features(self, features):\n681:         if not self._ready or self.busy:\n682:             return False\n683:         self._ready = False\n684:         self._completed_messages.clear()\n685:         for feature in reversed(features):\n686:             self._features.appendleft(feature)\n687:         return True\n\n(End of file - total 687 lines)\n</content>",
+            "title": "source/head/fortinet/common/fos_commander.py",
+            "metadata": {
+              "preview": "                if self._feature_errors:\n                    failed = \", \".join(name for name, _error in self._feature_errors)\n                    self.logger.error(\n                        \"Bootstrap reached the end with %d feature error(s) in %s; \"\n                        \"failed work: %s\",\n                        len(self._feature_errors),\n                        elapsed,\n                        failed,\n                    )\n                else:\n                    self.logger.info(f\"Startup complete in {elapsed}\")\n            else:\n                while self._completed_messages:\n                    self.logger.info(self._completed_messages.popleft())\n            return\n        self._active_feature = self._features.popleft()\n        self.logger.info(f\"Activating feature {self._active_feature.name}\")\n        self._call_feature(self._active_feature.begin_activation)\n        if self._pending_feature_error is None:\n            self._call_feature(self._active_feature.activate)",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/fortinet/common/fos_commander.py",
+                "text": "                if self._feature_errors:\n                    failed = \", \".join(name for name, _error in self._feature_errors)\n                    self.logger.error(\n                        \"Bootstrap reached the end with %d feature error(s) in %s; \"\n                        \"failed work: %s\",\n                        len(self._feature_errors),\n                        elapsed,\n                        failed,\n                    )\n                else:\n                    self.logger.info(f\"Startup complete in {elapsed}\")\n            else:\n                while self._completed_messages:\n                    self.logger.info(self._completed_messages.popleft())\n            return\n        self._active_feature = self._features.popleft()\n        self.logger.info(f\"Activating feature {self._active_feature.name}\")\n        self._call_feature(self._active_feature.begin_activation)\n        if self._pending_feature_error is None:\n            self._call_feature(self._active_feature.activate)\n\n    def _dispatch_next(self):\n        if self._inflight or self._recovering or self._pending_feature_error is not None:\n            return\n        if not self._restore_replay_context():\n            return\n        if not self._cleanup and self._active_feature is None:\n            self._activate_next_feature()\n            if self._active_feature is None:\n                return\n        if self._cleanup:\n            spec = self._cleanup.popleft()\n            self._in_cleanup = True\n            block_index = None\n        elif not self._pending:\n            self._call_feature(self._active_feature.on_block_complete)\n            return\n        else:\n            spec = self._pending.popleft()\n            self._in_cleanup = False\n            block_index = len(self._active_commands) - len(self._pending) - 1\n        self._dispatch_command(spec, block_index)\n\n    def _dispatch_command(self, spec, block_index=None):\n        self._attempt_number += 1\n        self._inflight = CommandAttempt(spec, self._attempt_number, self._session_epoch)\n        self._inflight.prompt_context_before = self._prompt_context\n        self._inflight.block_index = block_index\n        self._inflight.retry_count = (\n            self._cleanup_retries.get(id(spec), 0)\n            if self._in_cleanup else self._recovery_retries.get(block_index, 0)\n        )\n        if self._active_feature and not self._in_context_reset:\n            self._call_feature(self._active_feature.on_command_dispatched, self._inflight)\n            if self._pending_feature_error is not None:\n                return\n        if spec.suppress_output:\n            self._suppression.enter_context(self.terminal.suppress_output())\n        self.logger.log(\n            TRACE_LEVEL,\n            f\"Dispatching {(self._active_feature.name if self._active_feature else 'cleanup')}/\"\n            f\"{spec.line!r}\"\n        )\n        self.terminal.write(f\"{spec.line}\\r\")\n\n    def _complete_inflight(self, state):\n        attempt = self._inflight\n        self._inflight = None\n        self._suppression.close()\n        self._suppression = ExitStack()\n        attempt.prompt_context_after = self._prompt_context\n        if self._in_context_reset:\n            self._in_context_reset = False\n            self._dispatch_next()\n            return\n        if state == FOSCliState.CMD_PROMPT and self._prompt_context_changed(attempt):\n            self._handle_context_loss(attempt)\n            if self._pending_feature_error is not None:\n                self._recover_feature_error()\n            else:\n                self._dispatch_next()\n            return\n        try:\n            self._validate_completion(attempt, state)\n        except RuntimeError as error:\n            if state != FOSCliState.CMD_PROMPT:\n                # An interactive prompt cannot safely advance to another feature.\n                raise\n            self._handle_work_error(error)\n            if self._pending_feature_error is not None:\n                self._recover_feature_error()\n            return\n        if self._in_cleanup:\n            self._cleanup_retries.pop(id(attempt.spec), None)\n            self._in_cleanup = False\n            self._dispatch_next()\n            return\n        if self._is_standard_output_command(attempt.spec):\n            self._complete_standard_output_command(attempt)\n            if self._pending_feature_error is not None:\n                return\n            if not self._recovering:\n                self._dispatch_next()\n            return\n        completed_feature = self._active_feature\n        self._call_feature(completed_feature.on_command_executed, attempt, state)\n        if self._pending_feature_error is not None:\n            return\n        # The callback may have installed another block (confirmation/query path).\n        if not self.busy and self._active_feature is completed_feature:\n            self._call_feature(completed_feature.on_block_complete)\n        if not self._recovering and state in DISPATCHABLE_COMPLETION_STATES:\n            self._dispatch_next()\n\n    @staticmethod\n    def _validate_completion(attempt, state):\n        if (attempt.spec.closes_scope or attempt.spec.fail_on_error) and (\n            failure := COMMAND_FAILURE_PATTERN.search(bytes(attempt.output))\n        ):\n            raise RuntimeError(\n                f\"FortiOS command {attempt.spec.line!r} failed \"\n                f\"(return code {failure.group(1).decode()})\"\n            )\n        expected = attempt.spec.expected_completion_state\n        if expected is not None and state != expected:\n            raise RuntimeError(\n                \"CLI command completed at unexpected prompt: \"\n                f\"expected {expected.name}, received {state.name}\"\n            )\n\n    def _prompt_context_changed(self, attempt):\n        before = attempt.prompt_context_before\n        after = attempt.prompt_context_after\n        return (\n            before is not None\n            and after is not None\n            and before != after\n            and not self._command_may_change_context(attempt.spec)\n        )\n\n    def _handle_context_loss(self, attempt):\n        reason = (\n            \"CLI context changed from \"\n            f\"{self._format_prompt_context(attempt.prompt_context_before)} to \"\n            f\"{self._format_prompt_context(attempt.prompt_context_after)}\"\n        )\n        if self._in_cleanup:\n            self._handle_work_error(RuntimeError(\n                f\"{reason} during cleanup {attempt.spec.line!r}; no feature block to replay\"\n            ))\n            return\n        action = self._call_feature(self._active_feature.on_context_loss, attempt)\n        if self._pending_feature_error is not None:\n            return\n        if action == ContextLossAction.RESTART_BLOCK:\n            self._restart_active_block(attempt, reason)\n        elif action == ContextLossAction.FAIL:\n            self._handle_work_error(RuntimeError(\n                f\"{reason} during {attempt.spec.line!r}; feature declined replay\"\n            ))\n        else:\n            self._handle_work_error(ValueError(f\"Unsupported context-loss action: {action!r}\"))\n\n    def _restore_replay_context(self):\n        \"\"\"Unwind a surviving partial scope once before replaying its openers.\"\"\"\n        target = self._replay_context_target\n        if target is None:\n            return True\n        if self._prompt_context == target:\n            self._replay_context_target = None\n            return True\n        if self._context_reset_attempted:\n            self._handle_work_error(RuntimeError(\n                \"Unable to restore CLI context before replay: expected \"\n                f\"{self._format_prompt_context(target)}, received \"\n                f\"{self._format_prompt_context(self._prompt_context or ())}\"\n            ))\n            if self._pending_feature_error is not None:\n                self._recover_feature_error()\n            return False\n        self._context_reset_attempted = True\n        self._in_context_reset = True\n        self._dispatch_command(CommandSpec(\"abort\", suppress_output=True))\n        return False\n\n    @staticmethod\n    def _command_may_change_context(spec):\n        if spec.continuation:\n            return False\n        command = spec.line.strip().lower()\n        return (\n            command.startswith((\"config \", \"edit \"))\n            or command in {\"next\", \"end\", \"abort\", \"exit\", \"quit\"}\n            or command == \"set vdom-mode multi-vdom\"\n        )\n\n    @staticmethod\n    def _extract_prompt_context(output):\n        data = bytes(output)\n        matches = list(CLI_PROMPT_CONTEXT_PATTERN.finditer(data))\n        if not matches:\n            return None\n        return tuple(\n            item.decode(errors=\"replace\")\n            for item in re.findall(rb\"\\(([^)]*)\\)\", matches[-1].group(\"context\"))\n        )\n\n    @staticmethod\n    def _format_prompt_context(context):\n        return \" \".join(f\"({item})\" for item in context) or \"<top-level>\"\n\n    def _is_standard_output_command(self, spec):\n        context = self._standard_output_context\n        return context is not None and (\n            spec.line == self._CONSOLE_INSPECT_LINE\n            or (context.phase == \"set-standard\" and not self._pending)\n        )\n\n    def _complete_standard_output_command(self, attempt):\n        context = self._standard_output_context\n        if attempt.spec.line == self._CONSOLE_INSPECT_LINE:\n            match = self._CONSOLE_OUTPUT_PATTERN.search(bytes(attempt.output))\n            if not match or match.group(1) == b\"standard\":\n                if not match:\n                    self.logger.warning(\"Could not determine console output mode; assuming standard output\")\n                self._start_standard_output_callback(context)\n                return\n            context.phase = \"set-standard\"\n            self.submit_block(context.feature, ConfigBlock(\"system console\", [\n                self._CONSOLE_STANDARD_LINE,\n            ]))\n            return\n        if context.phase == \"set-standard\":\n            context.restore = True\n            self._start_standard_output_callback(context)\n\n    def _start_standard_output_callback(self, context):\n        context.phase = \"active\"\n        self._call_feature(context.callback)\n\n    def _finish_standard_output_context(self, feature):\n        context = self._standard_output_context\n        if context is None or context.feature is not feature:\n            return\n        self._standard_output_context = None\n        if context.restore:\n            self._cleanup.extend(ConfigBlock(\"system console\", [\n                \"set output more\",\n            ]).flatten())\n\n    def _handle_session_loss(self):\n        self._session_epoch += 1\n        self._recovering = True\n        if not self._inflight:\n            return\n        attempt = self._inflight\n        self._inflight = None\n        self._suppression.close()\n        self._suppression = ExitStack()\n        if self._in_context_reset:\n            # Login may itself restore the target scope. The pending replay\n            # stays bounded by the original command's recovery allowance.\n            self._in_context_reset = False\n            return\n        if self._in_cleanup:\n            retries = self._cleanup_retries.get(id(attempt.spec), 0)\n            if retries >= self.MAX_COMMAND_RECOVERY_RETRIES:\n                self._handle_work_error(RuntimeError(\n                    f\"Session lost repeatedly during cleanup {attempt.spec.line!r}; \"\n                    \"retry limit reached\"\n                ))\n                return\n            self._cleanup_retries[id(attempt.spec)] = retries + 1\n            self._cleanup.appendleft(attempt.spec)\n            self._in_cleanup = False\n            return\n        self._schedule_feature_cleanup(self._active_feature, \"interruption\")\n        action = self._call_feature(\n            self._active_feature.on_session_loss,\n            attempt,\n        )\n        if self._pending_feature_error is not None:\n            return\n        self.logger.info(\n            f\"Session lost during {self._active_feature.name}/{attempt.spec.line!r}; {action.name.lower()}\"\n        )\n        action_handlers = {\n            SessionLossAction.RESTART_BLOCK: lambda: self._restart_active_block(\n                attempt, \"session lost\"\n            ),\n            SessionLossAction.COMPLETE_BLOCK: lambda: self._pending.clear(),\n            SessionLossAction.CONTINUE: lambda: self._pending.clear(),\n            SessionLossAction.FAIL: lambda: self._handle_work_error(\n                RuntimeError(f\"Session lost during {attempt.spec.line!r}\")\n            ),\n            SessionLossAction.VALIDATE: lambda: self._pending.clear(),\n        }\n        action_handlers[action]()\n\n    def _restart_active_block(self, attempt, reason):\n        retries = self._recovery_retries.get(attempt.block_index, 0)\n        if retries >= self.MAX_COMMAND_RECOVERY_RETRIES:\n            self._handle_work_error(RuntimeError(\n                f\"{reason} repeatedly during {attempt.spec.line!r}; \"\n                f\"retry limit reached ({self.MAX_COMMAND_RECOVERY_RETRIES})\"\n            ))\n            return\n        self._recovery_retries[attempt.block_index] = retries + 1\n        self._pending = deque(self._active_commands)\n        self._replay_context_target = self._block_prompt_context\n        self._context_reset_attempted = False\n        self.logger.warning(\n            \"%s during %s/%r; replaying block (command recovery %d/%d)\",\n            reason, self._active_feature.name, attempt.spec.line,\n            retries + 1, self.MAX_COMMAND_RECOVERY_RETRIES,\n        )\n\n    def enqueue_runtime_feature(self, feature):\n        return self.enqueue_runtime_features([feature])\n\n    def enqueue_runtime_features(self, features):\n        if not self._ready or self.busy:\n            return False\n        self._ready = False\n        self._completed_messages.clear()\n        for feature in reversed(features):\n            self._features.appendleft(feature)\n        return True",
+                "lineStart": 360,
+                "lineEnd": 687,
+                "totalLines": 687,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793716732975,
+              "end": 1793716732982
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a1d944a6001n2Hs52bjX1zArm",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d93e3a001LR04KuIDHuPU2E",
+          "callID": "call_8eb79304eb054f32a606dafb",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/fortinet/tests/test_common_stack_boundaries.py",
+              "offset": 90,
+              "limit": 40
+            },
+            "output": "<path>/source/head/fortinet/tests/test_common_stack_boundaries.py</path>\n<type>file</type>\n<content>\n90:         with patch(\"fortinet.common.fos_cli_driver.EXPECT_TIMEOUT_SECONDS\", 0.05), \\\n91:                 patch(\"fortinet.common.fos_cli_driver.PROCESS_SPIN_SECONDS\", 1):\n92:             driver.process_state()\n93:         assert commander.ready\n94:         assert feature.completed\n95:         assert feature.outputs[0][1] == FOSCliState.CMD_PROMPT\n96:         assert b\"captured diagnostic\" in feature.outputs[0][0]\n97:         assert FOSCliState.CMD_PROMPT_ECHO in states\n98:     finally:\n99:         if not connection.closed:\n100:             terminal.close()\n101: \n102: \n103: def state_case(state, sample, suffix=b\"\", *, recover=False):\n104:     response = sample + suffix\n105:     if state in (FOSCliState.CREDENTIAL_REJECTED, FOSCliState.PROVIDE_USERNAME):\n106:         completion = (FOSCliState.CMD_PROMPT,)\n107:     elif state in (FOSCliState.CREDENTIAL_ACCEPTED, FOSCliState.SESSION_LOST, FOSCliState.CMD_PROMPT_ECHO):\n108:         completion = (FOSCliState.CMD_PROMPT,)\n109:     else:\n110:         completion = (state,)\n111:     connection, terminal, commander, driver, feature, states = make_stack(\n112:         CommandSpec(\"probe\", completion_states=completion, capture_output=True),\n113:         response,\n114:         allow_recovery=recover,\n115:         initial_prompt=b\"fw (global) #\" if state == FOSCliState.CMD_PROMPT_ECHO else b\"fw #\",\n116:     )\n117:     try:\n118:         with patch(\"fortinet.common.fos_cli_driver.EXPECT_TIMEOUT_SECONDS\", 0.03), \\\n119:                 patch(\"fortinet.common.fos_cli_driver.PROCESS_SPIN_SECONDS\", 1):\n120:             driver.process_state()\n121:         assert state in states\n122:         assert commander.ready\n123:         assert feature.completed\n124:     finally:\n125:         if not connection.closed:\n126:             terminal.close()\n127: \n128: \n129: class EndToEndBoundaryCases(unittest.TestCase):\n\n(Showing lines 90-129 of 349. Use offset=130 to continue.)\n</content>",
+            "title": "source/head/fortinet/tests/test_common_stack_boundaries.py",
+            "metadata": {
+              "preview": "        with patch(\"fortinet.common.fos_cli_driver.EXPECT_TIMEOUT_SECONDS\", 0.05), \\\n                patch(\"fortinet.common.fos_cli_driver.PROCESS_SPIN_SECONDS\", 1):\n            driver.process_state()\n        assert commander.ready\n        assert feature.completed\n        assert feature.outputs[0][1] == FOSCliState.CMD_PROMPT\n        assert b\"captured diagnostic\" in feature.outputs[0][0]\n        assert FOSCliState.CMD_PROMPT_ECHO in states\n    finally:\n        if not connection.closed:\n            terminal.close()\n\n\ndef state_case(state, sample, suffix=b\"\", *, recover=False):\n    response = sample + suffix\n    if state in (FOSCliState.CREDENTIAL_REJECTED, FOSCliState.PROVIDE_USERNAME):\n        completion = (FOSCliState.CMD_PROMPT,)\n    elif state in (FOSCliState.CREDENTIAL_ACCEPTED, FOSCliState.SESSION_LOST, FOSCliState.CMD_PROMPT_ECHO):\n        completion = (FOSCliState.CMD_PROMPT,)\n    else:",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/fortinet/tests/test_common_stack_boundaries.py",
+                "text": "        with patch(\"fortinet.common.fos_cli_driver.EXPECT_TIMEOUT_SECONDS\", 0.05), \\\n                patch(\"fortinet.common.fos_cli_driver.PROCESS_SPIN_SECONDS\", 1):\n            driver.process_state()\n        assert commander.ready\n        assert feature.completed\n        assert feature.outputs[0][1] == FOSCliState.CMD_PROMPT\n        assert b\"captured diagnostic\" in feature.outputs[0][0]\n        assert FOSCliState.CMD_PROMPT_ECHO in states\n    finally:\n        if not connection.closed:\n            terminal.close()\n\n\ndef state_case(state, sample, suffix=b\"\", *, recover=False):\n    response = sample + suffix\n    if state in (FOSCliState.CREDENTIAL_REJECTED, FOSCliState.PROVIDE_USERNAME):\n        completion = (FOSCliState.CMD_PROMPT,)\n    elif state in (FOSCliState.CREDENTIAL_ACCEPTED, FOSCliState.SESSION_LOST, FOSCliState.CMD_PROMPT_ECHO):\n        completion = (FOSCliState.CMD_PROMPT,)\n    else:\n        completion = (state,)\n    connection, terminal, commander, driver, feature, states = make_stack(\n        CommandSpec(\"probe\", completion_states=completion, capture_output=True),\n        response,\n        allow_recovery=recover,\n        initial_prompt=b\"fw (global) #\" if state == FOSCliState.CMD_PROMPT_ECHO else b\"fw #\",\n    )\n    try:\n        with patch(\"fortinet.common.fos_cli_driver.EXPECT_TIMEOUT_SECONDS\", 0.03), \\\n                patch(\"fortinet.common.fos_cli_driver.PROCESS_SPIN_SECONDS\", 1):\n            driver.process_state()\n        assert state in states\n        assert commander.ready\n        assert feature.completed\n    finally:\n        if not connection.closed:\n            terminal.close()\n\n\nclass EndToEndBoundaryCases(unittest.TestCase):",
+                "lineStart": 90,
+                "lineEnd": 129,
+                "totalLines": 349,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793716733099,
+              "end": 1793716733105
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a1d944b3001z9Jdqq0vgL7R1j",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d93e3a001LR04KuIDHuPU2E",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 6456,
+            "input": 5161,
+            "output": 58,
+            "reasoning": 21,
+            "cache": {
+              "read": 1216,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a1d944c2001wfx1IY6X1p986T",
+        "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+        "time": {
+          "created": 1793716733123,
+          "completed": 1793716736623
+        },
+        "parentID": "msg_1a1d93e33001yKp1QAF8LFj4JT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-cEhPOC",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 11053,
+          "input": 4377,
+          "output": 78,
+          "reasoning": 198,
+          "cache": {
+            "read": 6400,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a1d94b0e001GOmGQYg3wq3gyR",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d944c2001wfx1IY6X1p986T"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a1d94b100016vYb4TKR3cULCJ",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d944c2001wfx1IY6X1p986T",
+          "text": "Both P4 candidates confirmed with exact anchors:\n\n1. `test_common_stack_boundaries.py:105-108` — both branches assign `completion = (FOSCliState.CMD_PROMPT,)`. The two if/elif branches are identical. This is a trivial simplification (P4, optional). Actually is it confusing? The two branches group different states but produce same completion. Minor maintainability. P4.\n\n2. docker README `FOS_EXIT_ON_BOOTSTRAP_ERROR` vs `FTNT_EXIT_ON_BOOTSTRAP_ERROR`. Let me verify the exact lines in the docker README. From the summary: line ~137 new paragraph says `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, line ~311 says `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false`. Let me grep for exact line numbers to be precise.\n\nAlso should check the diff to confirm the new paragraph introduced by PR contains FOS_. Let me grep head docker README for both spellings.",
+          "time": {
+            "start": 1793716734736,
+            "end": 1793716736146
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a1d95094001sPQKcTvuRL8aZ1",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d944c2001wfx1IY6X1p986T",
+          "text": "Both P4 candidates are confirmed at exact anchors. Let me pin down the README line numbers precisely.",
+          "time": {
+            "start": 1793716736148,
+            "end": 1793716736606
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a1d951a30011nVWwZKQKB30s2",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d944c2001wfx1IY6X1p986T",
+          "callID": "call_83fc40861d914eac88400d62",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "EXIT_ON_BOOTSTRAP_ERROR",
+              "path": "/source/head/fortinet/fortigate"
+            },
+            "output": "Found 4 matches\n/source/head/fortinet/fortigate/README.md:\n  Line 97: | `FTNT_EXIT_ON_BOOTSTRAP_ERROR` | `true` | `true`, `false` | Stops the launcher with a nonzero exit status when a bootstrap feature raises an error. With `false`, a failed feature is skipped and later features continue when FortiOS is back at a command prompt. After a rejected desired-password login, the launcher always retries the last accepted credentials once for that login while retaining the desired credentials for subsequent logins. It does not replay an admin password change after FortiOS has committed it. Unrecoverable console or login errors leave the VM running, release the launcher's serial Telnet connection, and halt bootstrap for manual repair. Unresolved recovery or skipped features keep the VM unhealthy; a later successful login with the desired credentials clears a transient credential-recovery error. |\n\n  Line 471:   `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false`, failures at a command prompt are logged\n\n\n/source/head/fortinet/fortigate/docker/README.md:\n  Line 139: `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`. This does not change error handling for\n\n  Line 311: `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false`, a failed feature is logged and skipped\n",
+            "title": "EXIT_ON_BOOTSTRAP_ERROR",
+            "metadata": {
+              "matches": 4,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793716736423,
+              "end": 1793716736431
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a1d95258001gNR2NLGCIA5r0o",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d944c2001wfx1IY6X1p986T",
+          "callID": "call_cefd08d676ac499482aba360",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "FOS_|FTNT_",
+              "path": "/source/diff.txt",
+              "include": "*.txt"
+            },
+            "output": "Found 17 matches\n/source/diff.txt:\n  Line 202: @@ -60,10 +61,14 @@ FOS_CLI_STATE_PATTERNS[FOSCliState.CURRENT_PASSWORD.value] = (\n\n  Line 204:  FOS_CLI_STATE_PATTERNS[FOSCliState.CONFIRMATION.value] = rb\"(?mi)Do you want to continue\\?\"\n\n  Line 205:  FOS_CLI_STATE_PATTERNS[FOSCliState.CHANGE_PASSWORD_CONFIRM.value] = rb\"(?mi)^Confirm Password:[ \\t]*\"\n\n  Line 206:  FOS_CLI_STATE_PATTERNS[FOSCliState.MORE_PROMPT.value] = rb\"--More--\\s*\"\n\n  Line 207:  FOS_CLI_STATE_PATTERNS[FOSCliState.MULTILINE_PROMPT.value] = rb\"(?m)^>[ \\t]*\\r?$\"\n\n  Line 208: +FOS_CLI_STATE_PATTERNS[FOSCliState.KERNEL_PANIC.value] = (\n\n  Line 328:              \"FTNT_DNS_SECONDARY, or FTNT_DNS_PROTOCOL\"\n\n  Line 1001:  `FTNT_DNS_PRIMARY` / `FTNT_DNS_SECONDARY` persist through startup config\n\n  Line 1002:  application. When `FTNT_FORTIGUARD_HOOKS` is set together with either DNS\n\n  Line 1003:  variable or `FTNT_DNS_PROTOCOL`, a `config system dns` block in the startup\n\n  Line 1037: +`FOS_EXIT_ON_BOOTSTRAP_ERROR=false`. This does not change error handling for\n\n  Line 1098:    the product wrapper and optional `FTNT_PRODUCT_VERSION` constraint\n\n  Line 2031:          with patch.dict(\"os.environ\", {\"FOS_TERMINAL_BUFFER_LIMIT_BYTES\": \"32\"}):\n\n  Line 2033: -        with patch.dict(\"os.environ\", {\"FOS_TERMINAL_BUFFER_LIMIT_BYTES\": \"0\"}):\n\n  Line 2034: +        with patch.dict(\"os.environ\", {\"FTNT_TERMINAL_BUFFER_LIMIT_BYTES\": \"64\", \"FOS_TERMINAL_BUFFER_LIMIT_BYTES\": \"32\"}, clear=True):\n\n  Line 2036: +        with patch.dict(\"os.environ\", {\"FTNT_TERMINAL_BUFFER_LIMIT_BYTES\": \"0\"}, clear=True):\n\n  Line 2041: +        for env_name in (\"FTNT_LOG_RAW_SERIAL\", \"FOS_LOG_RAW_SERIAL\"):\n",
+            "title": "FOS_|FTNT_",
+            "metadata": {
+              "matches": 17,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793716736604,
+              "end": 1793716736618
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a1d9526c0015elkEr6RT6Wg1H",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d944c2001wfx1IY6X1p986T",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 11053,
+            "input": 4377,
+            "output": 78,
+            "reasoning": 198,
+            "cache": {
+              "read": 6400,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a1d95278001AeNTLfPD98tIgy",
+        "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+        "time": {
+          "created": 1793716736632,
+          "completed": 1793716739208
+        },
+        "parentID": "msg_1a1d93e33001yKp1QAF8LFj4JT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-cEhPOC",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 12036,
+          "input": 837,
+          "output": 33,
+          "reasoning": 158,
+          "cache": {
+            "read": 11008,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a1d9579c001rDUs7LPpFnAFdo",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95278001AeNTLfPD98tIgy"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a1d9579d001LUTsvFc17znnYH",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95278001AeNTLfPD98tIgy",
+          "text": "Confirmed: docker/README.md line 139 (introduced by this PR, diff line 1037) says `FOS_EXIT_ON_BOOTSTRAP_ERROR=false` while the same file's line 311 (and top-level README line 97/471) use `FTNT_EXIT_ON_BOOTSTRAP_ERROR`. Both are functionally accepted via env.py aliasing, so it's a doc consistency issue (P4).\n\nLet me get the exact context of the docker README line 139 paragraph for the finding. Read lines ~130-145.\n\nAlso confirm test_common_stack_boundaries.py state_case: lines 105-108, both branches identical assignment. Mergeable. P4 optional.\n\nLet me read docker README around 130-145 to cite the paragraph.",
+          "time": {
+            "start": 1793716737949,
+            "end": 1793716739196
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a1d95c7e00175HiZXGUjM8m34",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95278001AeNTLfPD98tIgy",
+          "callID": "call_9d5815e2f4b14f378219ca98",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/fortinet/fortigate/docker/README.md",
+              "offset": 130,
+              "limit": 18
+            },
+            "output": "<path>/source/head/fortinet/fortigate/docker/README.md</path>\n<type>file</type>\n<content>\n130: before continuing. By default, a command completes at the next command prompt.\n131: Some commands override completion states, for example confirmation prompts or\n132: reboot messages.\n133: \n134: Scope-closing commands (`next` and `end`) always capture their output and check\n135: for `Command fail. Return code <number>`, including builds that append a period\n136: after the code. A closing failure stops the feature before completion callbacks\n137: or further commands, even when `fail_on_error=False`. It follows the bootstrap\n138: error policy: abort normally, or skip the failed feature when\n139: `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`. This does not change error handling for\n140: individual `set` commands, which can deliberately tolerate unsupported fields.\n141: \n142: Session loss is explicit. Each command carries a `SessionLossAction`:\n143: \n144: - `RESTART_BLOCK`: replay the current block from the start\n145: - `COMPLETE_BLOCK`: treat the block as complete\n146: - `CONTINUE`: do not replay the disruptive command\n147: - `VALIDATE`: reserve for commands that need post-loss validation\n\n(Showing lines 130-147 of 500. Use offset=148 to continue.)\n</content>",
+            "title": "source/head/fortinet/fortigate/docker/README.md",
+            "metadata": {
+              "preview": "before continuing. By default, a command completes at the next command prompt.\nSome commands override completion states, for example confirmation prompts or\nreboot messages.\n\nScope-closing commands (`next` and `end`) always capture their output and check\nfor `Command fail. Return code <number>`, including builds that append a period\nafter the code. A closing failure stops the feature before completion callbacks\nor further commands, even when `fail_on_error=False`. It follows the bootstrap\nerror policy: abort normally, or skip the failed feature when\n`FOS_EXIT_ON_BOOTSTRAP_ERROR=false`. This does not change error handling for\nindividual `set` commands, which can deliberately tolerate unsupported fields.\n\nSession loss is explicit. Each command carries a `SessionLossAction`:\n\n- `RESTART_BLOCK`: replay the current block from the start\n- `COMPLETE_BLOCK`: treat the block as complete\n- `CONTINUE`: do not replay the disruptive command\n- `VALIDATE`: reserve for commands that need post-loss validation",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/fortinet/fortigate/docker/README.md",
+                "text": "before continuing. By default, a command completes at the next command prompt.\nSome commands override completion states, for example confirmation prompts or\nreboot messages.\n\nScope-closing commands (`next` and `end`) always capture their output and check\nfor `Command fail. Return code <number>`, including builds that append a period\nafter the code. A closing failure stops the feature before completion callbacks\nor further commands, even when `fail_on_error=False`. It follows the bootstrap\nerror policy: abort normally, or skip the failed feature when\n`FOS_EXIT_ON_BOOTSTRAP_ERROR=false`. This does not change error handling for\nindividual `set` commands, which can deliberately tolerate unsupported fields.\n\nSession loss is explicit. Each command carries a `SessionLossAction`:\n\n- `RESTART_BLOCK`: replay the current block from the start\n- `COMPLETE_BLOCK`: treat the block as complete\n- `CONTINUE`: do not replay the disruptive command\n- `VALIDATE`: reserve for commands that need post-loss validation",
+                "lineStart": 130,
+                "lineEnd": 147,
+                "totalLines": 500,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793716739200,
+              "end": 1793716739204
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a1d95c86001eVgUVis0dFdXLh",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95278001AeNTLfPD98tIgy",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 12036,
+            "input": 837,
+            "output": 33,
+            "reasoning": 158,
+            "cache": {
+              "read": 11008,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a1d95c8f001cuEQ8y3TeHGgHb",
+        "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+        "time": {
+          "created": 1793716739215,
+          "completed": 1793716752475
+        },
+        "parentID": "msg_1a1d93e33001yKp1QAF8LFj4JT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-cEhPOC",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 14743,
+          "input": 9391,
+          "output": 1948,
+          "reasoning": 460,
+          "cache": {
+            "read": 2944,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a1d96193001dYiSPMEP4LPaIx",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95c8f001cuEQ8y3TeHGgHb"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a1d96195001hf0xfbJxbFb3bD",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95c8f001cuEQ8y3TeHGgHb",
+          "text": "Both findings confirmed with exact anchors. Finalize the review now.\n\nFindings:\n1. P4 — `fortigate/docker/README.md:139` uses `FOS_EXIT_ON_BOOTSTRAP_ERROR` in the new \"Scope-closing commands\" paragraph while the same document (line 311) and the top-level `fortigate/README.md` (lines 97, 471) document `FTNT_EXIT_ON_BOOTSTRAP_ERROR` as the primary spelling. Both resolve via `env.py` aliasing, but the new paragraph introduces a second documented spelling for the same variable. Correction: use `FTNT_EXIT_ON_BOOTSTRAP_ERROR` at line 139 (or note aliasing once).\n\n2. P4 — `test_common_stack_boundaries.py:105-108` — `state_case` assigns `completion = (FOSCliState.CMD_PROMPT,)` identically in both the `CREDENTIAL_REJECTED/PROVIDE_USERNAME` branch and the `CREDENTIAL_ACCEPTED/SESSION_LOST/CMD_PROMPT_ECHO` branch; the two branches can be merged into one `if state in (...) :` covering all five states, or simply collapsed. Optional maintainability.\n\nNothing else rose to a finding. Coverage: complete for source inspection; notes: no tests executed; manifest snapshot incomplete:true; standards.json empty; license.py and env.py read as context only (not in changed list); pre-existing gaps (README env-table `FTNT_FORTIGUARD_HOOKS` omission, `filter_startup_config_blocks`) not reported since not PR-introduced.\n\nNow produce the Markdown review + final JSON. Permalinks: the publisher constructs links; but instructions say use supplied GitHub permalink roots with encoded paths and #L anchors. No roots were actually supplied in this session — I have none. I'll reference files/lines as `path:line` inline code without fabricating URLs, since no permalink roots were provided. Actually the instructions say \"Use the supplied immutable GitHub link roots\" — none supplied, so I'll use plain file references and note that in coverage notes? Better: just use file:line inline code; the publisher constructs source links. I'll mention in coverage notes that no permalink roots were supplied.",
+          "time": {
+            "start": 1793716740501,
+            "end": 1793716743295
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a1d96c80001owT1lxleupVACx",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95c8f001cuEQ8y3TeHGgHb",
+          "text": "All investigation is complete. Here is the final review.\n\n---\n\n# PR Review: FortiOS CLI stack rework (context tracking, scope-commit validation, session-loss actions, recovery)\n\n## Summary\n\nThis PR substantially reworks the FortiOS bootstrap CLI stack: prompt-context tracking (`CLI_PROMPT_CONTEXT_PATTERN`), scope-close failure detection for `closes_scope` commands, `ContextLossAction`/`SessionLossAction` recovery with block replay and bounded retries, an abort-based context restore path, retained-buffer exposure on `Data` timeouts, `FTNT_`/`FOS_` environment-variable aliasing with `TRACE_LEVEL`, and kernel-panic detection. Six new test files cover the new behaviors well.\n\nI traced all18 changed files in full, plus context-only files (`features/license.py`, `env.py`) and every previously suspected defect path (duplicate timeout-Data consumption, `None` replay targets, `id(spec)`-keyed retry maps, context-loss ordering, credentials relogin flow, PKI TFTP fallback, startup-config quote parser). All suspected P1/P2 concerns resolved as correct-by-design. Two optional P4 findings remain.\n\n## Findings\n\n| Priority | Count | Titles |\n| --- | --- | --- |\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 2 | New README paragraph documents `FOS_EXIT_ON_BOOTSTRAP_ERROR` instead of the primary `FTNT_` spelling; duplicated `completion` assignment in `state_case` |\n\n### P4: New \"Scope-closing commands\" paragraph documents `FOS_EXIT_ON_BOOTSTRAP_ERROR` instead of the primary `FTNT_` spelling\n\n- **Location:** `fortinet/fortigate/docker/README.md:139` (introduced by this PR, diff.txt line 1037)\n- **Problem:** The new paragraph added by this PR instructs users to set `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, while the rest of the same document (`docker/README.md:311`) and the top-level `fortigate/README.md` (lines 97, 471) document `FTNT_EXIT_ON_BOOTSTRAP_ERROR` as the canonical spelling. Both spellings work because `env.py` `_candidate_names` resolves aliases, but the PR introduces a second, inconsistent documented spelling for the same variable.\n- **Trigger:** A user follows the new paragraph, sets `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, then searches the docs for that name and finds only the `FTNT_` spelling elsewhere.\n- **Impact:** Documentation inconsistency only; behavior is unchanged because aliasing accepts both names.\n- **Correction:** Change line 139 to `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false` (or add a one-line note that the `FOS_` prefix is an accepted alias), keeping the documented public interface consistent with the rest of both READMEs.\n\n### P4: Duplicated `completion = (FOSCliState.CMD_PROMPT,)` assignment in `state_case`\n\n- **Location:** `fortinet/tests/test_common_stack_boundaries.py:105-108`\n- **Problem:** In the `state_case` helper introduced by this PR, the `if` branch (`CREDENTIAL_REJECTED`, `PROVIDE_USERNAME`) and the `elif` branch (`CREDENTIAL_ACCEPTED`, `SESSION_LOST`, `CMD_PROMPT_ECHO`) assign the identical value `completion = (FOSCliState.CMD_PROMPT,)`.\n- **Trigger:** Any future reader or maintainer editing the completion mapping for these states.\n- **Impact:** Cosmetic maintainability only; behavior is correct. The duplication invites an edit to one branch but not the other.\n- **Correction:** Merge the two branches into a single `if state in (FOSCliState.CREDENTIAL_REJECTED, FOSCliState.PROVIDE_USERNAME, FOSCliState.CREDENTIAL_ACCEPTED, FOSCliState.SESSION_LOST, FOSCliState.CMD_PROMPT_ECHO):` condition with one assignment.\n\n## Coverage notes\n\n- Source-only review; no tests were executed and no formatter was run. The snapshot manifest reports `incomplete: true`, so coverage is reported as incomplete at the repository level despite full reading of all 18 changed head files, the full diff, the six test files, context-only `features/license.py` and `env.py`, and both READMEs.\n- `standards.json` is empty; no repository rules were applied.\n- No GitHub permalink roots were supplied in this session; file references use `path:line` inline code and the publisher can attach links.\n- Pre-existing issues deliberately not reported as PR findings: the `FTNT_FORTIGUARD_HOOKS` omission from the top-level README env table and the old `filter_startup_config_blocks` code in `features/startup_config.py` (the diff only adds `_startup_config_commands`).\n- The `stable_match = re.search(regex, consumed)` re-run in `terminal.py` and the `id(spec)`-keyed `_cleanup_retries` map were each investigated and judged acceptable (defensive re-run on a bounded 1 MiB buffer; retry map lifetime is bounded by cleanup completion), so neither is reported as a finding.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"New README paragraph documents `FOS_EXIT_ON_BOOTSTRAP_ERROR` instead of the primary `FTNT_` spelling\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"fortinet/fortigate/docker/README.md\",\n        \"start\": 134,\n        \"end\": 139\n      },\n      \"problem\": \"The paragraph added by this PR instructs users to set `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, while the rest of the same document (`docker/README.md` line 311) and the top-level `fortigate/README.md` (lines 97 and 471) document `FTNT_EXIT_ON_BOOTSTRAP_ERROR` as the canonical spelling. Both spellings work because `env.py` `_candidate_names` resolves aliases, but the new paragraph introduces a second, inconsistent documented spelling for the same variable.\",\n      \"trigger\": \"A user follows the new paragraph, sets `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, then searches the documentation for that name and finds only the `FTNT_` spelling elsewhere.\",\n      \"impact\": \"Documentation inconsistency only; runtime behavior is unchanged because the aliasing accepts both names.\",\n      \"suggestion\": \"Change line 139 to `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false` (or add a one-line note that the `FOS_` prefix is an accepted alias), keeping the documented public interface consistent with the rest of both READMEs.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Duplicated `completion = (FOSCliState.CMD_PROMPT,)` assignment in `state_case`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"fortinet/tests/test_common_stack_boundaries.py\",\n        \"start\": 105,\n        \"end\": 108\n      },\n      \"problem\": \"In the `state_case` helper introduced by this PR, the `if` branch (`FOSCliState.CREDENTIAL_REJECTED`, `FOSCliState.PROVIDE_USERNAME`) and the `elif` branch (`FOSCliState.CREDENTIAL_ACCEPTED`, `FOSCliState.SESSION_LOST`, `FOSCliState.CMD_PROMPT_ECHO`) assign the identical value `completion = (FOSCliState.CMD_PROMPT,)`.\",\n      \"trigger\": \"Any future maintainer editing the completion mapping for these states.\",\n      \"impact\": \"Cosmetic maintainability only; behavior is correct. The duplication invites an edit to one branch but not the other.\",\n      \"suggestion\": \"Merge the two branches into a single condition covering all five states with one assignment of `completion = (FOSCliState.CMD_PROMPT,)`.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": false,\n    \"notes\": [\n      \"Source-only review; no tests were executed and no formatter was run. The snapshot manifest reports incomplete: true, so repository-level coverage is incomplete despite full reading of all 18 changed head files, the full diff, all six test files, context-only features/license.py and env.py, and both READMEs.\",\n      \"standards.json is empty; no repository rules were applied.\",\n      \"No GitHub permalink roots were supplied in this session; file references use path:line inline code and the publisher can attach links.\",\n      \"Pre-existing issues deliberately not reported as PR findings: the FTNT_FORTIGUARD_HOOKS omission from the top-level README env table and the pre-existing filter_startup_config_blocks code in features/startup_config.py, since the diff only adds _startup_config_commands.\",\n      \"The stable_match re-run in terminal.py and the id(spec)-keyed _cleanup_retries map were investigated and judged acceptable (defensive re-run on a bounded 1 MiB buffer; retry-map lifetime bounded by cleanup completion), so neither is reported as a finding.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793716743296,
+            "end": 1793716752468
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a1d99058001Mlyw7DHi4eHjgN",
+          "sessionID": "ses_e5e2f010fffe0ZZ3dSjJomH5F7",
+          "messageID": "msg_1a1d95c8f001cuEQ8y3TeHGgHb",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 14743,
+            "input": 9391,
+            "output": 1948,
+            "reasoning": 460,
+            "cache": {
+              "read": 2944,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\n**Partial review. Some analysis remains unfinished.**\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - New README paragraph documents `FOS_EXIT_ON_BOOTSTRAP_ERROR` instead of the primary `FTNT_` spelling** | [fortinet/fortigate/docker/README.md:134-139](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/fortigate/docker/README.md#L134-L139) |\n| **P4 - Duplicated `completion = (FOSCliState.CMD_PROMPT,)` assignment in `state_case`** | [fortinet/tests/test&#95;common&#95;stack&#95;boundaries.py:105-108](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/tests/test_common_stack_boundaries.py#L105-L108) |\n\n## P4 - New README paragraph documents `FOS_EXIT_ON_BOOTSTRAP_ERROR` instead of the primary `FTNT_` spelling\n\n**Location:** [fortinet/fortigate/docker/README.md:134-139](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/fortigate/docker/README.md#L134-L139)\n\n**Problem:** The paragraph added by this PR instructs users to set `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, while the rest of the same document &#40;`docker/README.md` line 311&#41; and the top-level `fortigate/README.md` &#40;lines 97 and 471&#41; document `FTNT_EXIT_ON_BOOTSTRAP_ERROR` as the canonical spelling. Both spellings work because [`env.py`](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/common/env.py#L1-L1) `_candidate_names` resolves aliases, but the new paragraph introduces a second, inconsistent documented spelling for the same variable.\n\n**Trigger:** A user follows the new paragraph, sets `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, then searches the documentation for that name and finds only the `FTNT_` spelling elsewhere.\n\n**Impact:** Documentation inconsistency only; runtime behavior is unchanged because the aliasing accepts both names.\n\n**Suggested correction:** Change line 139 to `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false` &#40;or add a one-line note that the `FOS_` prefix is an accepted alias&#41;, keeping the documented public interface consistent with the rest of both READMEs.\n\n\n## P4 - Duplicated `completion = (FOSCliState.CMD_PROMPT,)` assignment in `state_case`\n\n**Location:** [fortinet/tests/test&#95;common&#95;stack&#95;boundaries.py:105-108](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/tests/test_common_stack_boundaries.py#L105-L108)\n\n**Problem:** In the `state_case` helper introduced by this PR, the `if` branch &#40;`FOSCliState.CREDENTIAL_REJECTED`, `FOSCliState.PROVIDE_USERNAME`&#41; and the `elif` branch &#40;`FOSCliState.CREDENTIAL_ACCEPTED`, `FOSCliState.SESSION_LOST`, `FOSCliState.CMD_PROMPT_ECHO`&#41; assign the identical value `completion = (FOSCliState.CMD_PROMPT,)`.\n\n**Trigger:** Any future maintainer editing the completion mapping for these states.\n\n**Impact:** Cosmetic maintainability only; behavior is correct. The duplication invites an edit to one branch but not the other.\n\n**Suggested correction:** Merge the two branches into a single condition covering all five states with one assignment of `completion = (FOSCliState.CMD_PROMPT,)`.\n\n\n## Coverage\n\n- Source-only review; no tests were executed and no formatter was run. The snapshot manifest reports incomplete&#58; true, so repository-level coverage is incomplete despite full reading of all 18 changed head files, the full diff, all six test files, context-only `features/license.py` and [`env.py`](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/common/env.py#L1-L1), and both READMEs.\n- `standards.json` is empty; no repository rules were applied.\n- No GitHub permalink roots were supplied in this session; file references use path&#58;line inline code and the publisher can attach links.\n- Pre-existing issues deliberately not reported as PR findings&#58; the `FTNT_FORTIGUARD_HOOKS` omission from the top-level README env table and the pre-existing filter&#95;startup&#95;config&#95;blocks code in `features/startup_config.py`, since the diff only adds &#95;startup&#95;config&#95;commands.\n- The stable&#95;match re-run in [`terminal.py`](https://github.com/srl-labs/vrnetlab/blob/1c29a33a37619b7547248e3b845130ba1f5f8ad0/fortinet/common/terminal.py#L1-L1) and the id&#40;spec&#41;-keyed &#95;cleanup&#95;retries map were investigated and judged acceptable &#40;defensive re-run on a bounded 1 `MiB` buffer; retry-map lifetime bounded by cleanup completion&#41;, so neither is reported as a finding.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"New README paragraph documents `FOS_EXIT_ON_BOOTSTRAP_ERROR` instead of the primary `FTNT_` spelling\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"fortinet/fortigate/docker/README.md\",\n        \"start\": 134,\n        \"end\": 139\n      },\n      \"problem\": \"The paragraph added by this PR instructs users to set `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, while the rest of the same document (`docker/README.md` line 311) and the top-level `fortigate/README.md` (lines 97 and 471) document `FTNT_EXIT_ON_BOOTSTRAP_ERROR` as the canonical spelling. Both spellings work because `env.py` `_candidate_names` resolves aliases, but the new paragraph introduces a second, inconsistent documented spelling for the same variable.\",\n      \"trigger\": \"A user follows the new paragraph, sets `FOS_EXIT_ON_BOOTSTRAP_ERROR=false`, then searches the documentation for that name and finds only the `FTNT_` spelling elsewhere.\",\n      \"impact\": \"Documentation inconsistency only; runtime behavior is unchanged because the aliasing accepts both names.\",\n      \"suggestion\": \"Change line 139 to `FTNT_EXIT_ON_BOOTSTRAP_ERROR=false` (or add a one-line note that the `FOS_` prefix is an accepted alias), keeping the documented public interface consistent with the rest of both READMEs.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Duplicated `completion = (FOSCliState.CMD_PROMPT,)` assignment in `state_case`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"fortinet/tests/test_common_stack_boundaries.py\",\n        \"start\": 105,\n        \"end\": 108\n      },\n      \"problem\": \"In the `state_case` helper introduced by this PR, the `if` branch (`FOSCliState.CREDENTIAL_REJECTED`, `FOSCliState.PROVIDE_USERNAME`) and the `elif` branch (`FOSCliState.CREDENTIAL_ACCEPTED`, `FOSCliState.SESSION_LOST`, `FOSCliState.CMD_PROMPT_ECHO`) assign the identical value `completion = (FOSCliState.CMD_PROMPT,)`.\",\n      \"trigger\": \"Any future maintainer editing the completion mapping for these states.\",\n      \"impact\": \"Cosmetic maintainability only; behavior is correct. The duplication invites an edit to one branch but not the other.\",\n      \"suggestion\": \"Merge the two branches into a single condition covering all five states with one assignment of `completion = (FOSCliState.CMD_PROMPT,)`.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": false,\n    \"notes\": [\n      \"Source-only review; no tests were executed and no formatter was run. The snapshot manifest reports incomplete: true, so repository-level coverage is incomplete despite full reading of all 18 changed head files, the full diff, all six test files, context-only `features/license.py` and `env.py`, and both READMEs.\",\n      \"`standards.json` is empty; no repository rules were applied.\",\n      \"No GitHub permalink roots were supplied in this session; file references use path:line inline code and the publisher can attach links.\",\n      \"Pre-existing issues deliberately not reported as PR findings: the `FTNT_FORTIGUARD_HOOKS` omission from the top-level README env table and the pre-existing filter_startup_config_blocks code in `features/startup_config.py`, since the diff only adds _startup_config_commands.\",\n      \"The stable_match re-run in `terminal.py` and the id(spec)-keyed _cleanup_retries map were investigated and judged acceptable (defensive re-run on a bounded 1 `MiB` buffer; retry-map lifetime bounded by cleanup completion), so neither is reported as a finding.\"\n    ]\n  }\n}\n```"
 }
