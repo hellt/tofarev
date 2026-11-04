@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "391b213e646cd3b00d9e9711313d53782e8d0c82",
-  "updatedAt": "2026-11-04T17:32:48.797Z",
-  "state": "running",
+  "updatedAt": "2026-11-04T17:34:10.419Z",
+  "state": "completed",
   "info": {
     "id": "ses_e58650724ffeh3Z8k2yEv4l1aW",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 139479,
-      "output": 1511,
-      "reasoning": 16016,
+      "input": 189374,
+      "output": 6558,
+      "reasoning": 23777,
       "cache": {
-        "read": 1686208,
+        "read": 1927872,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793813313755,
-      "updated": 1793813531715
+      "updated": 1793813650375
     }
   },
   "messages": [
@@ -3844,7 +3844,8 @@
         "id": "msg_1a79e4c3f001reCojm6v19hEKZ",
         "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
         "time": {
-          "created": 1793813531711
+          "created": 1793813531711,
+          "completed": 1793813571987
         },
         "parentID": "msg_1a79afd77001tzTRa0fWavzTSs",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -3857,14 +3858,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 87190,
+          "input": 179,
+          "output": 39,
+          "reasoning": 4028,
           "cache": {
-            "read": 0,
+            "read": 82944,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -3878,12 +3881,1001 @@
           "id": "prt_1a79e5514001RvzpxB5qV4Bayo",
           "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
           "messageID": "msg_1a79e4c3f001reCojm6v19hEKZ",
-          "text": "",
+          "text": "OK. `CleanupFilteredLinks` handles LinkVEthRaw and LinkVEthStitchedRaw for node-filtered cases.\n\nInteresting: `LinkVEthRaw.cleanupFilteredLink` — for a plain host link where one endpoint node is filtered out, how does it clean? Let me look — this may show that for host links with a filtered-out node, cleanup happens there rather than through special nodes. In our early path, CleanupFilteredLinks is not called. If nodeFilter non-empty and containers==0 → early return → filtered link cleanup skipped! Wait — in base, that was also skipped (early return did nothing). Still pre-existing. But NOW with the PR, the early path DOES delete special nodes for non-filtered links but skips filtered link cleanup. Is there an inconsistency? For filtered-out links, the special nodes hold no endpoints for them anyway (Resolve filtered them), so deleteSpecialLinkNodes can't clean them either. So consistent. But for veth-stitch with a filtered-out endpoint, cleanupFilteredLink removes alt names — skipped in the early path. Pre-existing gap.\n\nHmm, hold on — one more important scenario for the early path + node filter: filter excludes ALL nodes except none... covered.\n\nNow what about this: the early path deletes special link nodes even when the destroy is a FILTERED destroy (nodeFilter set) where the filtered-in nodes' containers are gone. c.Links contains only filtered-in links. deleteSpecialLinkNodes deletes their host/mgmt/vxlan artifacts. Correct.\n\nAlright. Let me also verify the claim about `ponytail` requiring a check: the change is logic in destroy paths — two guards. There is an existing harness (`fakeDestroyRuntime`, `listEmptyAfterFirst`) that could drive `destroy()` with a topology containing a host link and zero containers. The observable effect: `deleteSpecialLinkNodes` runs → netlink ops fail → log.Warn. Could be observed via... hmm, actually the endpoint Delete for the host link: `LinkVEth.Remove` → endpoints' Remove → `EndpointGeneric.Remove` → `e.GetNode().ExecFunction` → `ns.GetNS(host nspath)` → this actually opens the current netns and does LinkByName — running as root in CI, this would find no interface → nil error. So no observable side effect in test. To make it testable you'd need a seam (e.g., inject the special nodes list or count invocations). I'll suggest as P4 a small refactor option OR just note in coverage. Given \"smallest useful check\", maybe suggest making `deleteSpecialLinkNodes` take the nodes slice as a param for testability... that's refactoring beyond the PR. I'll keep it as a coverage note rather than a finding.\n\nActually, let me reconsider one potential real defect more carefully: the early path guard uses `len(c.Links) > 0`, but `deleteSpecialLinkNodes` will delete the host node's endpoints — INCLUDING endpoints left over from other CLab instances resolved earlier in the same process. I discussed this; pre-existing in the normal path. But here's the thing: in the NORMAL path (containers>0), before deleteNodes runs, `preDestroyNodes` and CleanupFilteredLinks run. Fine.\n\nHmm, wait — actually now I realize something potentially more important. In the early path, `c.deleteSpecialLinkNodes(ctx)` is called on the DESTROY COPY `cc` — whose `ResolveLinks` attached `cc`'s endpoints. But ALSO — `cc.resetResolvedLinks()` is never called... irrelevant.\n\nBut consider `Destroy` (outer) looping over multiple topos sequentially: for topo1, copy1 resolved → attach; copy1.destroy → special deletes → endpoints removed (netlink) but remain in the singleton's slice (Remove doesn't prune). For topo2, copy2's ResolveLinks → resetResolvedLinks releases only copy2's (empty) endpoints → attaches copy2's endpoints → singleton now has [copy1's stale, copy2's]. copy2's deleteSpecialLinkNodes deletes all: copy1's stale → Remove → LinkVEth.Remove: DeploymentState == Removed? copy1's Remove succeeded → state Removed → returns nil immediately. So no-op. Good — idempotent guard makes cross-lab stale deletion mostly harmless. Only when copy1's Remove FAILED does re-attempt occur — and a retry that succeeds now removes an interface that may have been legitimately re-created by a re-deployed lab with the same name. Edge of edge. Pre-existing pattern. Skip.\n\nNow let me also double check the diff didn't change behavior for `keepMgmtNet` in the early path: `deleteSpecialLinkNodes` deletes mgmt-br link nodes' endpoints — these are mgmt-net link veths (container↔bridge). If `keepMgmtNet` is set, should the mgmt-net link veths be removed? In the normal path, deleteSpecialLinkNodes runs regardless of keepMgmtNet — it removes the veth pairs (not the bridge/network). keepMgmtNet only preserves the network itself. So consistent.\n\nAlright — final consideration: does the early path run `deleteSpecialLinkNodes` when `c.Links > 0` but the links are ALL non-special (plain veth between nodes)? Then special nodes have no endpoints → no-op. Fine.\n\nSo the PR is good. Findings list:\n\n1. P4 — Missing comment/clarity on the early-return guard (`len(c.Nodes) > 0 && len(c.Links) > 0`): `c.Links` is a proxy for \"this lab's resolved links attached endpoints to the shared host/mgmt-br nodes\"; without a comment, the condition looks arbitrary and a future refactor could drop it or misread it as \"only labs with links need cleanup\" — actually it IS that. Concrete cost: maintainability. Suggest a one-line comment like the one in deleteNodes.\n\nHmm, is that too weak? \"Flag confusing control flow or naming when you can explain a concrete maintenance or correctness cost.\" I think a comment suggestion is fair as P4.\n\n2. P4 — Coverage: the new early-return path has no unit test; the existing fake-runtime harness (`listEmptyAfterFirst`) plus a topology with a `host:` link would drive it, but asserting the cleanup requires a seam since `deleteSpecialLinkNodes` reaches into package-level singletons and netlink. Could suggest extracting the guard into a small testable helper or asserting via a fake. Hmm — I'll include it as a P4 finding since ponytail explicitly demands one runnable check for non-trivial logic, and there IS an existing cheap harness. But the assertion problem remains. Alternatively suggest: make `deleteSpecialLinkNodes` accept the nodes so a test can pass fake nodes... that changes signature. Or simplest: a test asserting `destroy()` with empty containers and a host-link topology does not error and returns nil — weak. Hmm.\n\nActually, wait. Maybe a better testable observation: with the existing `TestDestroyCleanupRemovesLabDirsOnSuccess` harness (listEmptyAfterFirst), if the topo had a host link, the new code path would run `deleteSpecialLinkNodes`. In a non-privileged test environment, `ns.GetCurrentNS()` works, `LinkByName` fails with \"not found\" → nil. So no crash. A test could assert no panic and success. Marginal value. I'll keep it as coverage note, not a finding. Per instructions: \"Recommend the smallest useful check for a concrete gap\" — the gap is real (the race fix ordering is untested, and the early path is untested). But given both require netlink or refactoring, a coverage note is honest. Actually, I can suggest ONE small check: refactor-free — a unit test for the guard semantics is trivial if `deleteSpecialLinkNodes` took the specialNodes slice... I'll put it in coverage notes with a suggestion.\n\n3. What about documentation? No user-visible flag changes; destroy behavior fix — no doc updates needed. Release notes? The repo has docs/rn — a bug fix PR would typically add release notes, but I shouldn't demand. Not a finding.\n\n4. Schema: no topology schema changes. N/A.\n\nLet me also double-check that the moved `wg.Wait()` doesn't change behavior in the `ctx.Done()` path: if ctx cancelled, workers return early (case <-ctx.Done()), but the sender loop `for _, n := range c.Nodes { concurrentChan <- n }` blocks forever if all workers exited! Pre-existing bug (send on channel with no readers → deadlock). Wait: workers exit on ctx.Done; senders keep sending → deadlock on unbuffered channel. Pre-existing in base. Not PR-introduced. Skip (pre-existing; per scope \"Focus on issues introduced or materially worsened by this PR\").\n\nHmm — but does the PR change interact? The PR moved wg.Wait earlier but the deadlock scenario is unchanged. Skip; maybe coverage note.\n\nNow, one more scan: is `deleteSpecialLinkNodes` also needed in the `else` branch (`deleteContainersDirect` — destroy-by-name-only)? There c.Nodes==0, no resolved links, no endpoints — no-op anyway. Fine.\n\nLet me now also double check the diff hunk at destroy.go:418-430 in the diff corresponds to head lines 422-427 — yes.\n\nOne more sanity check on the race-fix comment accuracy: \"vxlan-stitch teardown deletes veth pairs from containers concurrently with host-namespace VXLAN interfaces\". Worker deletes veth pairs (container side + host-side ve- iface via LinkVEth.Remove), special node deletes vx- VXLAN interfaces (via LinkVxlan.Remove on the host node's endpoints). But WAIT — the host node's endpoints include BOTH the ve- veth host endpoints AND the vx- vxlan endpoints. `deleteSpecialLinkNodes` → host node Delete → iterates endpoints: for ve- endpoint, link = LinkVEth → Remove → deletes veth; for vx- endpoint, link = LinkVxlan → Remove. So special-node delete itself removes veths AND vxlan. And node workers remove the container-side endpoints' links — for a plain host link, the container endpoint's link is the SAME LinkVEth as the host endpoint's. So in base, worker (container node Delete → LinkVEth.Remove) and special delete (host node Delete → same LinkVEth.Remove) concurrently — deployMutex protects per-link, but DeploymentState check... `LinkVEth.Remove` takes mutex then checks state — idempotent. Hmm, so where's the race for plain links? The mutex serializes. For vxlan-stitch: worker deletes container endpoint's link = vethLink (the veth component), special delete removes vxlanLink — different links, no shared mutex → concurrent netlink ops on related interfaces (the stitch TC filters reference both). If the veth is deleted while the TC filter setup... at destroy, teardown order: `stitch()` creates qdiscs/filters; Remove presumably removes them? Actually LinkVxlan.Remove only deletes the vx- iface; LinkVEth.Remove deletes the veth pair. TC filters vanish with the interfaces. So the \"race\" is likely: deleting the vxlan interface while the veth's host side is being deleted — kernel handles either order... but there might be a real-world issue (e.g., netlink link delete of the veth's peer while vxlan removal triggers...). The PR author documented it as a race; the fix (serialize) is safe regardless. I'll accept the stated rationale; the fix can't hurt.\n\nActually — hmm, is serialization SAFE? Consider: special node delete removes vx- VXLAN and ve- veth host ends. Node workers remove container-side interfaces. Serialized now: workers first, then special. Any case where special must run FIRST? E.g., host endpoint in the same netns as... For rootNamespaceBased nodes (e.g., sonic/ost kinds?) whose endpoints ARE host interfaces — node worker Delete → e.GetLink().Remove — those links may involve the same host interfaces the special nodes hold? For mgmt-br: mgmt-net link veths — container end + bridge end. The bridge end lives in host ns attached to bridge — actually LinkMgmtNet deploys a veth with one end in container and other end... `bridgeEp` with iface = host-interface; `GenericLinkNode.AddLinkToContainer` moves the link into the mgmt-br node's ns (host ns) and masters it to the bridge. So mgmt veth: container end in container, bridge end (host-interface name) in host ns mastered to bridge. Node worker Delete (container) → LinkVEth.Remove → removes both ends. Special mgmt-br Delete → same LinkVEth.Remove. Idempotent, mutex-protected. Fine either order.\n\nFor vxlan: worker deletes veth component; special deletes vxlan iface. Any order is fine functionally (both get removed). Serialization avoids concurrent netlink churn — plausible kernel-level race (e.g., \"exceeded the maximum number of netlink messages\" or interface index reuse?). Whatever — safe.\n\nNow finalize. Findings:\n\nActually, let me reconsider finding 1 (missing comment). Look at the diff again:\n\n```\n\tif len(containers) == 0 {\n+\t\tif len(c.Nodes) > 0 && len(c.Links) > 0 {\n+\t\t\tc.deleteSpecialLinkNodes(ctx)\n+\t\t}\n\t\treturn nil\n\t}\n```\n\nNo comment explaining the scenario (\"containers already gone but host/mgmt-br/vxlan artifacts remain\"). Given the file has rich commenting elsewhere (e.g., the failedLabDirs comment), the absence stands out. I'll file P4.\n\nAnything else? Let me think about whether `deleteSpecialLinkNodes` in the early path should be gated on `len(c.Links) > 0` at all vs. always when Nodes>0 — if c.Links==0 but singleton has stale endpoints from another lab in-process (destroy --all where lab A failed mid-destroy before deleteNodes: e.g., `return err` at line 399 after list error), then lab B with no links and containers==0... wait lab B containers==0 means early path guard fails → return without deleting. But lab B's OWN special endpoints — none (Links==0). So no leftover from lab B. Fine. The gate is correct.\n\nActually — hmm, one more scenario: lab A destroy fails early (before deleteNodes) leaving its special endpoints attached with live interfaces, AND lab B is destroyed after: lab B containers>0 → deleteNodes → special deletes → iterates lab A's stale endpoints → attempts Remove → lab A's ve-/vx- interfaces (still live if lab A partially deployed) get DELETED. This is pre-existing (base same). OK.\n\nFinal check — verify there are no other tests in the repo covering deleteNodes ordering. Already grepped: no tests reference deleteNodes.\n\nAlso let me verify the head file's line numbers for the finding anchors:\n- Early-return guard: head core/destroy.go lines 422-427.\n- deleteSpecialLinkNodes call + comment in deleteNodes: head lines 701-706.\n\nBase anchors: base/core/destroy.go lines 422-424 (old early return) and 696-710.\n\nNow write the review. Findings:\n\nP4-1: Missing rationale comment on the new early-return cleanup guard (head destroy.go:422-425).\n\nP4-2 (maybe): No runnable check for the new cleanup path / ordering fix (ponytail requirement). I'll decide: include as P4 finding with concrete suggestion (extend the existing `destroytest` fake-runtime harness: build the copy via `makeCopyForDestroy` with a topology that defines a `host:` link, assert `destroy()` returns nil with zero containers — minimal, at least pins the guard's reachability; optionally assert the special-node deletion was attempted via a hook). Hmm. The smallest useful check: a test that `destroy()` with `listEmptyAfterFirst` and a host-link topology still returns success (currently would pass in base too — the early return). The behavior difference: special nodes deleted. Without a seam, can't assert. So the truly useful check requires making `deleteSpecialLinkNodes` testable — e.g., extracting the special-nodes construction so a fake can be injected. That's a mild refactor. I'll present it as P4 with that concrete suggestion, acknowledging it needs a small seam.\n\nActually, let me reconsider: is there any way the test could observe? `deleteSpecialLinkNodes` calls `n.Delete(ctx)` on `GetHostLinkNode()` singleton — `GenericLinkNode.Delete` iterates endpoints. In the test, the host link topology DOES attach an endpoint (ResolveLinks runs in makeCopyForDestroy). Then Delete → `l.Remove(ctx)` → LinkVEth.Remove → `EndpointGeneric.Remove` → `ExecFunction` on host nspath → LinkByName(\"hostIfName\") → in test env (root in CI?), interface doesn't exist → nil. So no observable. Unless we set host-interface to an existing interface name like \"lo\"! Then LinkByName(\"lo\") succeeds → `netlink.LinkDel(lo)` → fails (EPERM? no, deleting lo as root... risky). No.\n\nSo: a meaningful test needs a seam. I'll suggest the minimal seam: have `deleteSpecialLinkNodes` iterate over `c.getSpecialLinkNodes()` (already exists in clab.go! It returns host + default mgmt-br only though — not all mgmt networks). Hmm interesting: `getSpecialLinkNodes()` returns only the DEFAULT mgmt node, while deleteSpecialLinkNodes uses GetMgmtBrLinkNodes() (all). Not identical.\n\nSimplest seam: record invocations via a package-level test hook, or make the function a method taking `specialNodes []clablinks.Node` parameter: `func (c *CLab) deleteSpecialLinkNodes(ctx, specialNodes)`. Eh.\n\nAlternative smallest check: test that `destroy()` with zero containers and a topology WITH links deletes special nodes — observable through the singleton's endpoint state? After Delete, `DeploymentState` of the LinkVEth becomes Removed. But endpoints live on the singleton... a test could do: build copy via makeCopyForDestroy with host-link topo; run c.destroy with empty containers; then assert `GetHostLinkNode().GetEndpoints()[0].GetLink().(*LinkVEth).DeploymentState == LinkDeploymentStateRemoved`. But in base behavior (no delete), state would be Deployed. That IS observable without netlink effects (Remove is idempotent and only touches netlink if interfaces exist — they don't in test). And it directly tests the new guard! Nice — that's a concrete, cheap check. It relies on `GetEndpoints()` on the singleton. Feasible. I'll suggest that.\n\nWait, does `LinkVEth.Remove` actually set state Removed even when endpoint Remove errors? Yes — it logs and sets Removed. In base, state stays whatever initial (zero value — `LinkDeploymentState` zero probably \"New\"/\"NotDeployed\"). Let me check the enum zero value to make sure base≠Removed. LinkDeploymentStateRemoved — check link.go constants.",
           "time": {
-            "start": 1793813533972
+            "start": 1793813533972,
+            "end": 1793813571962
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79ee97e001nB6IJjShaTVUAR",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79e4c3f001reCojm6v19hEKZ",
+          "callID": "call_a9d438e7f24042cc99380321",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/links",
+              "pattern": "LinkDeploymentState\\w+ LinkDeploymentState|type LinkDeploymentState"
+            },
+            "output": "Found 1 matches\n/source/head/links/link.go:\n  Line 24: type LinkDeploymentState uint8\n",
+            "title": "LinkDeploymentState\\w+ LinkDeploymentState|type LinkDeploymentState",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793813571971,
+              "end": 1793813571981
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79ee990001Y5o9tgNjlabVFN",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79e4c3f001reCojm6v19hEKZ",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 87190,
+            "input": 179,
+            "output": 39,
+            "reasoning": 4028,
+            "cache": {
+              "read": 82944,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a79ee995001TesulSlyak5HDh",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813571989
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_1a79ee996001cHp14u72JuGveu",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79ee995001TesulSlyak5HDh",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_1a79d55d2001DwCalBmAJLaXtk"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79ee9b3001izC1j6wYFmSHAR",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813572019,
+          "completed": 1793813586596
+        },
+        "parentID": "msg_1a79ee995001TesulSlyak5HDh",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 30354,
+          "input": 28667,
+          "output": 1676,
+          "reasoning": 11,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79ef378001vwx4X0q2SJ7FCS",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79ee9b3001izC1j6wYFmSHAR"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79ef37a001m1aVv0jdnbCMWq",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79ee9b3001izC1j6wYFmSHAR",
+          "text": "Produce the summary in the exact template format.",
+          "time": {
+            "start": 1793813574522,
+            "end": 1793813574641
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a79ef3f300173309JFDsZcq5i",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79ee9b3001izC1j6wYFmSHAR",
+          "text": "## Objective\n- Perform a source-only code review of a read-only PR snapshot at `/source` (containerlab repo), following `standards.json` rules (karpathy-guidelines.mdc, ponytail.mdc), and return a trusted result schema for the review.\n\n## Important Details\n- Head: `391b213e646cd3b00d9e9711313d53782e8d0c82`; base/target base: `ada013019d3af81e3abae66c26650328973f767e`.\n- Permalink roots: head `https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/`, base `https://github.com/srl-labs/containerlab/blob/ada013019d3af81e3abae66c26650328973f767e/`.\n- Manifest: snapshot complete; single changed path: `M core/destroy.go` (head: 23270 bytes, 843 lines).\n- Rules files live at `/source/standards/karpathy-guidelines.mdc` and `/source/standards/ponytail.mdc` (not at the paths listed in standards.json).\n- PR change 1: in `destroy()` (head lines ~422-427), when `len(containers) == 0`, new guard `if len(c.Nodes) > 0 && len(c.Links) > 0 { c.deleteSpecialLinkNodes(ctx) }` before `return nil` — cleans orphaned host/mgmt-br link nodes when all containers are already gone (partial destroy / reconfigure).\n- PR change 2: in `deleteNodes()` (head lines ~697-709), `wg.Wait()` moved BEFORE special node deletion; special-node loop extracted into new `func (c *CLab) deleteSpecialLinkNodes(ctx context.Context)` (head line 709). Fixes race: node workers deleting container-side veths concurrently with host-namespace VXLAN interface deletes (vxlan-stitch teardown, per added comment at line 704).\n- Callers of `c.destroy(`: `core/destroy.go:122` (Destroy) and `core/deploy.go:198` (`--reconfigure` path, after `ResolveLinks()` at line 190 — so `c.Links` populated there).\n- Key semantics verified: `c.Links` is `map[int]clablinks.Link` (core/clab.go:43), populated by `ResolveLinks()` (clab.go:906, resets via `resetResolvedLinks` clab.go:934). Special link nodes are process-wide singletons: `GetHostLinkNode()` (links/link_host.go:112) and `GetMgmtBrLinkNodes()` (links/link_mgmt-net.go:209, global registry `_mgmtBrLinkNodes` keyed by network name). `GenericLinkNode.Delete` (links/generic_link_node.go:114) iterates attached endpoints → `EndpointGeneric.Remove` (links/endpoint.go:140, deletes iface if present in node ns). Endpoints attach to special nodes only during `ResolveLinks` for non-filtered links, so `len(c.Links) == 0` ⇒ no-op; guard is safe.\n- Base `deleteNodes` (base/core/destroy.go:657-711) deleted special nodes BEFORE `wg.Wait()` — the race the PR fixes.\n- Cross-lab singleton endpoint accumulation exists but is PRE-EXISTING (delete special nodes per lab; stale endpoints retried; `LinkVEth.Remove` idempotent via `DeploymentState == LinkDeploymentStateRemoved`, links/link_veth.go:327-341). New early call site doesn't materially worsen it.\n- VxlanStitched.Remove (links/link_vxlan_stitched.go:96) deletes veth + vxlan pieces; `filterClabNodes` (core/clab.go:289) removes filtered-out nodes from topology, so filtered links resolve to nil and don't attach endpoints. `CleanupFilteredLinks` (links/link.go:380) only runs in non-early path — pre-existing behavior unchanged.\n- No new tests added; existing `core/destroy_test.go` uses `listEmptyAfterFirst` fake-runtime pattern but topology has no links so new path isn't exercised. Hard to assert netlink deletes without a seam; likely coverage note, not blocking finding.\n- Source-only review: tests were NOT executed; limitation must be disclosed in final result.\n\n## Work State\n### Completed\n- Read standards.json, diff.txt, manifest.json; resolved rule file locations via glob.\n- Read head `core/destroy.go` and base `core/destroy.go` around both hunks; traced all `c.destroy(` callers (destroy.go:122, deploy.go:198).\n- Verified: `c.Links` population path, `ResolveLinks`/`resetResolvedLinks`, singleton special-node semantics, `GenericLinkNode.Delete`, `EndpointGeneric.Remove`, `LinkVEth.Remove` idempotency, `VxlanStitched.Remove` and vxlan-stitch resolution (links/link_vxlan.go:50-220, vxlan endpoint attached to host node), `filterClabNodes`, `CleanupFilteredLinks`, `deleteSpecialLinkNodes` has exactly 3 references (all in core/destroy.go: 424, 706, 709).\n- Analysis concluded: both changes are correct; race fix ordering correct (`close(concurrentChan)` → `wg.Wait()` → `deleteSpecialLinkNodes`); early-return guard safe; nil `c.Links` map safe (`len(nil map)` = 0); no schema/docs impact (no CLI flag changes; docs/cmd/*.md are generated).\n\n### Active\n- Finalizing review verdict; last inspection was `links/link_mgmt-net.go` mgmt-br endpoint semantics (no issue found).\n\n### Blocked\n- (none)\n\n## Next Move\n1. Produce final trusted result schema: no blocking findings; likely P4 notes — (a) missing explanatory comment for the new early-return guard (`len(c.Links) > 0` is non-obvious), (b) coverage gap: no test exercises the containers==0 special-link deletion path (fake-runtime pattern `listEmptyAfterFirst` exists but topology has no links); disclose source-only limitation (tests not executed).\n2. Optionally quick-check `GetHostLinkNode()` nil-return edge case (pre-existing, ns failure) before finalizing — determined pre-existing, not introduced by PR.\n\n## Relevant Files\n- `/source/core/destroy.go` (head/base copies under `/source/head/`, `/source/base/`): the only changed file; early-return special-link deletion (~L422-427) and `deleteNodes`/`deleteSpecialLinkNodes` refactor (~L697-720).\n- `/source/standards/karpathy-guidelines.mdc`, `/source/standards/ponytail.mdc`: review rules (surgical changes, simplicity, runnable checks).\n- `/source/core/deploy.go:190-198`: reconfigure caller of `destroy` with resolved Links.\n- `/source/core/clab.go:43,289,895-944`: `Links` field, `filterClabNodes`, `getSpecialLinkNodes`, `ResolveLinks`.\n- `/source/links/link_host.go`, `/source/links/link_mgmt-net.go`, `/source/links/generic_link_node.go`, `/source/links/endpoint.go`, `/source/links/link_veth.go`, `/source/links/link_vxlan.go`, `/source/links/link_vxlan_stitched.go`, `/source/links/link.go`: special node/endpoint/link removal semantics backing the race analysis.\n- `/source/core/destroy_test.go`: existing destroy tests; no coverage for the new early-return path.",
+          "time": {
+            "start": 1793813574643,
+            "end": 1793813586590
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f22a1001T0L8584FPQPQqN",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79ee9b3001izC1j6wYFmSHAR",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 30354,
+            "input": 28667,
+            "output": 1676,
+            "reasoning": 11,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813586599
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1a79f22a80018lFPAxUxSZkEnh",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1793813586600,
+            "end": 1793813586600
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f22ad001ozqf0iOeGoSTGW",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813586605,
+          "completed": 1793813588750
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 18180,
+          "input": 15230,
+          "output": 48,
+          "reasoning": 22,
+          "cache": {
+            "read": 2880,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f2996001Q1ArzMgNJMdV1A",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f22ad001ozqf0iOeGoSTGW"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79f2998001LzRsAxjc5AyyDu",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f22ad001ozqf0iOeGoSTGW",
+          "text": "Let me check the LinkDeploymentState constants and the fake-runtime harness in destroy_test.go, then finalize.",
+          "time": {
+            "start": 1793813588376,
+            "end": 1793813588652
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f2aae001obNNbtUjXZtr6k",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f22ad001ozqf0iOeGoSTGW",
+          "callID": "call_56726f427fc146fc8b69dc65",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/link.go",
+              "limit": 20,
+              "offset": 20
+            },
+            "output": "<path>/source/head/links/link.go</path>\n<type>file</type>\n<content>\n20: \t\"github.com/vishvananda/netlink\"\n21: \t\"gopkg.in/yaml.v2\"\n22: )\n23: \n24: type LinkDeploymentState uint8\n25: \n26: const (\n27: \tLinkDeploymentStateNotDeployed = iota\n28: \t// LinkDeploymentStateHalfDeployed is a state in which one of the endpoints\n29: \t// of the links finished deploying and the other one is not yet deployed.\n30: \tLinkDeploymentStateHalfDeployed\n31: \tLinkDeploymentStateFullDeployed\n32: \tLinkDeploymentStateRemoved\n33: \n34: \townershipAltNamePrefix = \"clab-o-\"\n35: \n36: \tlinkDeployRetries      = 3\n37: \tlinkDeployRetryBackoff = 100 * time.Millisecond\n38: )\n39: \n\n(Showing lines 20-39 of 804. Use offset=40 to continue.)\n</content>",
+            "title": "source/head/links/link.go",
+            "metadata": {
+              "preview": "\t\"github.com/vishvananda/netlink\"\n\t\"gopkg.in/yaml.v2\"\n)\n\ntype LinkDeploymentState uint8\n\nconst (\n\tLinkDeploymentStateNotDeployed = iota\n\t// LinkDeploymentStateHalfDeployed is a state in which one of the endpoints\n\t// of the links finished deploying and the other one is not yet deployed.\n\tLinkDeploymentStateHalfDeployed\n\tLinkDeploymentStateFullDeployed\n\tLinkDeploymentStateRemoved\n\n\townershipAltNamePrefix = \"clab-o-\"\n\n\tlinkDeployRetries      = 3\n\tlinkDeployRetryBackoff = 100 * time.Millisecond\n)\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/link.go",
+                "text": "\t\"github.com/vishvananda/netlink\"\n\t\"gopkg.in/yaml.v2\"\n)\n\ntype LinkDeploymentState uint8\n\nconst (\n\tLinkDeploymentStateNotDeployed = iota\n\t// LinkDeploymentStateHalfDeployed is a state in which one of the endpoints\n\t// of the links finished deploying and the other one is not yet deployed.\n\tLinkDeploymentStateHalfDeployed\n\tLinkDeploymentStateFullDeployed\n\tLinkDeploymentStateRemoved\n\n\townershipAltNamePrefix = \"clab-o-\"\n\n\tlinkDeployRetries      = 3\n\tlinkDeployRetryBackoff = 100 * time.Millisecond\n)\n",
+                "lineStart": 20,
+                "lineEnd": 39,
+                "totalLines": 804,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793813588658,
+              "end": 1793813588663
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f2aee001yLwmcJMY9H5fqQ",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f22ad001ozqf0iOeGoSTGW",
+          "callID": "call_babda6bb4a7e43b18c76f359",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/destroy_test.go",
+              "limit": 120
+            },
+            "output": "<path>/source/head/core/destroy_test.go</path>\n<type>file</type>\n<content>\n1: // Copyright 2020 Nokia\n2: // Licensed under the BSD 3-Clause License.\n3: // SPDX-License-Identifier: BSD-3-Clause\n4: \n5: package core\n6: \n7: import (\n8: \t\"context\"\n9: \t\"errors\"\n10: \t\"fmt\"\n11: \t\"os\"\n12: \t\"path/filepath\"\n13: \t\"sync\"\n14: \t\"sync/atomic\"\n15: \t\"testing\"\n16: \t\"time\"\n17: \n18: \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n19: \tclaberrors \"github.com/srl-labs/containerlab/errors\"\n20: \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n21: \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n22: \tclabtypes \"github.com/srl-labs/containerlab/types\"\n23: )\n24: \n25: // makeCopyForDestroy must apply WithTopoPath (or WithLabNameOnly) before WithNodeFilter so that\n26: // filterClabNodes runs against a loaded topology. This mirrors the option order used there.\n27: func TestDestroyMakeCopyOptionOrder_nodeFilterAfterTopo(t *testing.T) {\n28: \tt.Parallel()\n29: \n30: \ttopo := filepath.Join(\"test_data\", \"topo1.yml\")\n31: \n32: \tc, err := NewContainerLab(\n33: \t\tWithTopoPath(topo, nil),\n34: \t\tWithNodeFilter([]string{\"node1\"}),\n35: \t\tWithSkippedBindsPathsCheck(),\n36: \t)\n37: \tif err != nil {\n38: \t\tt.Fatal(err)\n39: \t}\n40: \n41: \tif _, ok := c.Config.Topology.Nodes[\"node1\"]; !ok {\n42: \t\tt.Fatal(\"expected node1 to remain after filter\")\n43: \t}\n44: \n45: \tif _, ok := c.Config.Topology.Nodes[\"node2\"]; ok {\n46: \t\tt.Fatal(\"expected node2 to be removed by node filter\")\n47: \t}\n48: }\n49: \n50: func TestDestroyMakeCopyOptionOrder_nodeFilterBeforeTopoFails(t *testing.T) {\n51: \tt.Parallel()\n52: \n53: \ttopo := filepath.Join(\"test_data\", \"topo1.yml\")\n54: \n55: \t_, err := NewContainerLab(\n56: \t\tWithNodeFilter([]string{\"node1\"}),\n57: \t\tWithTopoPath(topo, nil),\n58: \t\tWithSkippedBindsPathsCheck(),\n59: \t)\n60: \tif err == nil {\n61: \t\tt.Fatal(\"expected error when node filter is applied before topology is loaded\")\n62: \t}\n63: \n64: \tif !errors.Is(err, claberrors.ErrIncorrectInput) {\n65: \t\tt.Fatalf(\"expected ErrIncorrectInput, got %v\", err)\n66: \t}\n67: }\n68: \n69: func TestWithLabNameOnly_setsNameWithoutTopologyFile(t *testing.T) {\n70: \tt.Parallel()\n71: \n72: \tc, err := NewContainerLab(WithLabNameOnly(\"my-lab\"))\n73: \tif err != nil {\n74: \t\tt.Fatal(err)\n75: \t}\n76: \n77: \tif c.Config.Name != \"my-lab\" {\n78: \t\tt.Fatalf(\"Config.Name = %q, want my-lab\", c.Config.Name)\n79: \t}\n80: \n81: \tif c.TopoPaths.TopologyFileIsSet() {\n82: \t\tt.Fatal(\"topology file should not be set for lab-name-only init\")\n83: \t}\n84: }\n85: \n86: type noopLabRuntime struct {\n87: \tclablabruntime.LabRuntime\n88: }\n89: \n90: func TestWithKeepMgmtNet_noopsForLabRuntime(t *testing.T) {\n91: \tt.Parallel()\n92: \n93: \tc := &CLab{\n94: \t\tLabRuntime:        noopLabRuntime{},\n95: \t\tglobalRuntimeName: clablabruntime.ClabernetesRuntimeName,\n96: \t}\n97: \n98: \tif err := WithKeepMgmtNet()(c); err != nil {\n99: \t\tt.Fatalf(\"WithKeepMgmtNet returned error for lab runtime: %v\", err)\n100: \t}\n101: }\n102: \n103: func TestAddMgmtNetworksFromContainers(t *testing.T) {\n104: \tm := &clabtypes.MgmtNet{Network: \"clab\"}\n105: \tc := &CLab{Config: &Config{Mgmt: m, MgmtNetworks: clabtypes.MgmtNetworks{m}}}\n106: \n107: \tctr := func(network, bridge string) clabruntime.GenericContainer {\n108: \t\treturn clabruntime.GenericContainer{\n109: \t\t\tNetworkName: network,\n110: \t\t\tLabels:      map[string]string{clabconstants.NodeMgmtNetBr: bridge},\n111: \t\t}\n112: \t}\n113: \tc.addMgmtNetworksFromContainers([]clabruntime.GenericContainer{\n114: \t\tctr(\"clab\", \"br-clab\"),\n115: \t\tctr(\"oob\", \"br-oob\"),\n116: \t\tctr(\"oob\", \"br-oob\"),\n117: \t\tctr(\"host\", \"\"),\n118: \t\tctr(\"unknown\", \"\"),\n119: \t})\n120: \n\n(Showing lines 1-120 of 953. Use offset=121 to continue.)\n</content>",
+            "title": "source/head/core/destroy_test.go",
+            "metadata": {
+              "preview": "// Copyright 2020 Nokia\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage core\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sync\"\n\t\"sync/atomic\"\n\t\"testing\"\n\t\"time\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclaberrors \"github.com/srl-labs/containerlab/errors\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/destroy_test.go",
+                "text": "// Copyright 2020 Nokia\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage core\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sync\"\n\t\"sync/atomic\"\n\t\"testing\"\n\t\"time\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclaberrors \"github.com/srl-labs/containerlab/errors\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n)\n\n// makeCopyForDestroy must apply WithTopoPath (or WithLabNameOnly) before WithNodeFilter so that\n// filterClabNodes runs against a loaded topology. This mirrors the option order used there.\nfunc TestDestroyMakeCopyOptionOrder_nodeFilterAfterTopo(t *testing.T) {\n\tt.Parallel()\n\n\ttopo := filepath.Join(\"test_data\", \"topo1.yml\")\n\n\tc, err := NewContainerLab(\n\t\tWithTopoPath(topo, nil),\n\t\tWithNodeFilter([]string{\"node1\"}),\n\t\tWithSkippedBindsPathsCheck(),\n\t)\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\tif _, ok := c.Config.Topology.Nodes[\"node1\"]; !ok {\n\t\tt.Fatal(\"expected node1 to remain after filter\")\n\t}\n\n\tif _, ok := c.Config.Topology.Nodes[\"node2\"]; ok {\n\t\tt.Fatal(\"expected node2 to be removed by node filter\")\n\t}\n}\n\nfunc TestDestroyMakeCopyOptionOrder_nodeFilterBeforeTopoFails(t *testing.T) {\n\tt.Parallel()\n\n\ttopo := filepath.Join(\"test_data\", \"topo1.yml\")\n\n\t_, err := NewContainerLab(\n\t\tWithNodeFilter([]string{\"node1\"}),\n\t\tWithTopoPath(topo, nil),\n\t\tWithSkippedBindsPathsCheck(),\n\t)\n\tif err == nil {\n\t\tt.Fatal(\"expected error when node filter is applied before topology is loaded\")\n\t}\n\n\tif !errors.Is(err, claberrors.ErrIncorrectInput) {\n\t\tt.Fatalf(\"expected ErrIncorrectInput, got %v\", err)\n\t}\n}\n\nfunc TestWithLabNameOnly_setsNameWithoutTopologyFile(t *testing.T) {\n\tt.Parallel()\n\n\tc, err := NewContainerLab(WithLabNameOnly(\"my-lab\"))\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\tif c.Config.Name != \"my-lab\" {\n\t\tt.Fatalf(\"Config.Name = %q, want my-lab\", c.Config.Name)\n\t}\n\n\tif c.TopoPaths.TopologyFileIsSet() {\n\t\tt.Fatal(\"topology file should not be set for lab-name-only init\")\n\t}\n}\n\ntype noopLabRuntime struct {\n\tclablabruntime.LabRuntime\n}\n\nfunc TestWithKeepMgmtNet_noopsForLabRuntime(t *testing.T) {\n\tt.Parallel()\n\n\tc := &CLab{\n\t\tLabRuntime:        noopLabRuntime{},\n\t\tglobalRuntimeName: clablabruntime.ClabernetesRuntimeName,\n\t}\n\n\tif err := WithKeepMgmtNet()(c); err != nil {\n\t\tt.Fatalf(\"WithKeepMgmtNet returned error for lab runtime: %v\", err)\n\t}\n}\n\nfunc TestAddMgmtNetworksFromContainers(t *testing.T) {\n\tm := &clabtypes.MgmtNet{Network: \"clab\"}\n\tc := &CLab{Config: &Config{Mgmt: m, MgmtNetworks: clabtypes.MgmtNetworks{m}}}\n\n\tctr := func(network, bridge string) clabruntime.GenericContainer {\n\t\treturn clabruntime.GenericContainer{\n\t\t\tNetworkName: network,\n\t\t\tLabels:      map[string]string{clabconstants.NodeMgmtNetBr: bridge},\n\t\t}\n\t}\n\tc.addMgmtNetworksFromContainers([]clabruntime.GenericContainer{\n\t\tctr(\"clab\", \"br-clab\"),\n\t\tctr(\"oob\", \"br-oob\"),\n\t\tctr(\"oob\", \"br-oob\"),\n\t\tctr(\"host\", \"\"),\n\t\tctr(\"unknown\", \"\"),\n\t})\n",
+                "lineStart": 1,
+                "lineEnd": 120,
+                "totalLines": 953,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793813588722,
+              "end": 1793813588726
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f2b0c001wggqwBE6aycgRi",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f22ad001ozqf0iOeGoSTGW",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 18180,
+            "input": 15230,
+            "output": 48,
+            "reasoning": 22,
+            "cache": {
+              "read": 2880,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f2b12001W9NbZTBiFOhVAV",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813588754,
+          "completed": 1793813590687
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 19754,
+          "input": 1473,
+          "output": 25,
+          "reasoning": 80,
+          "cache": {
+            "read": 18176,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f3030001nZt6maDjp4PSmv",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f2b12001W9NbZTBiFOhVAV"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79f30320010w7wtpm746VSNA",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f2b12001W9NbZTBiFOhVAV",
+          "text": "Good: `LinkDeploymentStateNotDeployed` is the zero value, so a test could distinguish `NotDeployed`/`FullDeployed` from `Removed` on the singleton's endpoint link after `destroy()` with zero containers. That's a concrete, cheap check suggestion.\n\nLet me also find the existing `listEmptyAfterFirst` fake-runtime test to cite the harness name.",
+          "time": {
+            "start": 1793813590066,
+            "end": 1793813590667
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f328d0014JUw6jd4IVmEZu",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f2b12001W9NbZTBiFOhVAV",
+          "callID": "call_db985b50968845e5bf49a4ca",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core",
+              "pattern": "listEmptyAfterFirst|fakeDestroyRuntime"
+            },
+            "output": "Found 18 matches\n/source/head/core/destroy_test.go:\n  Line 179: \t// listEmptyAfterFirst makes every ListContainers call after the first return no\n\n  Line 181: \tlistEmptyAfterFirst bool\n\n  Line 198: \t\t\treturn &fakeDestroyRuntime{}\n\n  Line 216: type fakeDestroyRuntime struct {\n\n  Line 222: func (f *fakeDestroyRuntime) Init(opts ...clabruntime.RuntimeOption) error {\n\n  Line 230: func (f *fakeDestroyRuntime) WithConfig(cfg *clabruntime.RuntimeConfig) { f.config = cfg }\n\n  Line 232: func (f *fakeDestroyRuntime) WithMgmtNet(mgmt *clabtypes.MgmtNet) { f.mgmt = mgmt }\n\n  Line 234: func (f *fakeDestroyRuntime) Mgmt() *clabtypes.MgmtNet { return f.mgmt }\n\n  Line 236: func (*fakeDestroyRuntime) GetName() string { return \"destroytest\" }\n\n  Line 238: func (f *fakeDestroyRuntime) Config() clabruntime.RuntimeConfig {\n\n  Line 246: func (*fakeDestroyRuntime) GetRuntimeSocket() (string, error) { return \"\", nil }\n\n  Line 248: func (f *fakeDestroyRuntime) ListContainers(\n\n  Line 261: \t\tcase behavior.listEmptyAfterFirst:\n\n  Line 269: func (*fakeDestroyRuntime) CreateNet(\n\n  Line 281: func (*fakeDestroyRuntime) DeleteNet(context.Context) error { return nil }\n\n  Line 283: func (*fakeDestroyRuntime) DeleteContainer(context.Context, string) error { return nil }\n\n  Line 285: func (*fakeDestroyRuntime) GetContainerStatus(\n\n  Line 388: \t\tlistEmptyAfterFirst: true,\n",
+            "title": "listEmptyAfterFirst|fakeDestroyRuntime",
+            "metadata": {
+              "matches": 18,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793813590673,
+              "end": 1793813590683
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f329c0015h27PYJZzAJZ35",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f2b12001W9NbZTBiFOhVAV",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 19754,
+            "input": 1473,
+            "output": 25,
+            "reasoning": 80,
+            "cache": {
+              "read": 18176,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f32a4001RzPW4plSdLw4rw",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813590692,
+          "completed": 1793813592133
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 20168,
+          "input": 427,
+          "output": 28,
+          "reasoning": 1,
+          "cache": {
+            "read": 19712,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f37cb001foLCm1rY8j40gw",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f32a4001RzPW4plSdLw4rw"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f3835001spT6Gdox5E6BhV",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f32a4001RzPW4plSdLw4rw",
+          "callID": "call_8acd74b14d064bf7a8d59abf",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/destroy_test.go",
+              "limit": 115,
+              "offset": 300
+            },
+            "output": "<path>/source/head/core/destroy_test.go</path>\n<type>file</type>\n<content>\n300: topology:\n301:   nodes:\n302:     n1:\n303:       kind: linux\n304:       image: alpine:3\n305: `\n306: \n307: \tif err := os.WriteFile(topo, []byte(fmt.Sprintf(definition, labName)), 0o644); err != nil {\n308: \t\tt.Fatal(err)\n309: \t}\n310: \n311: \treturn topo\n312: }\n313: \n314: // TestDestroyCleanupReportsDestroyFailure reproduces issue 3467: with --cleanup a failed\n315: // destroy must not be reported as success and must not delete the lab directory of a lab\n316: // whose destroy failed.\n317: func TestDestroyCleanupReportsDestroyFailure(t *testing.T) {\n318: \tregisterDestroyTestRuntime()\n319: \n320: \tfor _, tc := range []struct {\n321: \t\tname              string\n322: \t\tfailCreateNet     bool\n323: \t\tlistErrAfterFirst bool\n324: \t}{\n325: \t\t{name: \"makeCopyForDestroy fails\", failCreateNet: true},\n326: \t\t{name: \"destroy fails after the copy was built\", listErrAfterFirst: true},\n327: \t} {\n328: \t\tt.Run(tc.name, func(t *testing.T) {\n329: \t\t\ttopo := writeDestroyTestTopology(t, \"ovr\")\n330: \t\t\tlabDir := t.TempDir()\n331: \n332: \t\t\tbehavior := &destroyTestBehavior{\n333: \t\t\t\tcontainers: []clabruntime.GenericContainer{{\n334: \t\t\t\t\tNames: []string{\"clab-ovr-n1\"},\n335: \t\t\t\t\tLabels: map[string]string{\n336: \t\t\t\t\t\tclabconstants.TopoFile:   topo,\n337: \t\t\t\t\t\tclabconstants.NodeLabDir: labDir,\n338: \t\t\t\t\t},\n339: \t\t\t\t}},\n340: \t\t\t\tfailCreateNet:     tc.failCreateNet,\n341: \t\t\t\tlistErrAfterFirst: tc.listErrAfterFirst,\n342: \t\t\t}\n343: \t\t\tsetDestroyTestBehavior(t, behavior)\n344: \n345: \t\t\tc, err := NewContainerLab(\n346: \t\t\t\tWithTimeout(time.Minute),\n347: \t\t\t\tWithTopoPath(topo, nil),\n348: \t\t\t\tWithRuntime(\"destroytest\", &clabruntime.RuntimeConfig{}),\n349: \t\t\t\tWithSkippedBindsPathsCheck(),\n350: \t\t\t)\n351: \t\t\tif err != nil {\n352: \t\t\t\tt.Fatal(err)\n353: \t\t\t}\n354: \n355: \t\t\terr = c.Destroy(\n356: \t\t\t\tcontext.Background(),\n357: \t\t\t\tWithDestroyMaxWorkers(1),\n358: \t\t\t\tWithDestroyCleanup(),\n359: \t\t\t)\n360: \t\t\tif err == nil {\n361: \t\t\t\tt.Fatal(\"destroy reported success although the destroy failed\")\n362: \t\t\t}\n363: \n364: \t\t\tif _, statErr := os.Stat(labDir); statErr != nil {\n365: \t\t\t\tt.Fatalf(\"lab directory of the failed destroy was removed: %v\", statErr)\n366: \t\t\t}\n367: \t\t})\n368: \t}\n369: }\n370: \n371: // TestDestroyCleanupRemovesLabDirsOnSuccess checks that --cleanup keeps removing lab\n372: // directories of labs that were destroyed successfully.\n373: func TestDestroyCleanupRemovesLabDirsOnSuccess(t *testing.T) {\n374: \tregisterDestroyTestRuntime()\n375: \twithTestHostsFiles(t, t.TempDir())\n376: \n377: \ttopo := writeDestroyTestTopology(t, \"ok\")\n378: \tlabDir := t.TempDir()\n379: \n380: \tbehavior := &destroyTestBehavior{\n381: \t\tcontainers: []clabruntime.GenericContainer{{\n382: \t\t\tNames: []string{\"clab-ok-n1\"},\n383: \t\t\tLabels: map[string]string{\n384: \t\t\t\tclabconstants.TopoFile:   topo,\n385: \t\t\t\tclabconstants.NodeLabDir: labDir,\n386: \t\t\t},\n387: \t\t}},\n388: \t\tlistEmptyAfterFirst: true,\n389: \t}\n390: \tsetDestroyTestBehavior(t, behavior)\n391: \n392: \tc, err := NewContainerLab(\n393: \t\tWithTimeout(time.Minute),\n394: \t\tWithTopoPath(topo, nil),\n395: \t\tWithRuntime(\"destroytest\", &clabruntime.RuntimeConfig{}),\n396: \t\tWithSkippedBindsPathsCheck(),\n397: \t)\n398: \tif err != nil {\n399: \t\tt.Fatal(err)\n400: \t}\n401: \n402: \tif err := c.Destroy(\n403: \t\tcontext.Background(),\n404: \t\tWithDestroyMaxWorkers(1),\n405: \t\tWithDestroyCleanup(),\n406: \t); err != nil {\n407: \t\tt.Fatalf(\"destroy failed: %v\", err)\n408: \t}\n409: \n410: \tif _, statErr := os.Stat(labDir); !os.IsNotExist(statErr) {\n411: \t\tt.Fatalf(\"lab directory of a destroyed lab was not removed: %v\", statErr)\n412: \t}\n413: }\n414: \n\n(Showing lines 300-414 of 953. Use offset=415 to continue.)\n</content>",
+            "title": "source/head/core/destroy_test.go",
+            "metadata": {
+              "preview": "topology:\n  nodes:\n    n1:\n      kind: linux\n      image: alpine:3\n`\n\n\tif err := os.WriteFile(topo, []byte(fmt.Sprintf(definition, labName)), 0o644); err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\treturn topo\n}\n\n// TestDestroyCleanupReportsDestroyFailure reproduces issue 3467: with --cleanup a failed\n// destroy must not be reported as success and must not delete the lab directory of a lab\n// whose destroy failed.\nfunc TestDestroyCleanupReportsDestroyFailure(t *testing.T) {\n\tregisterDestroyTestRuntime()\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/destroy_test.go",
+                "text": "topology:\n  nodes:\n    n1:\n      kind: linux\n      image: alpine:3\n`\n\n\tif err := os.WriteFile(topo, []byte(fmt.Sprintf(definition, labName)), 0o644); err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\treturn topo\n}\n\n// TestDestroyCleanupReportsDestroyFailure reproduces issue 3467: with --cleanup a failed\n// destroy must not be reported as success and must not delete the lab directory of a lab\n// whose destroy failed.\nfunc TestDestroyCleanupReportsDestroyFailure(t *testing.T) {\n\tregisterDestroyTestRuntime()\n\n\tfor _, tc := range []struct {\n\t\tname              string\n\t\tfailCreateNet     bool\n\t\tlistErrAfterFirst bool\n\t}{\n\t\t{name: \"makeCopyForDestroy fails\", failCreateNet: true},\n\t\t{name: \"destroy fails after the copy was built\", listErrAfterFirst: true},\n\t} {\n\t\tt.Run(tc.name, func(t *testing.T) {\n\t\t\ttopo := writeDestroyTestTopology(t, \"ovr\")\n\t\t\tlabDir := t.TempDir()\n\n\t\t\tbehavior := &destroyTestBehavior{\n\t\t\t\tcontainers: []clabruntime.GenericContainer{{\n\t\t\t\t\tNames: []string{\"clab-ovr-n1\"},\n\t\t\t\t\tLabels: map[string]string{\n\t\t\t\t\t\tclabconstants.TopoFile:   topo,\n\t\t\t\t\t\tclabconstants.NodeLabDir: labDir,\n\t\t\t\t\t},\n\t\t\t\t}},\n\t\t\t\tfailCreateNet:     tc.failCreateNet,\n\t\t\t\tlistErrAfterFirst: tc.listErrAfterFirst,\n\t\t\t}\n\t\t\tsetDestroyTestBehavior(t, behavior)\n\n\t\t\tc, err := NewContainerLab(\n\t\t\t\tWithTimeout(time.Minute),\n\t\t\t\tWithTopoPath(topo, nil),\n\t\t\t\tWithRuntime(\"destroytest\", &clabruntime.RuntimeConfig{}),\n\t\t\t\tWithSkippedBindsPathsCheck(),\n\t\t\t)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\n\t\t\terr = c.Destroy(\n\t\t\t\tcontext.Background(),\n\t\t\t\tWithDestroyMaxWorkers(1),\n\t\t\t\tWithDestroyCleanup(),\n\t\t\t)\n\t\t\tif err == nil {\n\t\t\t\tt.Fatal(\"destroy reported success although the destroy failed\")\n\t\t\t}\n\n\t\t\tif _, statErr := os.Stat(labDir); statErr != nil {\n\t\t\t\tt.Fatalf(\"lab directory of the failed destroy was removed: %v\", statErr)\n\t\t\t}\n\t\t})\n\t}\n}\n\n// TestDestroyCleanupRemovesLabDirsOnSuccess checks that --cleanup keeps removing lab\n// directories of labs that were destroyed successfully.\nfunc TestDestroyCleanupRemovesLabDirsOnSuccess(t *testing.T) {\n\tregisterDestroyTestRuntime()\n\twithTestHostsFiles(t, t.TempDir())\n\n\ttopo := writeDestroyTestTopology(t, \"ok\")\n\tlabDir := t.TempDir()\n\n\tbehavior := &destroyTestBehavior{\n\t\tcontainers: []clabruntime.GenericContainer{{\n\t\t\tNames: []string{\"clab-ok-n1\"},\n\t\t\tLabels: map[string]string{\n\t\t\t\tclabconstants.TopoFile:   topo,\n\t\t\t\tclabconstants.NodeLabDir: labDir,\n\t\t\t},\n\t\t}},\n\t\tlistEmptyAfterFirst: true,\n\t}\n\tsetDestroyTestBehavior(t, behavior)\n\n\tc, err := NewContainerLab(\n\t\tWithTimeout(time.Minute),\n\t\tWithTopoPath(topo, nil),\n\t\tWithRuntime(\"destroytest\", &clabruntime.RuntimeConfig{}),\n\t\tWithSkippedBindsPathsCheck(),\n\t)\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\tif err := c.Destroy(\n\t\tcontext.Background(),\n\t\tWithDestroyMaxWorkers(1),\n\t\tWithDestroyCleanup(),\n\t); err != nil {\n\t\tt.Fatalf(\"destroy failed: %v\", err)\n\t}\n\n\tif _, statErr := os.Stat(labDir); !os.IsNotExist(statErr) {\n\t\tt.Fatalf(\"lab directory of a destroyed lab was not removed: %v\", statErr)\n\t}\n}\n",
+                "lineStart": 300,
+                "lineEnd": 414,
+                "totalLines": 953,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793813592122,
+              "end": 1793813592129
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f3842001ckwXY3vdnir8Oh",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f32a4001RzPW4plSdLw4rw",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 20168,
+            "input": 427,
+            "output": 28,
+            "reasoning": 1,
+            "cache": {
+              "read": 19712,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f38490010WH9f5Vwp3jmyu",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813592137,
+          "completed": 1793813603816
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 22698,
+          "input": 1308,
+          "output": 31,
+          "reasoning": 1263,
+          "cache": {
+            "read": 20096,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f3cc9001K7mlEHhbdnbnzK",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f38490010WH9f5Vwp3jmyu"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79f3ccb001dlp4dywJKV5P7c",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f38490010WH9f5Vwp3jmyu",
+          "text": "The harness exists (`fakeDestroyRuntime` + `registerDestroyTestRuntime` + `writeDestroyTestTopology`). A test for the new path could use a topology with a `host:` link, containers empty (`listEmptyAfterFirst: true` with first call returning nothing, or just `containers: []`), then after `Destroy`, assert the singleton host endpoint's link state is `LinkDeploymentStateRemoved`. Feasible without netlink side effects since the interfaces don't exist (Remove tolerates not-found). Actually wait — will `destroy()` reach `deleteSpecialLinkNodes` in such a test? Early path requires `len(c.Nodes) > 0 && len(c.Links) > 0`. `makeCopyForDestroy` → `ResolveLinks()` → host link resolved → endpoint attached to `GetHostLinkNode()` singleton. Yes. Then `Destroy` → `deleteSpecialLinkNodes` → `LinkVEth.Remove` → `EndpointGeneric.Remove` → `ExecFunction` with host nspath — let me double-check `EndpointGeneric.Remove` semantics once more to ensure no hard failure in a test env (it logs and continues? No — `EndpointGeneric.Remove` returns err if LinkByName gives non-LinkNotFoundError... in test env, host ns `LinkByName` of a nonexistent `hostIfName` → error LinkNotFoundError → nil). But hold on — in CI tests run as non-root? Getting the current netns handle and calling `LinkByName` doesn't require root; listing links requires... `LinkByName` uses netlink socket; listing may need CAP_NET_ADMIN? Actually netlink RTM_GETLINK typically works unprivileged for basic queries. Even if it errors, `l.Remove` logs and sets Removed. Fine — the assertion holds regardless.\n\nGood. Now let me write the final review.\n\nFindings summary:\n1. P4 — Missing rationale comment on the new early-return special-node cleanup (head `core/destroy.go:422-425`). The guard `len(c.Nodes) > 0 && len(c.Links) > 0` is non-obvious: `c.Links` is populated by `ResolveLinks()` in `makeCopyForDestroy` and serves as a proxy for \"endpoints were attached to the shared host/mgmt-br nodes\". A reader may wonder why cleanup is skipped when `len(c.Links) == 0`, or remove the `c.Nodes > 0` check. Suggest a one-line comment mirroring the one added at `deleteNodes` (lines 701-704).\n\n2. P4 — No runnable check for either behavioral change: the early-return cleanup path and the `wg.Wait()`-before-special-deletes ordering. Concrete suggestion: extend the existing `destroytest` harness — write a topology whose single node has a `host:` link, run `Destroy` with no containers, and assert `GetHostLinkNode().GetEndpoints()` link reaches `LinkDeploymentStateRemoved` (the interfaces don't exist in the test env, so `Remove` is a harmless no-op logging; the zero value `LinkDeploymentStateNotDeployed` distinguishes the old behavior).\n\nCoverage notes: complete; source-only, no tests executed. Pre-existing observations (cross-lab stale singleton endpoints, ctx-cancel sender deadlock, tool containers skipped on early return, veth-stitch far ends not covered by special-node cleanup in the out-of-band-removal scenario) noted as not introduced/worsened by this PR.\n\nActually, wait — should the veth-stitch far-end gap be a finding? The PR's goal is \"destroy topology's special link nodes even if containers are already gone\" (per diff hunk intent). veth-stitch far ends ARE host-namespace leftovers of the same class, and in the exact scenario the PR fixes (containers removed out-of-band), they are NOT cleaned by `deleteSpecialLinkNodes` because `buildVEthStitchSegment` never calls `AddEndpoint` on the host node (head `links/link_veth_stitched.go:205-207`). Is that a defect in the PR or a pre-existing gap? The PR doesn't claim to fix veth-stitch. The cleanup for stitch far ends exists only via node Delete and `cleanupFilteredVethStitch` (altname-based). So out-of-band container removal + stitch links → `clab-s-<hash>` interfaces linger even after this PR. Hmm — but is that true even in a NORMAL destroy? No: normal destroy with containers present → node Delete removes segments including far ends. So the PR improves the special-node class but leaves stitch far ends in the same scenario. I think this is a legitimate P3-ish observation about incompleteness of the fix relative to its goal... but careful: in the scenario where containers were removed out-of-band, were the far ends ever created? Yes, at deploy. And no destroy path cleans them now (early path doesn't; filtered cleanup only with node filter). Actually there's another possibility: `RemoveOwnedInterface` — used by filtered cleanup only.\n\nHmm, but wait: if a user runs `clab destroy` with the topo still loaded and containers were removed out-of-band (e.g., `docker rm -f`), the PR now cleans host/mgmt/vxlan endpoints but leaves `clab-s-*` far ends. The user-visible symptom: leftover host interfaces that block re-deploy? The far-end name is a hash of lab+node+iface, deterministic — on redeploy, `stitch()` creates the far end with the same name; if it still exists... `RetryStitch`? The deploy of seg creates the far end — creating a veth with an existing name fails. Does the stitch code tolerate pre-existing far ends? There's `markFarEnd` (looks up, adds altname) — suggests maybe re-attach tolerates existing? Let me check `stitch()` to see whether it reuses an existing far end or fails. If it fails, then the leftover far end becomes a re-deploy blocker — which elevates the impact. Let me read the stitch function.",
+          "time": {
+            "start": 1793813593291,
+            "end": 1793813603792
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f65d4001tr4x61dvunL3Yd",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f38490010WH9f5Vwp3jmyu",
+          "callID": "call_3aa73632b6e1453fb467b398",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/link_veth_stitched.go",
+              "limit": 95,
+              "offset": 66
+            },
+            "output": "<path>/source/head/links/link_veth_stitched.go</path>\n<type>file</type>\n<content>\n66: \tl.epA, l.epB = epA, epB\n67: \n68: \treturn l, nil\n69: }\n70: \n71: // LinkVEthStitched is the resolved veth-stitch link: two veth segments\n72: // (nodeA<->root-ns, nodeB<->root-ns) whose root-ns ends are joined by a tc stitch.\n73: type LinkVEthStitched struct {\n74: \tLinkCommonParams\n75: \n76: \tlifecycleMutex sync.Mutex\n77: \n78: \t// since the stitch veth lives in the root ns, we need to ensure altnames\n79: \t// are per-lab unique.\n80: \tlabName string\n81: \n82: \tsegA *LinkVEth\n83: \tsegB *LinkVEth\n84: \n85: \t// the two root-ns endpoints that get stitched together\n86: \tepA Endpoint\n87: \tepB Endpoint\n88: }\n89: \n90: func (*LinkVEthStitched) GetType() LinkType {\n91: \treturn LinkTypeVethStitch\n92: }\n93: \n94: func (l *LinkVEthStitched) GetEndpoints() []Endpoint {\n95: \treturn []Endpoint{l.segA.Endpoints[0], l.segB.Endpoints[0]}\n96: }\n97: \n98: // GetRuntimeEndpoints returns every material endpoint managed by the stitched link.\n99: func (l *LinkVEthStitched) GetRuntimeEndpoints() []Endpoint {\n100: \treturn []Endpoint{l.segA.Endpoints[0], l.segB.Endpoints[0], l.epA, l.epB}\n101: }\n102: \n103: // Deploy creates the veth segment belonging to ep.\n104: func (l *LinkVEthStitched) Deploy(ctx context.Context, ep Endpoint) error {\n105: \tl.lifecycleMutex.Lock()\n106: \tdefer l.lifecycleMutex.Unlock()\n107: \n108: \tif l.DeploymentState == LinkDeploymentStateFullDeployed {\n109: \t\treturn nil\n110: \t}\n111: \n112: \tvar err error\n113: \tswitch ep {\n114: \tcase l.segA.Endpoints[0]:\n115: \t\terr = l.segA.Deploy(ctx, ep)\n116: \tcase l.segB.Endpoints[0]:\n117: \t\terr = l.segB.Deploy(ctx, ep)\n118: \tdefault:\n119: \t\treturn fmt.Errorf(\"endpoint %s does not belong to link [ %s, %s ]\",\n120: \t\t\tep, l.segA.Endpoints[0], l.segB.Endpoints[0])\n121: \t}\n122: \tif err != nil {\n123: \t\treturn err\n124: \t}\n125: \n126: \tl.DeploymentState = LinkDeploymentStateHalfDeployed\n127: \n128: \tif l.segA.DeploymentState == LinkDeploymentStateFullDeployed &&\n129: \t\tl.segB.DeploymentState == LinkDeploymentStateFullDeployed {\n130: \t\treturn l.stitchSegments(ctx)\n131: \t}\n132: \n133: \treturn nil\n134: }\n135: \n136: // PostDeploy tags the two root-ns far ends and joins them with tc.\n137: // if they weren't already stitched in Deploy.\n138: func (l *LinkVEthStitched) PostDeploy(ctx context.Context) error {\n139: \tl.lifecycleMutex.Lock()\n140: \tdefer l.lifecycleMutex.Unlock()\n141: \n142: \tif l.DeploymentState == LinkDeploymentStateFullDeployed {\n143: \t\treturn nil\n144: \t}\n145: \tif l.segA.DeploymentState != LinkDeploymentStateFullDeployed ||\n146: \t\tl.segB.DeploymentState != LinkDeploymentStateFullDeployed {\n147: \t\treturn fmt.Errorf(\"cannot stitch veth segments before both are fully deployed\")\n148: \t}\n149: \n150: \treturn l.stitchSegments(ctx)\n151: }\n152: \n153: func (l *LinkVEthStitched) stitchSegments(ctx context.Context) error {\n154: \tsteps := []func() error{\n155: \t\tfunc() error { return markFarEnd(l.epB, l.segA.Endpoints[0], l.labName) },\n156: \t\tfunc() error { return markFarEnd(l.epA, l.segB.Endpoints[0], l.labName) },\n157: \t\tfunc() error { return stitch(l.epA, l.epB) },\n158: \t\tfunc() error { return stitch(l.epB, l.epA) },\n159: \t}\n160: \tfor _, step := range steps {\n\n(Showing lines 66-160 of 313. Use offset=161 to continue.)\n</content>",
+            "title": "source/head/links/link_veth_stitched.go",
+            "metadata": {
+              "preview": "\tl.epA, l.epB = epA, epB\n\n\treturn l, nil\n}\n\n// LinkVEthStitched is the resolved veth-stitch link: two veth segments\n// (nodeA<->root-ns, nodeB<->root-ns) whose root-ns ends are joined by a tc stitch.\ntype LinkVEthStitched struct {\n\tLinkCommonParams\n\n\tlifecycleMutex sync.Mutex\n\n\t// since the stitch veth lives in the root ns, we need to ensure altnames\n\t// are per-lab unique.\n\tlabName string\n\n\tsegA *LinkVEth\n\tsegB *LinkVEth\n\n\t// the two root-ns endpoints that get stitched together",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/link_veth_stitched.go",
+                "text": "\tl.epA, l.epB = epA, epB\n\n\treturn l, nil\n}\n\n// LinkVEthStitched is the resolved veth-stitch link: two veth segments\n// (nodeA<->root-ns, nodeB<->root-ns) whose root-ns ends are joined by a tc stitch.\ntype LinkVEthStitched struct {\n\tLinkCommonParams\n\n\tlifecycleMutex sync.Mutex\n\n\t// since the stitch veth lives in the root ns, we need to ensure altnames\n\t// are per-lab unique.\n\tlabName string\n\n\tsegA *LinkVEth\n\tsegB *LinkVEth\n\n\t// the two root-ns endpoints that get stitched together\n\tepA Endpoint\n\tepB Endpoint\n}\n\nfunc (*LinkVEthStitched) GetType() LinkType {\n\treturn LinkTypeVethStitch\n}\n\nfunc (l *LinkVEthStitched) GetEndpoints() []Endpoint {\n\treturn []Endpoint{l.segA.Endpoints[0], l.segB.Endpoints[0]}\n}\n\n// GetRuntimeEndpoints returns every material endpoint managed by the stitched link.\nfunc (l *LinkVEthStitched) GetRuntimeEndpoints() []Endpoint {\n\treturn []Endpoint{l.segA.Endpoints[0], l.segB.Endpoints[0], l.epA, l.epB}\n}\n\n// Deploy creates the veth segment belonging to ep.\nfunc (l *LinkVEthStitched) Deploy(ctx context.Context, ep Endpoint) error {\n\tl.lifecycleMutex.Lock()\n\tdefer l.lifecycleMutex.Unlock()\n\n\tif l.DeploymentState == LinkDeploymentStateFullDeployed {\n\t\treturn nil\n\t}\n\n\tvar err error\n\tswitch ep {\n\tcase l.segA.Endpoints[0]:\n\t\terr = l.segA.Deploy(ctx, ep)\n\tcase l.segB.Endpoints[0]:\n\t\terr = l.segB.Deploy(ctx, ep)\n\tdefault:\n\t\treturn fmt.Errorf(\"endpoint %s does not belong to link [ %s, %s ]\",\n\t\t\tep, l.segA.Endpoints[0], l.segB.Endpoints[0])\n\t}\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tl.DeploymentState = LinkDeploymentStateHalfDeployed\n\n\tif l.segA.DeploymentState == LinkDeploymentStateFullDeployed &&\n\t\tl.segB.DeploymentState == LinkDeploymentStateFullDeployed {\n\t\treturn l.stitchSegments(ctx)\n\t}\n\n\treturn nil\n}\n\n// PostDeploy tags the two root-ns far ends and joins them with tc.\n// if they weren't already stitched in Deploy.\nfunc (l *LinkVEthStitched) PostDeploy(ctx context.Context) error {\n\tl.lifecycleMutex.Lock()\n\tdefer l.lifecycleMutex.Unlock()\n\n\tif l.DeploymentState == LinkDeploymentStateFullDeployed {\n\t\treturn nil\n\t}\n\tif l.segA.DeploymentState != LinkDeploymentStateFullDeployed ||\n\t\tl.segB.DeploymentState != LinkDeploymentStateFullDeployed {\n\t\treturn fmt.Errorf(\"cannot stitch veth segments before both are fully deployed\")\n\t}\n\n\treturn l.stitchSegments(ctx)\n}\n\nfunc (l *LinkVEthStitched) stitchSegments(ctx context.Context) error {\n\tsteps := []func() error{\n\t\tfunc() error { return markFarEnd(l.epB, l.segA.Endpoints[0], l.labName) },\n\t\tfunc() error { return markFarEnd(l.epA, l.segB.Endpoints[0], l.labName) },\n\t\tfunc() error { return stitch(l.epA, l.epB) },\n\t\tfunc() error { return stitch(l.epB, l.epA) },\n\t}\n\tfor _, step := range steps {",
+                "lineStart": 66,
+                "lineEnd": 160,
+                "totalLines": 313,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793813603800,
+              "end": 1793813603809
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f65e4001SbddVfQ2FeDmzB",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f38490010WH9f5Vwp3jmyu",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 22698,
+            "input": 1308,
+            "output": 31,
+            "reasoning": 1263,
+            "cache": {
+              "read": 20096,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f65ed0011N7gfO0CnxJPy0",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813603821,
+          "completed": 1793813612581
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 24500,
+          "input": 1236,
+          "output": 22,
+          "reasoning": 714,
+          "cache": {
+            "read": 22528,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f6bdc001fHcSjy6g87wP3p",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f65ed0011N7gfO0CnxJPy0"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79f6bdf001Q2n6SSH8kJa1t4",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f65ed0011N7gfO0CnxJPy0",
+          "text": "The far ends are created by `segA.Deploy` (the LinkVEth deploy creates both veth ends). On redeploy with a lingering far end, the veth creation with an existing name would fail... but actually if the container was removed out-of-band, the container-side end is gone, and deleting one end of a veth deletes the peer — so the far end would already be gone too! When a container ns dies, its interfaces vanish, and veth peers are deleted together. So the out-of-band `docker rm -f` scenario removes the whole veth including the host-side far end. Hmm! So stitch far ends mostly can't linger after container removal — veth semantics guarantee pair removal. Same for host links (ve-* veths) — the host-side ve- interface would ALSO be auto-deleted when the container goes away!\n\nWait, that undermines the entire PR premise? No — the PR premise: with `docker stop`/`rm`, veths die with the netns. So what host/mgmt-br artifacts linger? The VXLAN interfaces (`vx-*`)! A VXLAN interface in the host ns is independent of any netns — it does NOT disappear when containers go. THAT's the real leftover the early path fixes: `vx-*` VXLAN interfaces from vxlan-stitch linger forever with no containers. And the mgmt-br... mgmt bridge lives in host ns; its endpoints (bridge-side veth ends) die with containers. Host link node's endpoints: ve-* veths die with container. So the early path primarily cleans vx-* interfaces. Good, that's consistent with the PR comment mentioning vxlan-stitch.\n\nAnd for veth-stitch: the far end is a veth end → dies with the container ns. So no lingering far end in the containers==0 scenario. UNLESS the segment's node endpoint was in a shared/persistent ns... The stitch targets `Node == \"host\"`-like endpoints? veth-stitch endpoints are regular nodes (containers) + ... Let me not go deeper — veth pairs die together, so far-end lingering requires the segA endpoint in a non-container ns, unlikely for the containers==0 scenario. OK — so the stitch-far-end concern is largely moot. I'll drop it (mention nothing, or a coverage note? Drop entirely to keep findings clean — actually I'll leave it out since the veth-pair lifecycle argument refutes it).\n\nSimilarly, this confirms the PR's guard purpose: vx-* VXLAN interfaces are the persistent leftovers. Could I verify VxlanStitched creates vx- in host ns? Yes, `NewEndpointVxlan(params.Nodes[\"host\"], link)` — host node. Confirmed earlier.\n\nSo final findings: the two P4s (missing comment, missing test). Is the missing-comment P4 even worth it? It's actionable and small. Keep.\n\nShould I include the stale-singleton/cross-lab or ctx-cancel-deadlock observations? They're pre-existing; per scope, focus on PR issues. I'll put brief pre-existing observations in coverage notes without inflating.\n\nOne more check of the diff to make sure I'm not missing a change: diff shows only two hunks in core/destroy.go? The manifest said one changed path; diff.txt — I read it in earlier turn? Not explicitly shown in summary but the two changes were identified. Let me re-read diff.txt quickly to be complete.",
+          "time": {
+            "start": 1793813605343,
+            "end": 1793813612565
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f8817001SxpjZySAFm0hXK",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f65ed0011N7gfO0CnxJPy0",
+          "callID": "call_f67b7cc1361640d3bdc03bd6",
+          "tool": "read",
+          "state": {
+            "status": "error",
+            "input": {
+              "filePath": "/tmp/tofarev-review-h7weoJ/diff.txt"
+            },
+            "error": "The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules [{\"permission\":\"*\",\"action\":\"allow\",\"pattern\":\"*\"},{\"permission\":\"read\",\"pattern\":\"*\",\"action\":\"allow\"},{\"permission\":\"read\",\"pattern\":\"*.env\",\"action\":\"ask\"},{\"permission\":\"read\",\"pattern\":\"*.env.*\",\"action\":\"ask\"},{\"permission\":\"read\",\"pattern\":\"*.env.example\",\"action\":\"allow\"},{\"permission\":\"*\",\"action\":\"deny\",\"pattern\":\"*\"},{\"permission\":\"read\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"read\",\"pattern\":\"source/*\",\"action\":\"allow\"},{\"permission\":\"*\",\"action\":\"deny\",\"pattern\":\"*\"},{\"permission\":\"read\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"read\",\"pattern\":\"source/*\",\"action\":\"allow\"}]",
+            "time": {
+              "start": 1793813612572,
+              "end": 1793813612576
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f8821001vootvo07Nu97Gh",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f65ed0011N7gfO0CnxJPy0",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 24500,
+            "input": 1236,
+            "output": 22,
+            "reasoning": 714,
+            "cache": {
+              "read": 22528,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f882a001eJCbI0YjZEYbVa",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813612586,
+          "completed": 1793813613899
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 24682,
+          "input": 348,
+          "output": 13,
+          "reasoning": 1,
+          "cache": {
+            "read": 24320,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f8d12001DColAra7MlOtXi",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f882a001eJCbI0YjZEYbVa"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79f8d38001r2vpfYyVROVCgI",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f882a001eJCbI0YjZEYbVa",
+          "callID": "call_7ba2bf9074b346a291ca4df1",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt"
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n1: diff --git a/core/destroy.go b/core/destroy.go\n2: index 771f2c5..0cd39b1 100644\n3: --- a/core/destroy.go\n4: +++ b/core/destroy.go\n5: @@ -418,10 +418,13 @@ func (c *CLab) destroy(ctx context.Context, maxWorkers uint, keepMgmtNet bool) e\n6:  \t\t\t}\n7:  \t\t}\n8:  \t}\n9:  \n10:  \tif len(containers) == 0 {\n11: +\t\tif len(c.Nodes) > 0 && len(c.Links) > 0 {\n12: +\t\t\tc.deleteSpecialLinkNodes(ctx)\n13: +\t\t}\n14:  \t\treturn nil\n15:  \t}\n16:  \n17:  \tif maxWorkers == 0 {\n18:  \t\tmaxWorkers = uint(len(containers))\n19: @@ -693,23 +696,29 @@ func (c *CLab) deleteNodes(ctx context.Context, workers uint) {\n20:  \t}\n21:  \n22:  \t// close channel to terminate the workers\n23:  \tclose(concurrentChan)\n24:  \n25: -\t// also call delete on the special nodes\n26: +\twg.Wait()\n27: +\n28: +\t// Host and mgmt-br links must be removed only after node workers finish.\n29: +\t// vxlan-stitch teardown deletes veth pairs from containers concurrently with\n30: +\t// host-namespace VXLAN interfaces; running both at once races netlink deletes.\n31: +\tc.deleteSpecialLinkNodes(ctx)\n32: +}\n33: +\n34: +func (c *CLab) deleteSpecialLinkNodes(ctx context.Context) {\n35:  \tspecialNodes := append(\n36:  \t\t[]clablinks.Node{clablinks.GetHostLinkNode()},\n37:  \t\tclablinks.GetMgmtBrLinkNodes()...,\n38:  \t)\n39:  \tfor _, n := range specialNodes {\n40:  \t\terr := n.Delete(ctx)\n41:  \t\tif err != nil {\n42:  \t\t\tlog.Warn(err)\n43:  \t\t}\n44:  \t}\n45: -\n46: -\twg.Wait()\n47:  }\n48:  \n49:  // deleteContainersDirect deletes containers directly via the runtime API.\n50:  // This is used when we don't have node objects (e.g., destroy-by-name-only case).\n51:  func (c *CLab) deleteContainersDirect(\n\n(End of file - total 51 lines)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/core/destroy.go b/core/destroy.go\nindex 771f2c5..0cd39b1 100644\n--- a/core/destroy.go\n+++ b/core/destroy.go\n@@ -418,10 +418,13 @@ func (c *CLab) destroy(ctx context.Context, maxWorkers uint, keepMgmtNet bool) e\n \t\t\t}\n \t\t}\n \t}\n \n \tif len(containers) == 0 {\n+\t\tif len(c.Nodes) > 0 && len(c.Links) > 0 {\n+\t\t\tc.deleteSpecialLinkNodes(ctx)\n+\t\t}\n \t\treturn nil\n \t}\n \n \tif maxWorkers == 0 {\n \t\tmaxWorkers = uint(len(containers))\n@@ -693,23 +696,29 @@ func (c *CLab) deleteNodes(ctx context.Context, workers uint) {\n \t}",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/core/destroy.go b/core/destroy.go\nindex 771f2c5..0cd39b1 100644\n--- a/core/destroy.go\n+++ b/core/destroy.go\n@@ -418,10 +418,13 @@ func (c *CLab) destroy(ctx context.Context, maxWorkers uint, keepMgmtNet bool) e\n \t\t\t}\n \t\t}\n \t}\n \n \tif len(containers) == 0 {\n+\t\tif len(c.Nodes) > 0 && len(c.Links) > 0 {\n+\t\t\tc.deleteSpecialLinkNodes(ctx)\n+\t\t}\n \t\treturn nil\n \t}\n \n \tif maxWorkers == 0 {\n \t\tmaxWorkers = uint(len(containers))\n@@ -693,23 +696,29 @@ func (c *CLab) deleteNodes(ctx context.Context, workers uint) {\n \t}\n \n \t// close channel to terminate the workers\n \tclose(concurrentChan)\n \n-\t// also call delete on the special nodes\n+\twg.Wait()\n+\n+\t// Host and mgmt-br links must be removed only after node workers finish.\n+\t// vxlan-stitch teardown deletes veth pairs from containers concurrently with\n+\t// host-namespace VXLAN interfaces; running both at once races netlink deletes.\n+\tc.deleteSpecialLinkNodes(ctx)\n+}\n+\n+func (c *CLab) deleteSpecialLinkNodes(ctx context.Context) {\n \tspecialNodes := append(\n \t\t[]clablinks.Node{clablinks.GetHostLinkNode()},\n \t\tclablinks.GetMgmtBrLinkNodes()...,\n \t)\n \tfor _, n := range specialNodes {\n \t\terr := n.Delete(ctx)\n \t\tif err != nil {\n \t\t\tlog.Warn(err)\n \t\t}\n \t}\n-\n-\twg.Wait()\n }\n \n // deleteContainersDirect deletes containers directly via the runtime API.\n // This is used when we don't have node objects (e.g., destroy-by-name-only case).\n func (c *CLab) deleteContainersDirect(",
+                "lineStart": 1,
+                "lineEnd": 51,
+                "totalLines": 51,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1793813613884,
+              "end": 1793813613895
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79f8d480013807DxqiQz26ZB",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f882a001eJCbI0YjZEYbVa",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 24682,
+            "input": 348,
+            "output": 13,
+            "reasoning": 1,
+            "cache": {
+              "read": 24320,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79f8d4f001cDi5CK89TdjEOx",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813613903,
+          "completed": 1793813625219
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 26387,
+          "input": 616,
+          "output": 28,
+          "reasoning": 1103,
+          "cache": {
+            "read": 24640,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79f9320001LetMx7YlJl4Uvi",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f8d4f001cDi5CK89TdjEOx"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79f9322001UGGW201I8E3Nkt",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f8d4f001cDi5CK89TdjEOx",
+          "text": "Diff confirmed: exactly two hunks in `core/destroy.go`. My analysis is complete.\n\nOne more thought on the race-fix comment accuracy — \"vxlan-stitch teardown deletes veth pairs from containers concurrently with host-namespace VXLAN interfaces\". For plain (non-stitched) links, worker and special-node deletes operate on the SAME `LinkVEth` objects (mutex-protected, idempotent), so the real race exposure is with VXLAN interfaces whose removal is only triggered by the host-node Delete. In base, if a worker deletes the veth whose host end backs the vxlan while the special delete removes the `vx-*` VXLAN interface concurrently — both in the host netns; kernel-level, this could race (e.g., the VXLAN's lower device disappearing mid-delete, or netlink index churn). The fix serializes — safe regardless of the precise kernel failure mode. Fine.\n\nAlso verify: in the new `deleteSpecialLinkNodes`, nothing else was lost from the moved block — no, the block only contained the special-node loop; `wg.Wait()` is retained (moved earlier). Correct.\n\nAlso double-check the early-path guard doesn't misfire for `destroy --all` where `c.Links` for lab B... fine as analyzed.\n\nNow, one more consideration about the missing-comment finding: is it too nitpicky? The codebase has extensive explanatory comments in exactly these functions (e.g., the new comment in `deleteNodes`). The guard `len(c.Nodes) > 0 && len(c.Links) > 0` genuinely encodes non-obvious invariants (only labs with resolved links hold special-node endpoints; `c.Links` is only populated by `makeCopyForDestroy` → `ResolveLinks`). A future refactor could delete the `c.Links` check thinking it redundant (since deleteSpecialLinkNodes would be a no-op anyway without endpoints — actually it WOULD be a no-op, so the guard is a cheap performance/skip optimization... hmm, is it? Without the guard, calling deleteSpecialLinkNodes when Links==0: host node has no endpoints → Delete iterates zero endpoints → no-op. So the guard is purely a fast-path/avoid-noise optimization). So the guard's semantics: \"only attempt when this lab could have attached endpoints\". Honestly the guard could even be simplified to always call deleteSpecialLinkNodes (it's idempotent/no-op when no endpoints) — but with cross-lab stale endpoints it would attempt stale deletions; the guard prevents needless netlink probing. The maintainability point stands: document WHY. P4 it is.\n\nShould the \"always call\" simplification be suggested? No — the guard is defensible; just comment.\n\nAlso for the test suggestion, let me double check `GetEndpoints` exists on the singleton (GenericLinkNode has GetEndpoints? config.go:616 calls `n.GetEndpoints()` on special nodes — yes).\n\nAlso confirm the topo fixture: `writeDestroyTestTopology` writes a single-node topology without links. A new test would need a topology with a host link; `topo1.yml` in test_data — does it have a host link? Unknown; suggest writing a small fixture like the existing `writeDestroyTestTopology`. Good.\n\nLine anchors for head: \n- Early return: https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L422-L427\n- deleteNodes ordering: https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L696-L708\n- deleteSpecialLinkNodes: L709-L719 (let me get exact end: function starts 709, specialNodes append 711-714, loop 715-721... I read 697-709 earlier: 706 call, 709 func. Let me recall the earlier read:\n\n```\n697:\t// close channel to terminate the workers\n698:\tclose(concurrentChan)\n699:\n700:\twg.Wait()\n...\n```\n\nActually I didn't re-read that exact block in this session's visible transcript (it was from the prior turn summary: \"head lines ~697-709\"). The grep confirms: 706 `c.deleteSpecialLinkNodes(ctx)`, 709 `func (c *CLab) deleteSpecialLinkNodes`. And per diff, `wg.Wait()` is at the line before the comment block (comment 3 lines + call at 706 → wg.Wait ≈ 700-701). I'll anchor deleteNodes hunk as L697-L707 and deleteSpecialLinkNodes as L709-L721 (function ends before the deleteContainersDirect comment; diff shows blank line then comment — function body: specialNodes append (4 lines), loop (6 lines), close brace → ends ~L720). I'll use L709-L720 — close enough; anchors are per-line ranges, slight imprecision acceptable but better to be accurate. Let me quickly read that region to get exact line numbers.",
+          "time": {
+            "start": 1793813615394,
+            "end": 1793813625203
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a79fb975001p9y7Ft14Og5Kvy",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f8d4f001cDi5CK89TdjEOx",
+          "callID": "call_45677b4602aa45438f75a733",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/destroy.go",
+              "limit": 35,
+              "offset": 688
+            },
+            "output": "<path>/source/head/core/destroy.go</path>\n<type>file</type>\n<content>\n688: \n689: \tfor i := range workers {\n690: \t\tgo workerFunc(i, concurrentChan, wg)\n691: \t}\n692: \n693: \t// send nodes to workers\n694: \tfor _, n := range c.Nodes {\n695: \t\tconcurrentChan <- n\n696: \t}\n697: \n698: \t// close channel to terminate the workers\n699: \tclose(concurrentChan)\n700: \n701: \twg.Wait()\n702: \n703: \t// Host and mgmt-br links must be removed only after node workers finish.\n704: \t// vxlan-stitch teardown deletes veth pairs from containers concurrently with\n705: \t// host-namespace VXLAN interfaces; running both at once races netlink deletes.\n706: \tc.deleteSpecialLinkNodes(ctx)\n707: }\n708: \n709: func (c *CLab) deleteSpecialLinkNodes(ctx context.Context) {\n710: \tspecialNodes := append(\n711: \t\t[]clablinks.Node{clablinks.GetHostLinkNode()},\n712: \t\tclablinks.GetMgmtBrLinkNodes()...,\n713: \t)\n714: \tfor _, n := range specialNodes {\n715: \t\terr := n.Delete(ctx)\n716: \t\tif err != nil {\n717: \t\t\tlog.Warn(err)\n718: \t\t}\n719: \t}\n720: }\n721: \n722: // deleteContainersDirect deletes containers directly via the runtime API.\n\n(Showing lines 688-722 of 843. Use offset=723 to continue.)\n</content>",
+            "title": "source/head/core/destroy.go",
+            "metadata": {
+              "preview": "\n\tfor i := range workers {\n\t\tgo workerFunc(i, concurrentChan, wg)\n\t}\n\n\t// send nodes to workers\n\tfor _, n := range c.Nodes {\n\t\tconcurrentChan <- n\n\t}\n\n\t// close channel to terminate the workers\n\tclose(concurrentChan)\n\n\twg.Wait()\n\n\t// Host and mgmt-br links must be removed only after node workers finish.\n\t// vxlan-stitch teardown deletes veth pairs from containers concurrently with\n\t// host-namespace VXLAN interfaces; running both at once races netlink deletes.\n\tc.deleteSpecialLinkNodes(ctx)\n}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/destroy.go",
+                "text": "\n\tfor i := range workers {\n\t\tgo workerFunc(i, concurrentChan, wg)\n\t}\n\n\t// send nodes to workers\n\tfor _, n := range c.Nodes {\n\t\tconcurrentChan <- n\n\t}\n\n\t// close channel to terminate the workers\n\tclose(concurrentChan)\n\n\twg.Wait()\n\n\t// Host and mgmt-br links must be removed only after node workers finish.\n\t// vxlan-stitch teardown deletes veth pairs from containers concurrently with\n\t// host-namespace VXLAN interfaces; running both at once races netlink deletes.\n\tc.deleteSpecialLinkNodes(ctx)\n}\n\nfunc (c *CLab) deleteSpecialLinkNodes(ctx context.Context) {\n\tspecialNodes := append(\n\t\t[]clablinks.Node{clablinks.GetHostLinkNode()},\n\t\tclablinks.GetMgmtBrLinkNodes()...,\n\t)\n\tfor _, n := range specialNodes {\n\t\terr := n.Delete(ctx)\n\t\tif err != nil {\n\t\t\tlog.Warn(err)\n\t\t}\n\t}\n}\n\n// deleteContainersDirect deletes containers directly via the runtime API.",
+                "lineStart": 688,
+                "lineEnd": 722,
+                "totalLines": 843,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793813625209,
+              "end": 1793813625215
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a79fb980001PZdSbIasa7a7Ww",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79f8d4f001cDi5CK89TdjEOx",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 26387,
+            "input": 616,
+            "output": 28,
+            "reasoning": 1103,
+            "cache": {
+              "read": 24640,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a79fb988001F0REc4pEo1kN6Y",
+        "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+        "time": {
+          "created": 1793813625224,
+          "completed": 1793813650364
+        },
+        "parentID": "msg_1a79f22a7001Yagx7uDJJnD5SJ",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-h7weoJ",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 30454,
+          "input": 411,
+          "output": 3137,
+          "reasoning": 538,
+          "cache": {
+            "read": 26368,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a79fbf7f001iXX17k1s4ge1dX",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79fb988001F0REc4pEo1kN6Y"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a79fbf82001Ql1gDbEJgVL7kl",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79fb988001F0REc4pEo1kN6Y",
+          "text": "All confirmed. Now write the final review.\n\nFindings:\n1. P4 — Missing rationale for the new early-return special-node cleanup guard (`core/destroy.go:422-427`).\n2. P4 — No runnable check covers either behavioral change (early-return cleanup; `wg.Wait()` ordering). Suggest extending the existing `destroytest` harness with a host-link topology and asserting the singleton endpoint's link reaches `LinkDeploymentStateRemoved`.\n\nBoth P4, non-blocking. The substance of the PR is correct — I verified:\n- Guard safety: `c.Links` populated only via `makeCopyForDestroy`→`ResolveLinks` (both `Destroy` at destroy.go:122-... and reconfigure at deploy.go:190-198 call destroy with resolved links; `len(nil)` safe).\n- Special-node singletons: host (`GetHostLinkNode`, links/link_host.go:112) and mgmt-br (`GetMgmtBrLinkNodes`, links/link_mgmt-net.go:209) nodes hold endpoints only when links resolved; `GenericLinkNode.Delete` iterates endpoints → `e.GetLink().Remove(ctx)`; `LinkVEth.Remove`/`LinkVxlan.Remove` idempotent via `LinkDeploymentStateRemoved` (links/link.go:26-32 zero value is `NotDeployed`).\n- `EndpointGeneric.Remove` tolerates missing interfaces (`LinkNotFoundError` → nil).\n- Ordering fix: `close(concurrentChan)` → `wg.Wait()` → `deleteSpecialLinkNodes` at 699-706; previously special deletes ran concurrently with worker deletes (base 696-710).\n- The leftovers motivating the early path: `vx-*` VXLAN interfaces in the host netns are independent of container netns and thus survive container removal; veth endpoints (host links, mgmt-net bridge ends, veth-stitch far ends) die with the container netns, so the VXLAN class is the meaningful persistent leftover — consistent with the fix scope.\n- `deleteContainersDirect` path unaffected (no resolved links).\n- No schema/doc impact (no CLI/topology changes; docs/cmd generated).\n\nPre-existing (not worsened): cross-process stale singleton endpoints from a failed earlier destroy can be re-attempted by a later lab's deleteSpecialLinkNodes (idempotent state guard makes this a no-op in the common case); `ctx`-cancellation sender deadlock in `deleteNodes` (pre-existing); early return still skips tool-container cleanup (sshx/gotty) — pre-existing.\n\nWrite the Markdown review now, then the JSON.",
+          "time": {
+            "start": 1793813626754,
+            "end": 1793813631031
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a79fd03a001qiketGjvaxabpT",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79fb988001F0REc4pEo1kN6Y",
+          "text": "## Code Review: `core/destroy.go` — clean up special link nodes when containers are already gone\n\n### ScopeThe PR makes two changes, both in `core/destroy.go`:\n\n1. When `destroy()` finds no lab containers at all (topology loaded, containers already removed), it now still calls the new `deleteSpecialLinkNodes(ctx)` before returning, gated by `len(c.Nodes) > 0 && len(c.Links) > 0` ([head `core/destroy.go:422-427`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L422-L427)).\n2. In `deleteNodes()`, `wg.Wait()` is moved before special-node deletion, and the special-node loop is extracted into `deleteSpecialLinkNodes` ([head `core/destroy.go:696-720`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L696-L720)). This serializes node-worker teardown (which deletes container-side veth ends and the veth components of stitched links) with the host/mgmt-br node teardown (which deletes host-namespace interfaces, notably the `vx-*` VXLAN devices).\n\n### Verification performed\n\n- **Correctness of the early-return guard.** `c.Links` is only populated by `makeCopyForDestroy` → `ResolveLinks()` (called by both the `Destroy` command path at `core/destroy.go:122` and the `--reconfigure` path at `core/deploy.go:190-198`), so `len(c.Links) > 0` is a sound proxy for \"this lab's resolved links attached endpoints to the shared host/mgmt-br nodes\". Both call sites always pass through `ResolveLinks`, so the guard cannot skip cleanup that is needed. `len(nil map)` is 0, so an unloaded topology is safe. The guard is not a strict necessity (special-node `Delete` is a no-op with no endpoints), but it avoids needless netlink probing, especially for the stale-endpoint case noted below.\n- **Correctness of the extracted helper.** `deleteSpecialLinkNodes` is a pure extraction of the former in-`deleteNodes` loop: same `GetHostLinkNode()` + `GetMgmtBrLinkNodes()` list, same `log.Warn` on failure. All three references (early return at line 424, call at 706, definition at 709) are within this file.\n- **Idempotency of the cleanup.** `GenericLinkNode.Delete` iterates endpoints and calls `e.GetLink().Remove(ctx)`; `LinkVEth.Remove`, `LinkVxlan.Remove` and `LinkVEthStitched.Remove` are all idempotent via the `LinkDeploymentStateRemoved` guard (`links/link.go:26-32`), and `EndpointGeneric.Remove` treats `LinkNotFoundError` as success. So a second invocation (e.g., from a reconfigure destroy, or from a subsequent lab in a `destroy --all` process) is a harmless no-op.\n- **Why the early path matters.** Host-namespace veth endpoints (host links, mgmt-net bridge ends, veth-stitch far ends) die together with the container netns, so they cannot linger after container removal. The `vx-*` VXLAN devices created for `vxlan-stitch` links live in the host netns independently of any container and *do* survive out-of-band container removal — which matches the class of leftover this fix addresses. The fix scope is internally consistent.\n- **Node filter interaction.** Filtered-out links never attach endpoints during `ResolveLinks`, so a filtered destroy with `containers == 0` correctly deletes only the artifacts of the filtered-in nodes.\n- **`deleteContainersDirect` path** (destroy-by-name-only, `c.Nodes == 0`) is untouched; the new guard correctly excludes it via `len(c.Nodes) > 0`.\n\nI found no correctness, performance, schema, or documentation defect introduced by this change. Two small, optional improvements follow.\n\n### Severity summary\n\n| Priority | Count | Summary |\n|---|---|---|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 2 | Missing rationale for the new early-return guard; no runnable check for either behavioral change |\n\n### Findings\n\n#### P4 — Document why the early-return path deletes special link nodes\n\n- **Location:** [head `core/destroy.go:422-427`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L422-L427)\n- **Problem:** The new guard `len(c.Nodes) > 0 && len(c.Links) > 0` encodes non-obvious invariants: `c.Links` is populated only by `ResolveLinks()` inside `makeCopyForDestroy`, and it is the only signal that this lab's resolved links attached endpoints to the process-wide host/mgmt-br singleton nodes. Nothing at the call site explains why a \"no containers\" destroy performs cleanup at all, or why the `c.Links` condition is there. This file is otherwise heavily commented in exactly these places (see the new comment added at `core/destroy.go:703-705`), so the omission stands out.\n- **Trigger:** Any future maintainer reading or refactoring `destroy()` — for example someone may drop the `len(c.Links) > 0` condition as redundant, or wonder whether cleanup with zero containers is safe.\n- **Impact:** Maintenance cost only; behavior is correct as written.\n- **Suggestion:** Add a two-line comment above the guard, e.g. \"containers may have been removed out-of-band, but host-namespace artifacts of resolved links (notably `vx-*` VXLAN devices of vxlan-stitch links) survive them; clean up the special link nodes when this lab resolved any links\". Optionally cross-reference the comment in `deleteNodes`.\n\n#### P4 — No runnable check covers the new cleanup path or the teardown ordering\n\n- **Location:** [head `core/destroy.go:696-720`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L696-L720); existing harness at `core/destroy_test.go:216-388`\n- **Problem:** Both behavioral changes — deleting special link nodes when containers are already gone, and running special-node deletion only after `wg.Wait()` — are untested. The repo already has a cheap fake-runtime harness for `destroy()` (`fakeDestroyRuntime`, `registerDestroyTestRuntime`, `writeDestroyTestTopology` in `core/destroy_test.go`), so the early-return path is reachable without a container runtime.\n- **Trigger:** A regression that reverts either change (e.g., a refactor moving `deleteSpecialLinkNodes` back before `wg.Wait()`, or dropping the early-return call) would pass the current test suite.\n- **Impact:** Unprotected fix for a race and a leftover-artifact bug; both are exactly the kind of behavior that silently regresses.\n- **Suggestion:** Add one test reusing the existing harness: write a topology whose single node has a `host:` link endpoint, set `destroyTestBehavior` with an empty container list, run `Destroy`, and assert that the link attached to the singleton `clablinks.GetHostLinkNode().GetEndpoints()[0].GetLink()` reaches `LinkDeploymentStateRemoved`. The interfaces do not exist in the test environment, so `Remove` is a harmless logging no-op, and the zero value `LinkDeploymentStateNotDeployed` distinguishes the old behavior (no deletion). This pins the early-return path without any netlink or runtime dependency; the `wg.Wait()` ordering is harder to assert without a seam and can reasonably remain covered by review.\n\n### Coverage notes\n\n- Review is source-only; no tests or code were executed. Coverage is complete for the changed file and its callers (`core/destroy.go:122`, `core/deploy.go:190-198`), the link-lifecycle helpers backing the cleanup (`links/link.go`, `links/generic_link_node.go`, `links/endpoint.go`, `links/link_host.go`, `links/link_mgmt-net.go`, `links/link_veth.go`, `links/link_vxlan.go`, `links/link_vxlan_stitched.go`), and the existing test harness.\n- Pre-existing behaviors observed but not introduced or materially worsened by this PR, hence not filed as findings: process-wide singleton link nodes can accumulate stale endpoints from a previous lab whose destroy failed before `deleteNodes` (mitigated in the common case by the `LinkDeploymentStateRemoved` idempotency guard); the `deleteNodes` sender loop can deadlock on `concurrentChan` if the context is cancelled after workers exit; the early return still skips `sshx`/`gotty` tool-container cleanup.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Document why the early-return path in `destroy` deletes special link nodes\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/destroy.go\",\n        \"start\": 422,\n        \"end\": 427\n      },\n      \"problem\": \"The new guard `len(c.Nodes) > 0 && len(c.Links) > 0` encodes non-obvious invariants: `c.Links` is populated only by `ResolveLinks()` inside `makeCopyForDestroy`, and it is the only signal that this lab's resolved links attached endpoints to the process-wide host/mgmt-br singleton nodes. Nothing at the call site explains why a no-containers destroy performs cleanup at all, or what the `c.Links` condition means. The file is otherwise heavily commented in exactly these places, including the new comment added in `deleteNodes` at `core/destroy.go:703-705`.\",\n      \"trigger\": \"Any future maintainer reading or refactoring `destroy`, for example someone dropping the `len(c.Links) > 0` condition as redundant or questioning whether cleanup with zero containers is safe.\",\n      \"impact\": \"Maintenance cost only; the behavior is correct as written.\",\n      \"suggestion\": \"Add a short comment above the guard, for example: containers may have been removed out-of-band, but host-namespace artifacts of resolved links (notably the `vx-*` VXLAN devices of vxlan-stitch links) survive them, so clean up the special link nodes whenever this lab resolved links. Optionally cross-reference the comment in `deleteNodes`.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No runnable check covers the special-node cleanup path or the `wg.Wait()` ordering\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/destroy.go\",\n        \"start\": 696,\n        \"end\": 720\n      },\n      \"problem\": \"Both behavioral changes are untested: deleting special link nodes when containers are already gone, and running special-node deletion only after node workers finish. The repo already provides a cheap fake-runtime harness for `destroy` (`fakeDestroyRuntime`, `registerDestroyTestRuntime`, `writeDestroyTestTopology` in `core/destroy_test.go`), so the early-return path is reachable without a container runtime.\",\n      \"trigger\": \"A regression that reverts either change, such as moving `deleteSpecialLinkNodes` back before `wg.Wait()` or dropping the early-return call, would pass the current test suite.\",\n      \"impact\": \"Unprotected fix for a netlink race and a leftover-artifact bug, both of which can silently regress during refactoring.\",\n      \"suggestion\": \"Add one test reusing the existing harness: write a topology whose single node has a `host:` link endpoint, set `destroyTestBehavior` with an empty container list, run `Destroy`, and assert that the link attached to `clablinks.GetHostLinkNode().GetEndpoints()[0].GetLink()` reaches `LinkDeploymentStateRemoved`. The interfaces do not exist in the test environment, so `Remove` is a harmless logging no-op, and the zero value `LinkDeploymentStateNotDeployed` distinguishes the old behavior. The `wg.Wait()` ordering is harder to assert without a seam and can reasonably remain covered by review.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no tests or code were executed; conclusions are based on source inspection of the changed file and its callers.\",\n      \"Verified the guard semantics: `c.Links` is populated only via `makeCopyForDestroy` -> `ResolveLinks()` in both the `Destroy` command path (`core/destroy.go:122`) and the reconfigure path (`core/deploy.go:190-198`), so `len(c.Links) > 0` is a sound proxy for special-node endpoint attachment; `len(nil map)` is 0.\",\n      \"Verified idempotency of the cleanup: `GenericLinkNode.Delete` -> `e.GetLink().Remove(ctx)` with `LinkDeploymentStateRemoved` guards in `LinkVEth.Remove`, `LinkVxlan.Remove`, and `LinkVEthStitched.Remove`, and `EndpointGeneric.Remove` tolerating `LinkNotFoundError`.\",\n      \"Verified the fix scope is consistent: host-namespace veth endpoints (host links, mgmt-net bridge ends, veth-stitch far ends) die with the container netns, while `vx-*` VXLAN devices created for vxlan-stitch links live independently in the host netns and do survive out-of-band container removal.\",\n      \"Pre-existing issues observed but not introduced or worsened by this PR, therefore not filed: stale endpoints from a previously failed destroy can be re-attempted by a later lab in a `destroy --all` process (mostly neutralized by the idempotency guard); the `deleteNodes` sender loop can deadlock if the context is cancelled after workers exit; the early return still skips `sshx`/`gotty` tool-container cleanup.\",\n      \"No schema or documentation impact: the PR changes no topology properties, CLI flags, or help text; `docs/cmd/*.md` are generated.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793813631034,
+            "end": 1793813650356
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7a01bb9001ptW5hnwHGggB9D",
+          "sessionID": "ses_e58650724ffeh3Z8k2yEv4l1aW",
+          "messageID": "msg_1a79fb988001F0REc4pEo1kN6Y",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 30454,
+            "input": 411,
+            "output": 3137,
+            "reasoning": 538,
+            "cache": {
+              "read": 26368,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - Document why the early-return path in `destroy` deletes special link nodes** | [core/destroy.go:422-427](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L422-L427) |\n| **P4 - No runnable check covers the special-node cleanup path or the `wg.Wait()` ordering** | [core/destroy.go:696-720](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L696-L720) |\n\n## P4 - Document why the early-return path in `destroy` deletes special link nodes\n\n**Location:** [core/destroy.go:422-427](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L422-L427)\n\n**Problem:** The new guard `len(c.Nodes) > 0 && len(c.Links) > 0` encodes non-obvious invariants&#58; `c.Links` is populated only by `ResolveLinks()` inside `makeCopyForDestroy`, and it is the only signal that this lab&#39;s resolved links attached endpoints to the process-wide host/mgmt-br singleton nodes. Nothing at the call site explains why a no-containers `destroy` performs cleanup at all, or what the `c.Links` condition means. The file is otherwise heavily commented in exactly these places, including the new comment added in `deleteNodes` at [`core/destroy.go:703-705`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L703-L705).\n\n**Trigger:** Any future maintainer reading or refactoring `destroy`, for example someone dropping the `len(c.Links) > 0` condition as redundant or questioning whether cleanup with zero containers is safe.\n\n**Impact:** Maintenance cost only; the behavior is correct as written.\n\n**Suggested correction:** Add a short comment above the guard, for example&#58; containers may have been removed out-of-band, but host-namespace artifacts of resolved links &#40;notably the `vx-*` VXLAN devices of vxlan-stitch links&#41; survive them, so clean up the special link nodes whenever this lab resolved links. Optionally cross-reference the comment in `deleteNodes`.\n\n\n## P4 - No runnable check covers the special-node cleanup path or the `wg.Wait()` ordering\n\n**Location:** [core/destroy.go:696-720](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L696-L720)\n\n**Problem:** Both behavioral changes are untested&#58; deleting special link nodes when containers are already gone, and running special-node deletion only after node workers finish. The repo already provides a cheap fake-runtime harness for `destroy` &#40;`fakeDestroyRuntime`, `registerDestroyTestRuntime`, `writeDestroyTestTopology` in [`core/destroy_test.go`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy_test.go#L1-L1)&#41;, so the early-return path is reachable without a container runtime.\n\n**Trigger:** A regression that reverts either change, such as moving `deleteSpecialLinkNodes` back before `wg.Wait()` or dropping the early-return call, would pass the current test suite.\n\n**Impact:** Unprotected fix for a netlink race and a leftover-artifact bug, both of which can silently regress during refactoring.\n\n**Suggested correction:** Add one test reusing the existing harness&#58; write a topology whose single node has a `host:` link endpoint, set `destroyTestBehavior` with an empty container list, run `Destroy`, and assert that the link attached to `clablinks.GetHostLinkNode().GetEndpoints()[0].GetLink()` reaches `LinkDeploymentStateRemoved`. The interfaces do not exist in the test environment, so `Remove` is a harmless logging no-op, and the zero value `LinkDeploymentStateNotDeployed` distinguishes the old behavior. The `wg.Wait()` ordering is harder to assert without a seam and can reasonably remain covered by review.\n\n\n## Coverage\n\n- Source-only review&#58; no tests or code were executed; conclusions are based on source inspection of the changed file and its callers.\n- Verified the guard semantics&#58; `c.Links` is populated only via `makeCopyForDestroy` -&#62; `ResolveLinks()` in both the `Destroy` command path &#40;[`core/destroy.go:122`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/destroy.go#L122-L122)&#41; and the reconfigure path &#40;[`core/deploy.go:190-198`](https://github.com/srl-labs/containerlab/blob/391b213e646cd3b00d9e9711313d53782e8d0c82/core/deploy.go#L190-L198)&#41;, so `len(c.Links) > 0` is a sound proxy for special-node endpoint attachment; `len(nil map)` is 0.\n- Verified idempotency of the cleanup&#58; `GenericLinkNode.Delete` -&#62; `e.GetLink().Remove(ctx)` with `LinkDeploymentStateRemoved` guards in `LinkVEth.Remove`, `LinkVxlan.Remove`, and `LinkVEthStitched.Remove`, and `EndpointGeneric.Remove` tolerating `LinkNotFoundError`.\n- Verified the fix scope is consistent&#58; host-namespace veth endpoints &#40;host links, mgmt-net bridge ends, veth-stitch far ends&#41; die with the container netns, while `vx-*` VXLAN devices created for vxlan-stitch links live independently in the host netns and do survive out-of-band container removal.\n- Pre-existing issues observed but not introduced or worsened by this PR, therefore not filed&#58; stale endpoints from a previously failed `destroy` can be re-attempted by a later lab in a `destroy --all` process &#40;mostly neutralized by the idempotency guard&#41;; the `deleteNodes` sender loop can deadlock if the context is cancelled after workers exit; the early return still skips `sshx`/`gotty` tool-container cleanup.\n- No schema or documentation impact&#58; the PR changes no topology properties, CLI flags, or help text; `docs/cmd/*.md` are generated.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Document why the early-return path in `destroy` deletes special link nodes\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/destroy.go\",\n        \"start\": 422,\n        \"end\": 427\n      },\n      \"problem\": \"The new guard `len(c.Nodes) > 0 && len(c.Links) > 0` encodes non-obvious invariants: `c.Links` is populated only by `ResolveLinks()` inside `makeCopyForDestroy`, and it is the only signal that this lab's resolved links attached endpoints to the process-wide host/mgmt-br singleton nodes. Nothing at the call site explains why a no-containers `destroy` performs cleanup at all, or what the `c.Links` condition means. The file is otherwise heavily commented in exactly these places, including the new comment added in `deleteNodes` at `core/destroy.go:703-705`.\",\n      \"trigger\": \"Any future maintainer reading or refactoring `destroy`, for example someone dropping the `len(c.Links) > 0` condition as redundant or questioning whether cleanup with zero containers is safe.\",\n      \"impact\": \"Maintenance cost only; the behavior is correct as written.\",\n      \"suggestion\": \"Add a short comment above the guard, for example: containers may have been removed out-of-band, but host-namespace artifacts of resolved links (notably the `vx-*` VXLAN devices of vxlan-stitch links) survive them, so clean up the special link nodes whenever this lab resolved links. Optionally cross-reference the comment in `deleteNodes`.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No runnable check covers the special-node cleanup path or the `wg.Wait()` ordering\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/destroy.go\",\n        \"start\": 696,\n        \"end\": 720\n      },\n      \"problem\": \"Both behavioral changes are untested: deleting special link nodes when containers are already gone, and running special-node deletion only after node workers finish. The repo already provides a cheap fake-runtime harness for `destroy` (`fakeDestroyRuntime`, `registerDestroyTestRuntime`, `writeDestroyTestTopology` in `core/destroy_test.go`), so the early-return path is reachable without a container runtime.\",\n      \"trigger\": \"A regression that reverts either change, such as moving `deleteSpecialLinkNodes` back before `wg.Wait()` or dropping the early-return call, would pass the current test suite.\",\n      \"impact\": \"Unprotected fix for a netlink race and a leftover-artifact bug, both of which can silently regress during refactoring.\",\n      \"suggestion\": \"Add one test reusing the existing harness: write a topology whose single node has a `host:` link endpoint, set `destroyTestBehavior` with an empty container list, run `Destroy`, and assert that the link attached to `clablinks.GetHostLinkNode().GetEndpoints()[0].GetLink()` reaches `LinkDeploymentStateRemoved`. The interfaces do not exist in the test environment, so `Remove` is a harmless logging no-op, and the zero value `LinkDeploymentStateNotDeployed` distinguishes the old behavior. The `wg.Wait()` ordering is harder to assert without a seam and can reasonably remain covered by review.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no tests or code were executed; conclusions are based on source inspection of the changed file and its callers.\",\n      \"Verified the guard semantics: `c.Links` is populated only via `makeCopyForDestroy` -> `ResolveLinks()` in both the `Destroy` command path (`core/destroy.go:122`) and the reconfigure path (`core/deploy.go:190-198`), so `len(c.Links) > 0` is a sound proxy for special-node endpoint attachment; `len(nil map)` is 0.\",\n      \"Verified idempotency of the cleanup: `GenericLinkNode.Delete` -> `e.GetLink().Remove(ctx)` with `LinkDeploymentStateRemoved` guards in `LinkVEth.Remove`, `LinkVxlan.Remove`, and `LinkVEthStitched.Remove`, and `EndpointGeneric.Remove` tolerating `LinkNotFoundError`.\",\n      \"Verified the fix scope is consistent: host-namespace veth endpoints (host links, mgmt-net bridge ends, veth-stitch far ends) die with the container netns, while `vx-*` VXLAN devices created for vxlan-stitch links live independently in the host netns and do survive out-of-band container removal.\",\n      \"Pre-existing issues observed but not introduced or worsened by this PR, therefore not filed: stale endpoints from a previously failed `destroy` can be re-attempted by a later lab in a `destroy --all` process (mostly neutralized by the idempotency guard); the `deleteNodes` sender loop can deadlock if the context is cancelled after workers exit; the early return still skips `sshx`/`gotty` tool-container cleanup.\",\n      \"No schema or documentation impact: the PR changes no topology properties, CLI flags, or help text; `docs/cmd/*.md` are generated.\"\n    ]\n  }\n}\n```"
 }
