@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "6c575f9fb9cdafb92e27769cf1b6429b9040db9b",
-  "updatedAt": "2026-11-04T19:05:24.053Z",
-  "state": "running",
+  "updatedAt": "2026-11-04T19:07:26.085Z",
+  "state": "completed",
   "info": {
     "id": "ses_e5816ab9cffeUYvilvsz3xDjjq",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 988327,
-      "output": 12562,
-      "reasoning": 44320,
+      "input": 1060755,
+      "output": 19255,
+      "reasoning": 48230,
       "cache": {
-        "read": 4618688,
+        "read": 5008640,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1793818448995,
-      "updated": 1793819105412
+      "updated": 1793819246003
     }
   },
   "messages": [
@@ -11582,7 +11582,8 @@
         "id": "msg_1a7f3587f001tzlNuielB6r48b",
         "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
         "time": {
-          "created": 1793819105407
+          "created": 1793819105407,
+          "completed": 1793819134760
         },
         "parentID": "msg_1a7efbbb8001r4TgCONZexZNgr",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -11595,14 +11596,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 76663,
+          "input": 829,
+          "output": 28,
+          "reasoning": 1502,
           "cache": {
-            "read": 0,
+            "read": 74304,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -11616,12 +11619,702 @@
           "id": "prt_1a7f361c90012FABWj9AsxKPWy",
           "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
           "messageID": "msg_1a7f3587f001tzlNuielB6r48b",
-          "text": "",
+          "text": "Docker runtime `ListContainers` — typically uses `ContainerList` with `All: true` (containerlab lists all incl. stopped). I recall docker.go ListContainers sets `All: true`. Fine — stopped containers are listed, groups exist.\n\nAlso note `runtimeNodeGroups` skip logic: `if !group.distributed && len(group.containers) > 1 { duplicates = append(...); continue }` — hmm, this appends EVERY extra container (so one extra container yields possibly 2 entries; cosmetic).\n\nNow — I have completed the review of all changed paths plus surrounding machinery. Let me consolidate the final findings:\n\n**Finding 1 (P3): Node named `<srl-node>-netns` collides with the internal holder container name.**\n- Location: nodes/srl/netns.go:39-43 (shortName/longName = n.Cfg.LongName + \"-netns\").\n- Trigger: topology with an srl node `srl1` and another node literally named `srl1-netns` in the same lab.\n- Impact: holder creation/deploy fails with a confusing \"already in use\"/409 conflict; `processNetworkMode`'s exact-name lookup (docker.go:1895-1897) could also resolve `container:clab-<lab>-srl1-netns` to the user's node container instead of the holder in partial states. No validation exists.\n- Suggestion: reject node names ending in `-netns` (or colliding with another node's `<longname>-netns`) at topology verification — e.g., in `verifyNodes`/`Init` where `containerNamePatternRe` checks already happen. A proportionate check is `strings.HasSuffix(name, \"-netns\")` for srl-kind nodes or a cross-node check in core.\n\nHmm wait — the collision is only with srl nodes' holders; a check could be added in `srl.Init`: check if another node exists with that name — but Init doesn't know other nodes. Cross-node check belongs in core (`c.Nodes` iteration). Simplest: in core's node verification (where `VerifyContainerName` is called per node — `core/config.go`?), after all nodes are created, check for the suffix collision. I'll suggest that.\n\n**Finding 2 (P4): `srl.Deploy` duplicates `DefaultNode.Deploy`.**\n- Location: nodes/srl/srl.go:389-418.\n- The netns path re-implements the same 4-step deploy (CLAB_INTFS env, CreateContainer, StartContainer, SetState) with only the create config differing. If `DefaultNode.Deploy` gains new behavior, the srl copy silently diverges.\n- Suggestion: add a small extension point — e.g., let `NodeOverwrites` (or the nodes package) expose an optional `getCreateConfig()` hook that `DefaultNode.Deploy` consults, and keep `srl.Deploy` only for holder setup + linkNetns. Alternatively extract a shared helper. (Optional improvement.)\n\n**Finding 3?** — anything else? Let me reconsider a few more potential issues:\n\n(a) `EnsureRunning` Created/Stopped → `n.Start(ctx)` → DefaultNode.Start → `StartContainer` → for the holder... `StartContainer(ctx, cID, d)` — second arg is a runtime \"startable\"? docker's StartContainer signature: `StartContainer(ctx, cID string, node runtime.ContainerNodeConfigurer?)`. Fine.\n\n(b) **Holder `unless-stopped` + `clab destroy`:** destroy deletes containers directly via runtime (not node.Delete?) — destroy deletes all containers with the lab label → includes the holder → docker deleting a container with restart policy — fine.\n\n(c) **Podman + `unless-stopped` on the holder** — podman restart policies need `podman` run with restart policy supported — fine.\n\n(d) **`docker kill` of the holder while the srl node runs:** the srl process keeps the netns alive; the holder container is dead. Next `clab restart` → node.Stop → parks endpoints → node stopped → srl.Stop → holder status NotFound → `if != Running return nil` → skip. Then start → EnsureRunning → NotFound → error \"recreate the node\" — decent guidance.\n\n(e) **`srl.Deploy` — `n.Cfg.Env[ClabEnvIntfs]`** — set on n.Cfg (node config) — good (used by srl container). ✓\n\n(f) **`containerConfig()` — `cfg := *n.Cfg` shares the `Labels` map and `Env` map.** CreateContainer only reads. ✓\n\n(g) **`GetContainers` — `cnts[0]` index panic?** `DefaultNode.GetContainers` returns ErrContainersNotFound when empty (verified earlier: returns error, not empty slice). If it returned `([]GenericContainer{...}, nil)` with ≥1, fine. Earlier summary: \"DefaultNode.GetContainers uses exact name match, returns ErrContainersNotFound when empty → cnts[0] safe\". ✓\n\n(h) **`core/runtime_state.go` — `distributed` flag when RootNodeName set**: group marked distributed → skip duplicates check. If a lab has both an sros distributed node and an srl node, groups are separate. ✓\n\n(i) **`netns` labels and `clab inspect` counts** — fine.\n\n(j) **Docs `nodes.md` restart-policy section: \"no is the default ... but linux and nokia_srlinux\"** — accurate.\n\n(k) **`04-srl-reboot.robot` \"Verify srl1 container was restarted by the runtime\"** — uses RestartCount; docker increments RestartCount on policy-driven restart. Chassis reboot → srl process exits (code 0?) → unless-stopped restarts → count++. ✓\n\n(l) **workflow matrix** — added `04*.robot` ✓.\n\n(m) **`apply_test.go` new tests** — reviewed in diff; they test grouping with internal containers and delete order. ✓\n\nOne more scan: is there any place that iterates `c.Nodes` and assumes one container per node, that would now see the holder incorrectly? `updateRuntimeInfoForExistingNodes` — uses GetContainers → merged. `verifyDuplicateAddresses` — node configs. `generateInventories` — per node, merged. Graph generation — per node. `clab save` — per node exec. Fine.\n\nWhat about **`clab tools ipng`/other tools listing all lab containers** (e.g., `core/tailscale.go` WithListLabName — lists containers with the lab label, which now includes holders)? Tailscale integration lists lab containers to configure tailscale nodes — holders would appear in that list! Let me check core/tailscale.go:116 and 198 — what do they do with the listed containers? If they iterate lab containers and treat each as a topology node (by NodeName label), the holder's NodeName label is `srl1-netns` — not a tailscale node, presumably filtered by kind/tool labels. Let me check quickly.",
           "time": {
-            "start": 1793819107785
+            "start": 1793819107785,
+            "end": 1793819134739
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a7f3cb17001JUZTKH7I0hCNe9",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3587f001tzlNuielB6r48b",
+          "callID": "call_9906c6591d5a4d5b95c9058f",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/tailscale.go",
+              "limit": 120,
+              "offset": 100
+            },
+            "output": "<path>/source/head/core/tailscale.go</path>\n<type>file</type>\n<content>\n100: \t\tctr.Labels[clabconstants.ToolType] != clabnodestailscale.ToolType) {\n101: \t\treturn\n102: \t}\n103: \trt := ctr.Runtime\n104: \tif rt == nil {\n105: \t\trt = c.globalRuntime()\n106: \t}\n107: \tclabnodestailscale.Logout(ctx, rt, strings.TrimPrefix(ctr.Names[0], \"/\"))\n108: }\n109: \n110: // discoverTailscaleContainers finds generated containers even when the topology no longer\n111: // enables Tailscale (for example, when the auth-key environment variable is unset on destroy).\n112: func (c *CLab) discoverTailscaleContainers(ctx context.Context, filter []string) (\n113: \t[]clabruntime.GenericContainer, error,\n114: ) {\n115: \tcontainers, err := c.ListContainers(ctx,\n116: \t\tWithListLabName(c.Config.Name),\n117: \t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n118: \t)\n119: \tif err != nil {\n120: \t\treturn nil, err\n121: \t}\n122: \tvar result []clabruntime.GenericContainer\n123: \tfor _, ctr := range containers {\n124: \t\tproxy := ctr.Labels[clabconstants.ToolType] == clabnodestailscale.ToolType\n125: \t\tsidecar := ctr.Labels[clabconstants.NodeKind] == clabnodestailscale.KindName &&\n126: \t\t\tctr.Labels[clabconstants.InternalNode] == \"true\"\n127: \t\tif !proxy && !sidecar {\n128: \t\t\tcontinue\n129: \t\t}\n130: \t\tif len(filter) > 0 &&\n131: \t\t\t(proxy || !slices.Contains(filter, ctr.Labels[clabnodestailscale.ParentLabel])) {\n132: \t\t\tcontinue\n133: \t\t}\n134: \t\tresult = append(result, ctr)\n135: \t}\n136: \treturn result, nil\n137: }\n138: \n139: // verifyTailscaleProxy checks that the SSO proxy container name is free and that every\n140: // /ts listen port is unique on the proxy.\n141: func (c *CLab) verifyTailscaleProxy() error {\n142: \tif !c.tailscaleProxyEnabled() {\n143: \t\treturn nil\n144: \t}\n145: \tif _, exists := c.Nodes[clabnodestailscale.ProxyName]; exists {\n146: \t\treturn fmt.Errorf(\n147: \t\t\t\"node name %q is reserved for the Tailscale SSO proxy\",\n148: \t\t\tclabnodestailscale.ProxyName,\n149: \t\t)\n150: \t}\n151: \n152: \towners := map[uint16]string{}\n153: \tfor _, name := range sortedNodeNames(c.Nodes) {\n154: \t\tcfg := c.Nodes[name].Config()\n155: \t\tif len(cfg.TailscalePorts) > 0 && !cfg.ManagementIPAMEligible() {\n156: \t\t\tlog.Warn(\"Tailscale /ts ports need a node management IP, ignoring\", \"node\", name)\n157: \t\t\tcontinue\n158: \t\t}\n159: \t\tif len(cfg.TailscalePorts) > 0 && cfg.MgmtNet != c.tailscaleMgmtNet().Network {\n160: \t\t\tlog.Warn(\n161: \t\t\t\t\"Tailscale /ts ports need the node on the tailscale management network, ignoring\",\n162: \t\t\t\t\"node\",\n163: \t\t\t\tname,\n164: \t\t\t\t\"network\",\n165: \t\t\t\tc.tailscaleMgmtNet().Network,\n166: \t\t\t)\n167: \t\t\tcontinue\n168: \t\t}\n169: \t\tfor _, p := range cfg.TailscalePorts {\n170: \t\t\tif owner, exists := owners[p.Listen]; exists {\n171: \t\t\t\treturn fmt.Errorf(\n172: \t\t\t\t\t\"Tailscale listen port %d is used by nodes %q and %q\",\n173: \t\t\t\t\tp.Listen, owner, name,\n174: \t\t\t\t)\n175: \t\t\t}\n176: \t\t\towners[p.Listen] = name\n177: \t\t}\n178: \t}\n179: \n180: \treturn nil\n181: }\n182: \n183: // syncTailscaleProxy reconciles the SSO proxy tool container with mgmt.tailscale. It removes\n184: // the proxy when SSO is off, using the Serve config file as a marker that a proxy was\n185: // created so labs without one skip the runtime lookup; otherwise it rewrites the Serve config from\n186: // the nodes' current\n187: // /ts ports and management IPs, which a running proxy reloads without a restart, and creates\n188: // the proxy when it is missing. Node runtime info must be current.\n189: func (c *CLab) syncTailscaleProxy(ctx context.Context) error {\n190: \tlabDir := c.TopoPaths.NodeDir(clabnodestailscale.ProxyName)\n191: \tserveFile := filepath.Join(labDir, clabnodestailscale.ServeFile)\n192: \tif !c.tailscaleProxyEnabled() && !clabutils.FileExists(serveFile) {\n193: \t\treturn nil\n194: \t}\n195: \n196: \texisting, err := c.ListContainers(\n197: \t\tctx,\n198: \t\tWithListLabName(c.Config.Name),\n199: \t\tWithListToolType(clabnodestailscale.ToolType),\n200: \t)\n201: \tif err != nil {\n202: \t\treturn fmt.Errorf(\"listing Tailscale proxy: %w\", err)\n203: \t}\n204: \n205: \tif !c.tailscaleProxyEnabled() {\n206: \t\tfor idx := range existing {\n207: \t\t\tname := strings.TrimPrefix(existing[idx].Names[0], \"/\")\n208: \t\t\tlog.Info(\"Removing Tailscale proxy\", \"container\", name)\n209: \t\t\tc.logoutTailscaleContainer(ctx, existing[idx])\n210: \t\t\tif err := c.globalRuntime().DeleteContainer(ctx, name); err != nil {\n211: \t\t\t\treturn fmt.Errorf(\"removing Tailscale proxy %q: %w\", name, err)\n212: \t\t\t}\n213: \t\t}\n214: \t\treturn os.Remove(serveFile)\n215: \t}\n216: \tif c.skipMgmtNetwork(c.tailscaleMgmtNet()) {\n217: \t\tlog.Warn(\"Tailscale SSO proxy needs the management network, skipping\",\n218: \t\t\t\"network\", c.tailscaleMgmtNet().Network)\n219: \t\treturn nil\n\n(Showing lines 100-219 of 366. Use offset=220 to continue.)\n</content>",
+            "title": "source/head/core/tailscale.go",
+            "metadata": {
+              "preview": "\t\tctr.Labels[clabconstants.ToolType] != clabnodestailscale.ToolType) {\n\t\treturn\n\t}\n\trt := ctr.Runtime\n\tif rt == nil {\n\t\trt = c.globalRuntime()\n\t}\n\tclabnodestailscale.Logout(ctx, rt, strings.TrimPrefix(ctr.Names[0], \"/\"))\n}\n\n// discoverTailscaleContainers finds generated containers even when the topology no longer\n// enables Tailscale (for example, when the auth-key environment variable is unset on destroy).\nfunc (c *CLab) discoverTailscaleContainers(ctx context.Context, filter []string) (\n\t[]clabruntime.GenericContainer, error,\n) {\n\tcontainers, err := c.ListContainers(ctx,\n\t\tWithListLabName(c.Config.Name),\n\t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n\t)\n\tif err != nil {",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/tailscale.go",
+                "text": "\t\tctr.Labels[clabconstants.ToolType] != clabnodestailscale.ToolType) {\n\t\treturn\n\t}\n\trt := ctr.Runtime\n\tif rt == nil {\n\t\trt = c.globalRuntime()\n\t}\n\tclabnodestailscale.Logout(ctx, rt, strings.TrimPrefix(ctr.Names[0], \"/\"))\n}\n\n// discoverTailscaleContainers finds generated containers even when the topology no longer\n// enables Tailscale (for example, when the auth-key environment variable is unset on destroy).\nfunc (c *CLab) discoverTailscaleContainers(ctx context.Context, filter []string) (\n\t[]clabruntime.GenericContainer, error,\n) {\n\tcontainers, err := c.ListContainers(ctx,\n\t\tWithListLabName(c.Config.Name),\n\t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar result []clabruntime.GenericContainer\n\tfor _, ctr := range containers {\n\t\tproxy := ctr.Labels[clabconstants.ToolType] == clabnodestailscale.ToolType\n\t\tsidecar := ctr.Labels[clabconstants.NodeKind] == clabnodestailscale.KindName &&\n\t\t\tctr.Labels[clabconstants.InternalNode] == \"true\"\n\t\tif !proxy && !sidecar {\n\t\t\tcontinue\n\t\t}\n\t\tif len(filter) > 0 &&\n\t\t\t(proxy || !slices.Contains(filter, ctr.Labels[clabnodestailscale.ParentLabel])) {\n\t\t\tcontinue\n\t\t}\n\t\tresult = append(result, ctr)\n\t}\n\treturn result, nil\n}\n\n// verifyTailscaleProxy checks that the SSO proxy container name is free and that every\n// /ts listen port is unique on the proxy.\nfunc (c *CLab) verifyTailscaleProxy() error {\n\tif !c.tailscaleProxyEnabled() {\n\t\treturn nil\n\t}\n\tif _, exists := c.Nodes[clabnodestailscale.ProxyName]; exists {\n\t\treturn fmt.Errorf(\n\t\t\t\"node name %q is reserved for the Tailscale SSO proxy\",\n\t\t\tclabnodestailscale.ProxyName,\n\t\t)\n\t}\n\n\towners := map[uint16]string{}\n\tfor _, name := range sortedNodeNames(c.Nodes) {\n\t\tcfg := c.Nodes[name].Config()\n\t\tif len(cfg.TailscalePorts) > 0 && !cfg.ManagementIPAMEligible() {\n\t\t\tlog.Warn(\"Tailscale /ts ports need a node management IP, ignoring\", \"node\", name)\n\t\t\tcontinue\n\t\t}\n\t\tif len(cfg.TailscalePorts) > 0 && cfg.MgmtNet != c.tailscaleMgmtNet().Network {\n\t\t\tlog.Warn(\n\t\t\t\t\"Tailscale /ts ports need the node on the tailscale management network, ignoring\",\n\t\t\t\t\"node\",\n\t\t\t\tname,\n\t\t\t\t\"network\",\n\t\t\t\tc.tailscaleMgmtNet().Network,\n\t\t\t)\n\t\t\tcontinue\n\t\t}\n\t\tfor _, p := range cfg.TailscalePorts {\n\t\t\tif owner, exists := owners[p.Listen]; exists {\n\t\t\t\treturn fmt.Errorf(\n\t\t\t\t\t\"Tailscale listen port %d is used by nodes %q and %q\",\n\t\t\t\t\tp.Listen, owner, name,\n\t\t\t\t)\n\t\t\t}\n\t\t\towners[p.Listen] = name\n\t\t}\n\t}\n\n\treturn nil\n}\n\n// syncTailscaleProxy reconciles the SSO proxy tool container with mgmt.tailscale. It removes\n// the proxy when SSO is off, using the Serve config file as a marker that a proxy was\n// created so labs without one skip the runtime lookup; otherwise it rewrites the Serve config from\n// the nodes' current\n// /ts ports and management IPs, which a running proxy reloads without a restart, and creates\n// the proxy when it is missing. Node runtime info must be current.\nfunc (c *CLab) syncTailscaleProxy(ctx context.Context) error {\n\tlabDir := c.TopoPaths.NodeDir(clabnodestailscale.ProxyName)\n\tserveFile := filepath.Join(labDir, clabnodestailscale.ServeFile)\n\tif !c.tailscaleProxyEnabled() && !clabutils.FileExists(serveFile) {\n\t\treturn nil\n\t}\n\n\texisting, err := c.ListContainers(\n\t\tctx,\n\t\tWithListLabName(c.Config.Name),\n\t\tWithListToolType(clabnodestailscale.ToolType),\n\t)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"listing Tailscale proxy: %w\", err)\n\t}\n\n\tif !c.tailscaleProxyEnabled() {\n\t\tfor idx := range existing {\n\t\t\tname := strings.TrimPrefix(existing[idx].Names[0], \"/\")\n\t\t\tlog.Info(\"Removing Tailscale proxy\", \"container\", name)\n\t\t\tc.logoutTailscaleContainer(ctx, existing[idx])\n\t\t\tif err := c.globalRuntime().DeleteContainer(ctx, name); err != nil {\n\t\t\t\treturn fmt.Errorf(\"removing Tailscale proxy %q: %w\", name, err)\n\t\t\t}\n\t\t}\n\t\treturn os.Remove(serveFile)\n\t}\n\tif c.skipMgmtNetwork(c.tailscaleMgmtNet()) {\n\t\tlog.Warn(\"Tailscale SSO proxy needs the management network, skipping\",\n\t\t\t\"network\", c.tailscaleMgmtNet().Network)\n\t\treturn nil",
+                "lineStart": 100,
+                "lineEnd": 219,
+                "totalLines": 366,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793819134747,
+              "end": 1793819134754
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f3cb2400140A7WetwIL7bjE",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3587f001tzlNuielB6r48b",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 76663,
+            "input": 829,
+            "output": 28,
+            "reasoning": 1502,
+            "cache": {
+              "read": 74304,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a7f3cb35001zNsdPJVUljrFBP",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819134773,
+          "completed": 1793819146892
+        },
+        "parentID": "msg_1a7efbbb8001r4TgCONZexZNgr",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sE6exS",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 78706,
+          "input": 1579,
+          "output": 28,
+          "reasoning": 555,
+          "cache": {
+            "read": 76544,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a7f3d82a001nux1Lk6iiFSwl5",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3cb35001zNsdPJVUljrFBP"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a7f3d82b001C8Byijl4teqSpR",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3cb35001zNsdPJVUljrFBP",
+          "text": "Tailscale discovery filters by ToolType and the tailscale kind label — holders (no ToolType) are excluded. ✓\n\nNote `discoverTailscaleContainers` already uses the `InternalNode=true` filter — the PR reuses this existing internal-node label convention (consistent with tailscale sidecars). Good design consistency.\n\nNow — I'm confident the review is complete. Final findings list:\n\n1. **P3** — Unreserved `-netns` suffix collision (nodes/srl/netns.go:42).\n2. **P4** — `srl.Deploy` duplicates `DefaultNode.Deploy` create/start/state logic (nodes/srl/srl.go:389-418).\n\nShould I also mention the P4 about `srl.Stop` skipping holder stop on DefaultNode.Stop error? I decided to drop it (fail-fast is defensible; destroy cleans up). Actually, hmm, let me reconsider once more... The docs claim \"it is removed together with the node\" — destroy covers it. Stop failure is rare and surfaces an error. Drop.\n\nAnything else? Let me reconsider the **`unless-stopped` default change being user-visible** — documented in two places. Schema already allows it. Fine.\n\nWhat about **`04*.robot` matrix addition to the workflow** — it changed the matrix from `01*`, `03*` to include `04*`. That's in the diff. ✓\n\nOne last sanity check on a potential P2 I should not miss: **`srl.Stop` — when the srl container is Running and the holder is Stopped** — possible? If the holder is stopped (docker stop clab-x-srl1-netns) while the node runs: srl.Stop → DefaultNode.Stop → PreStop (exec in holder netns — the netns still exists via the srl process... wait: ExecFunction for PreStop — the srl node's GetNSPath → holder.GetNSPath → holder status Stopped → docker GetNSPath for stopped container: PID 0 → falls back to `/run/netns/<name>` symlink → the symlink points to... linkNetns pointed it at the holder's /proc path which is now dead. Hmm — actually GetNSPath fallback: \"For stopped containers the PID is 0 and we fall back to a /run/netns/<name> link\" — the link is `LinkContainerNS(nsPath, name)`-created symlink at /run/netns/<holderLongName>? Let me re-check GetNSPath fallback code (docker.go:1097-1104+). It checks if /proc/pid/ns/net exists; else falls back to... let me read the rest.",
+          "time": {
+            "start": 1793819138091,
+            "end": 1793819146847
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a7f3fa74001yvoAQB6RqtX99f",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3cb35001zNsdPJVUljrFBP",
+          "callID": "call_b325f25764fd4c01a07b5c4f",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/runtime/docker/docker.go",
+              "limit": 45,
+              "offset": 1096
+            },
+            "output": "<path>/source/head/runtime/docker/docker.go</path>\n<type>file</type>\n<content>\n1096: \n1097: \t// If the container is running we use /proc/$pid/ns/net.\n1098: \t// For stopped containers the PID is 0 and we fall back to a /run/netns/<name> link\n1099: \t// (containerlab creates and manages it, and node lifecycle may repoint it to a parking netns).\n1100: \tif cJSON.State != nil && cJSON.State.Pid > 0 {\n1101: \t\tnspath := filepath.Join(\"/proc\", strconv.Itoa(cJSON.State.Pid), \"ns/net\")\n1102: \t\tif clabutils.FileOrDirExists(nspath) {\n1103: \t\t\treturn nspath, nil\n1104: \t\t}\n1105: \t}\n1106: \n1107: \trunNetns := filepath.Join(\"/run/netns\", cID)\n1108: \tif clabutils.FileOrDirExists(runNetns) {\n1109: \t\treturn runNetns, nil\n1110: \t}\n1111: \n1112: \td.logExitedContainerOutput(nctx, cID, displayName, cJSON.Config.Tty)\n1113: \treturn \"\", fmt.Errorf(\"namespace path not available for container %q\", displayName)\n1114: }\n1115: \n1116: // LogNonRunningContainerOutput implements runtime.ContainerRuntime.\n1117: func (d *DockerRuntime) LogNonRunningContainerOutput(ctx context.Context, containerName string) {\n1118: \tnctx, cancelFn := context.WithTimeout(ctx, d.config.Timeout)\n1119: \tdefer cancelFn()\n1120: \tcJSON, err := d.Client.ContainerInspect(nctx, containerName)\n1121: \tif err != nil {\n1122: \t\treturn\n1123: \t}\n1124: \tif cJSON.State.Running {\n1125: \t\treturn\n1126: \t}\n1127: \tdisplayName := strings.TrimPrefix(cJSON.Name, \"/\")\n1128: \tif displayName == \"\" {\n1129: \t\tdisplayName = containerName\n1130: \t}\n1131: \td.logExitedContainerOutput(nctx, cJSON.ID, displayName, cJSON.Config.Tty)\n1132: }\n1133: \n1134: // logExitedContainerOutput fetches recent stdout/stderr from a non-running container and prints it\n1135: // so deploy failures (e.g. bad cmd) surface in the CLI without a separate docker logs step.\n1136: // When the container was created with a TTY, Docker returns a raw stream; otherwise logs are\n1137: // stdout/stderr multiplexed (see stdcopy).\n1138: func (d *DockerRuntime) logExitedContainerOutput(\n1139: \tctx context.Context,\n1140: \tcID, displayName string,\n\n(Showing lines 1096-1140 of 2212. Use offset=1141 to continue.)\n</content>",
+            "title": "source/head/runtime/docker/docker.go",
+            "metadata": {
+              "preview": "\n\t// If the container is running we use /proc/$pid/ns/net.\n\t// For stopped containers the PID is 0 and we fall back to a /run/netns/<name> link\n\t// (containerlab creates and manages it, and node lifecycle may repoint it to a parking netns).\n\tif cJSON.State != nil && cJSON.State.Pid > 0 {\n\t\tnspath := filepath.Join(\"/proc\", strconv.Itoa(cJSON.State.Pid), \"ns/net\")\n\t\tif clabutils.FileOrDirExists(nspath) {\n\t\t\treturn nspath, nil\n\t\t}\n\t}\n\n\trunNetns := filepath.Join(\"/run/netns\", cID)\n\tif clabutils.FileOrDirExists(runNetns) {\n\t\treturn runNetns, nil\n\t}\n\n\td.logExitedContainerOutput(nctx, cID, displayName, cJSON.Config.Tty)\n\treturn \"\", fmt.Errorf(\"namespace path not available for container %q\", displayName)\n}\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/runtime/docker/docker.go",
+                "text": "\n\t// If the container is running we use /proc/$pid/ns/net.\n\t// For stopped containers the PID is 0 and we fall back to a /run/netns/<name> link\n\t// (containerlab creates and manages it, and node lifecycle may repoint it to a parking netns).\n\tif cJSON.State != nil && cJSON.State.Pid > 0 {\n\t\tnspath := filepath.Join(\"/proc\", strconv.Itoa(cJSON.State.Pid), \"ns/net\")\n\t\tif clabutils.FileOrDirExists(nspath) {\n\t\t\treturn nspath, nil\n\t\t}\n\t}\n\n\trunNetns := filepath.Join(\"/run/netns\", cID)\n\tif clabutils.FileOrDirExists(runNetns) {\n\t\treturn runNetns, nil\n\t}\n\n\td.logExitedContainerOutput(nctx, cID, displayName, cJSON.Config.Tty)\n\treturn \"\", fmt.Errorf(\"namespace path not available for container %q\", displayName)\n}\n\n// LogNonRunningContainerOutput implements runtime.ContainerRuntime.\nfunc (d *DockerRuntime) LogNonRunningContainerOutput(ctx context.Context, containerName string) {\n\tnctx, cancelFn := context.WithTimeout(ctx, d.config.Timeout)\n\tdefer cancelFn()\n\tcJSON, err := d.Client.ContainerInspect(nctx, containerName)\n\tif err != nil {\n\t\treturn\n\t}\n\tif cJSON.State.Running {\n\t\treturn\n\t}\n\tdisplayName := strings.TrimPrefix(cJSON.Name, \"/\")\n\tif displayName == \"\" {\n\t\tdisplayName = containerName\n\t}\n\td.logExitedContainerOutput(nctx, cJSON.ID, displayName, cJSON.Config.Tty)\n}\n\n// logExitedContainerOutput fetches recent stdout/stderr from a non-running container and prints it\n// so deploy failures (e.g. bad cmd) surface in the CLI without a separate docker logs step.\n// When the container was created with a TTY, Docker returns a raw stream; otherwise logs are\n// stdout/stderr multiplexed (see stdcopy).\nfunc (d *DockerRuntime) logExitedContainerOutput(\n\tctx context.Context,\n\tcID, displayName string,",
+                "lineStart": 1096,
+                "lineEnd": 1140,
+                "totalLines": 2212,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793819146872,
+              "end": 1793819146887
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f3fa89001j1xdRBhpjQESiV",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3cb35001zNsdPJVUljrFBP",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 78706,
+            "input": 1579,
+            "output": 28,
+            "reasoning": 555,
+            "cache": {
+              "read": 76544,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a7f3fa97001s1qQeBSU64GnTp",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819146903,
+          "completed": 1793819159924
+        },
+        "parentID": "msg_1a7efbbb8001r4TgCONZexZNgr",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sE6exS",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 80199,
+          "input": 755,
+          "output": 20,
+          "reasoning": 832,
+          "cache": {
+            "read": 78592,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a7f4038e0019SVjJD3647kSZp",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3fa97001s1qQeBSU64GnTp"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a7f403900010XzGmBi1hWM2NA",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3fa97001s1qQeBSU64GnTp",
+          "text": "The fallback uses `/run/netns/<cID>` — for the holder, `cID` = holder LongName (`clab-x-srl1-netns`); the symlink created by `linkNetns` is at `/run/netns/<nodeLongName>` (`clab-x-srl1`), not the holder's. So if the holder is stopped while the node runs and the user runs `clab stop`:\n- `DefaultNode.Stop` → PreStop → ExecFunction → srl.GetNSPath → holder.GetNSPath → holder Stopped (Pid=0) → /run/netns/clab-x-srl1-netns — does that exist? linkNetns creates `/run/netns/clab-x-srl1` (node's long name), not the holder's. So the holder's own netns link doesn't exist → GetNSPath errors \"namespace path not available\" → Stop fails.\n\nHmm wait — but actually if the holder is STOPPED and the srl node process is still running, the netns still exists (owned by the srl process). The `/run/netns/<nodeLongName>` symlink points to the holder's old /proc/<pid>/ns/net path — which still resolves while the netns is alive (the srl process holds it). So `srl.GetNSPath` could work if the code had used the node's own symlink... but the code path goes through `holder.GetNSPath` (holder LongName, Pid=0) → fallback `/run/netns/clab-x-srl1-netns` → not present → error.\n\nIs this scenario reachable? A user doing `docker stop clab-x-srl1-netns` directly — explicitly discouraged by docs (\"Use containerlab stop, start and restart ... instead of restarting the containers with the container runtime directly\"). Also `docker kill`/`docker pause` edge cases. Under normal containerlab flows (stop/restart/destroy), the node is stopped before the holder, so the holder is never stopped while the node runs. So this is a user-error edge case with a decent error message (\"namespace path not available\"). Not worth a finding — maybe a coverage note.\n\nActually wait, one more nuance for the normal `clab stop` flow: node.Stop parks endpoints BEFORE stopping the node container. Park uses ExecFunction → holder running → /proc path. ✓ Then node stopped. Then srl.Stop stops the holder. ✓\n\nAnd `clab restart`: node.Stop (park → stop node → stop holder) then node.Start (start holder → start node → linkNetns → RestoreEndpoints → RunExecFromConfig). ✓ — verified.\n\nOne more: **`clab start` after `clab stop`** — startNodeSet → node.Start → EnsureRunning → holder Stopped → holder.Start → DefaultNode.Start... wait, EnsureRunning calls `n.Start(ctx)` — the HOLDER's Start = DefaultNode.Start → `StartContainer(ctx, cfg.LongName, d)` → starts holder. ✓ Then srl's DefaultNode.Start → StartContainer(node) → RestoreEndpoints (parking netns exists from Stop → RestoreTo → ExecFunction → srl.GetNSPath → holder running ✓) → RunExecFromConfig. Then srl.Start → linkNetns. ✓\n\nNow — one more scenario to double-check: **apply recreate when `startNodeSet`-style flows call `node.Start` for a node whose holder exists but the node container was deleted** — EnsureRunning ok → DefaultNode.Start → status NotFound → error. Handled by deploy flows. ✓\n\nI'm now confident in the final findings. Let me also double check the base vs head for `nodes/sros/netns.go` — the refactor: `ensureNetnsRunning` removed; `EnsureRunning` moved to the shared NetnsHolder. In sros, is `EnsureRunning` still referenced anywhere (e.g., sros.Start calls `n.netnsNode.EnsureRunning`)? Let me grep sros for EnsureRunning.",
+          "time": {
+            "start": 1793819149200,
+            "end": 1793819159897
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a7f42d5b001gcQ20FZm7r3PwT",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3fa97001s1qQeBSU64GnTp",
+          "callID": "call_871a01b127974054b7f65497",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes",
+              "pattern": "EnsureRunning"
+            },
+            "output": "Found 7 matches\n/source/head/nodes/srl/srl.go:\n  Line 425: \tif err := n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName); err != nil {\n\n\n/source/head/nodes/netns_holder.go:\n  Line 29: // EnsureRunning starts or unpauses the holder, so that the containers of node can join it.\n\n  Line 30: func (n *NetnsHolder) EnsureRunning(ctx context.Context, node string) error {\n\n\n/source/head/nodes/sros/sros.go:\n  Line 1827: \tif err := n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName); err != nil {\n\n\n/source/head/nodes/sros/sros_test.go:\n  Line 855: \t\trequire.NoError(t, n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName))\n\n  Line 871: \t\trequire.NoError(t, n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName))\n\n  Line 884: \t\terr := n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName)\n",
+            "title": "EnsureRunning",
+            "metadata": {
+              "matches": 7,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793819159902,
+              "end": 1793819159920
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f42d72001ZFqi65MOmWJVwA",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f3fa97001s1qQeBSU64GnTp",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 80199,
+            "input": 755,
+            "output": 20,
+            "reasoning": 832,
+            "cache": {
+              "read": 78592,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a7f42d7f001Tseah7zYWTb7dy",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819159935,
+          "completed": 1793819164812
+        },
+        "parentID": "msg_1a7efbbb8001r4TgCONZexZNgr",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sE6exS",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 80510,
+          "input": 304,
+          "output": 30,
+          "reasoning": 48,
+          "cache": {
+            "read": 80128,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a7f43b650011x5VuURpOBfgSx",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f42d7f001Tseah7zYWTb7dy"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a7f43b67001SvWsbe8TnXivX0",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f42d7f001Tseah7zYWTb7dy",
+          "text": "Consistent. The sros refactor reuses the shared holder — good.\n\nFinal check on sros: the removed `namespaceNode` type — any leftover references? Grep for \"namespaceNode\" and \"ensureNetnsRunning\".",
+          "time": {
+            "start": 1793819163495,
+            "end": 1793819164783
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a7f440700013cVkpI20XSuBry",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f42d7f001Tseah7zYWTb7dy",
+          "callID": "call_dfc93ac2cfe34e6b803214fb",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/nodes",
+              "pattern": "namespaceNode|ensureNetnsRunning|netnsNode\\b"
+            },
+            "output": "Found 81 matches\n/source/head/nodes/srl/netns.go:\n  Line 27: \tn.netnsNode = new(clabnodes.NetnsHolder)\n\n  Line 29: \treturn n.netnsNode.Init(n.newNetnsConfig(), clabnodes.WithRuntime(n.GetRuntime()))\n\n  Line 95: \tcfg.NetworkMode = \"container:\" + n.netnsNode.GetShortName()\n\n  Line 108: \tnsPath, err := n.netnsNode.GetNSPath(ctx)\n\n  Line 118: \tif n.netnsNode == nil {\n\n  Line 122: \treturn n.netnsNode.GetNSPath(ctx)\n\n  Line 127: \tif n.netnsNode == nil {\n\n  Line 131: \treturn errors.Join(n.DefaultNode.DeleteNetnsSymlink(), n.netnsNode.DeleteNetnsSymlink())\n\n\n/source/head/nodes/srl/netns_test.go:\n  Line 58: \trequire.NotNil(t, n.netnsNode)\n\n  Line 59: \tholder := n.netnsNode.Config()\n\n  Line 85: \tassert.Equal(t, \"no\", n.netnsNode.Config().RestartPolicy)\n\n  Line 93: \tassert.Nil(t, n.netnsNode)\n\n\n/source/head/nodes/srl/srl.go:\n  Line 239: \tnetnsNode *clabnodes.NetnsHolder\n\n  Line 390: \tif n.netnsNode == nil {\n\n  Line 395: \t*n.netnsNode.Config() = *n.newNetnsConfig()\n\n  Line 396: \tif err := n.netnsNode.Deploy(ctx, params); err != nil {\n\n  Line 397: \t\treturn fmt.Errorf(\"deploy network namespace node %q: %w\", n.netnsNode.GetShortName(), err)\n\n  Line 421: \tif n.netnsNode == nil {\n\n  Line 425: \tif err := n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName); err != nil {\n\n  Line 439: \tif err := n.DefaultNode.Stop(ctx); err != nil || n.netnsNode == nil {\n\n  Line 443: \tif n.netnsNode.GetContainerStatus(ctx) != clabruntime.Running {\n\n  Line 447: \treturn n.Runtime.StopContainer(ctx, n.netnsNode.Config().LongName, n.netnsNode.StopSignal)\n\n  Line 451: \tif n.netnsNode == nil {\n\n  Line 455: \treturn errors.Join(n.DefaultNode.Delete(ctx), n.netnsNode.Delete(ctx))\n\n  Line 462: \tif n.netnsNode == nil {\n\n  Line 468: \t\t\treturn n.netnsNode.GetContainers(ctx)\n\n  Line 474: \tholder, err := n.netnsNode.GetContainers(ctx)\n\n\n/source/head/nodes/sros/netns.go:\n  Line 90: \treturn n.netnsNode.GetNSPath(ctx)\n\n  Line 102: \t\tif n.netnsNode != nil {\n\n  Line 103: \t\t\terrs = append(errs, n.netnsNode.DeleteNetnsSymlink())\n\n\n/source/head/nodes/sros/sros.go:\n  Line 227: \tnetnsNode *clabnodes.NetnsHolder\n\n  Line 620: \terrs = append(errs, n.DefaultNode.Delete(ctx), n.netnsNode.Delete(ctx))\n\n  Line 630: \tn.netnsNode = new(clabnodes.NetnsHolder)\n\n  Line 631: \tif err := n.netnsNode.Init(\n\n  Line 637: \trootCtrName := n.netnsNode.Config().LongName\n\n  Line 652: \t\tcomponentConfig.NetworkMode = fmt.Sprintf(\"container:%s\", n.netnsNode.GetShortName())\n\n  Line 713: \tnetnsConfig := n.netnsNode.Config()\n\n  Line 724: \tif err := n.netnsNode.Deploy(ctx, deployParams); err != nil {\n\n  Line 725: \t\treturn fmt.Errorf(\"deploy network namespace node %q: %w\", n.netnsNode.GetShortName(), err)\n\n  Line 1184: \t\tif n.netnsNode != nil {\n\n  Line 1185: \t\t\treturn n.netnsNode.GetContainers(ctx)\n\n  Line 1580: \t\tif n.netnsNode != nil {\n\n  Line 1581: \t\t\tcontainerName = n.netnsNode.Config().LongName\n\n  Line 1827: \tif err := n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName); err != nil {\n\n\n/source/head/nodes/sros/sros_test.go:\n  Line 744: \trequire.NotNil(t, n.netnsNode)\n\n  Line 745: \tassert.Equal(t, \"n1-netns\", n.netnsNode.Config().ShortName)\n\n  Line 746: \tassert.Equal(t, \"clab-test-n1-netns\", n.netnsNode.Config().LongName)\n\n  Line 747: \tassert.Equal(t, n.Cfg.Image, n.netnsNode.Config().Image)\n\n  Line 748: \tassert.Equal(t, \"unless-stopped\", n.netnsNode.Config().RestartPolicy)\n\n  Line 749: \tassert.Equal(t, \"true\", n.netnsNode.Config().Labels[clabconstants.InternalNode])\n\n  Line 750: \tassert.Equal(t, \"/bin/sh\", n.netnsNode.Config().Entrypoint)\n\n  Line 754: \t\tn.netnsNode.Config().Cmd,\n\n  Line 756: \tassert.Equal(t, \"srsim-netns\", n.netnsNode.Config().Labels[clabconstants.NodeType])\n\n  Line 757: \tassert.Empty(t, n.netnsNode.Config().Labels[clabconstants.ToolType])\n\n  Line 758: \tassert.Equal(t, n.Cfg.ShortName, n.netnsNode.Config().Labels[clabconstants.RootNodeName])\n\n  Line 759: \tassert.Equal(t, n.Cfg.MgmtIPv4Address, n.netnsNode.Config().MgmtIPv4Address)\n\n  Line 760: \tassert.Equal(t, n.Cfg.Sysctls, n.netnsNode.Config().Sysctls)\n\n  Line 761: \tassert.Empty(t, n.netnsNode.Config().Env)\n\n  Line 762: \tassert.Empty(t, n.netnsNode.Config().Binds)\n\n  Line 787: \t\tNames:  []string{n.netnsNode.Config().LongName},\n\n  Line 788: \t\tLabels: n.netnsNode.Config().Labels,\n\n  Line 794: \t\t{FilterType: \"name\", Match: n.netnsNode.Config().LongName},\n\n  Line 810: \t\tGetContainerStatus(ctx, n.netnsNode.Config().LongName).\n\n  Line 812: \tmockRuntime.EXPECT().DeleteContainer(ctx, n.netnsNode.Config().LongName).Return(nil)\n\n  Line 835: \t\tGetContainerStatus(ctx, n.netnsNode.Config().LongName).\n\n  Line 837: \tmockRuntime.EXPECT().DeleteContainer(ctx, n.netnsNode.Config().LongName).Return(nil)\n\n  Line 852: \t\truntime.EXPECT().GetContainerStatus(ctx, n.netnsNode.Config().LongName).\n\n  Line 855: \t\trequire.NoError(t, n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName))\n\n  Line 865: \t\truntime.EXPECT().GetContainerStatus(ctx, n.netnsNode.Config().LongName).\n\n  Line 868: \t\t\tStartContainer(ctx, n.netnsNode.Config().LongName, gomock.Any()).\n\n  Line 871: \t\trequire.NoError(t, n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName))\n\n  Line 881: \t\truntime.EXPECT().GetContainerStatus(ctx, n.netnsNode.Config().LongName).\n\n  Line 884: \t\terr := n.netnsNode.EnsureRunning(ctx, n.Cfg.ShortName)\n\n  Line 1053: \tholder := n.netnsNode\n\n  Line 1166: \t\t\t\trequire.NotNil(t, n.netnsNode)\n\n  Line 1168: \t\t\t\trequire.Nil(t, n.netnsNode)\n\n  Line 1196: \t\t\trequire.Nil(t, n.netnsNode)\n\n  Line 1212: \t\t\trequire.Nil(t, n.netnsNode)\n\n  Line 1344: \trequire.NotNil(t, n.netnsNode)\n\n  Line 1345: \tassert.Same(t, rt, n.netnsNode.GetRuntime())\n\n  Line 1346: \tassert.Equal(t, \"oob\", n.netnsNode.Config().MgmtNet)\n",
+            "title": "namespaceNode|ensureNetnsRunning|netnsNode\\b",
+            "metadata": {
+              "matches": 81,
+              "truncated": false
+            },
+            "time": {
+              "start": 1793819164788,
+              "end": 1793819164808
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f44089001JKDYsysiEn6GXc",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f42d7f001Tseah7zYWTb7dy",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 80510,
+            "input": 304,
+            "output": 30,
+            "reasoning": 48,
+            "cache": {
+              "read": 80128,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a7f44095001AOeV9G8vAFHF3H",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819164821,
+          "completed": 1793819194209
+        },
+        "parentID": "msg_1a7efbbb8001r4TgCONZexZNgr",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sE6exS",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 84778,
+          "input": 1953,
+          "output": 1729,
+          "reasoning": 712,
+          "cache": {
+            "read": 80384,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a7f44775001IguGuGgr4OLb5E",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f44095001AOeV9G8vAFHF3H"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a7f447780011857zTPAWl0y4G",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f44095001AOeV9G8vAFHF3H",
+          "text": "No leftovers of the removed types. The refactor is clean and consistent.\n\nInteresting detail in sros.go:652: `componentConfig.NetworkMode = fmt.Sprintf(\"container:%s\", n.netnsNode.GetShortName())` — same pattern as srl. Note that for sros, this means the sros node's Cfg.NetworkMode IS set (mutated) for components, whereas srl keeps Cfg untouched via a copy. Slight inconsistency, but sros behavior is pre-existing (per-node components mutate their own configs, not the root node's). Not a finding.\n\nWait — actually in sros, is `componentConfig` a per-component NodeConfig (separate from n.Cfg)? Yes — components are separate containers. So no inconsistency issue.\n\nNow — final review synthesis. Findings:\n\n1. **P3** — `-netns` name collision unvalidated (nodes/srl/netns.go:39-43). Trigger: topology containing both `srl1` and a node literally named `srl1-netns`. Impact: confusing 409 \"name already in use\" deploy failure; in partial states `processNetworkMode` (docker.go:1895-1897, 1908-1914) may resolve `container:clab-<lab>-srl1-netns` to the user's node container. Correction: reserve the suffix — e.g., during topology verification reject srl-node names (or any node whose long name equals another node's long name + \"-netns\").\n\n2. **P4** — `srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence (nodes/srl/srl.go:389-418 vs nodes/default_node.go:187-211) only to inject `containerConfig()`. Maintenance risk of drift. Suggestion: add a narrow hook (e.g., an optional `createConfig` override consulted by `DefaultNode.Deploy`) and keep only holder setup + `linkNetns` in `srl.Deploy`; or accept and document the coupling.\n\nCoverage notes: source-only review (no tests executed — tests and robot suite inspected statically); lab-runtime (clabernetes) path out of scope (docker path verified, no holder awareness needed since lab runtimes manage nodes separately — noted as uncertainty); direct docker holder stop while node runs is discouraged by docs; `unless-stopped` default documented in nodes.md + srl.md; schema already allows `unless-stopped`.\n\nAlso, should I mention anything about the podman runtime? The e2e suite runs podman with continue-on-error. The holder under podman: `specgen` handles `container:` NetNS ✓; restart policy unless-stopped supported by podman ✓. OK — coverage note.\n\nDiagram: not needed.\n\nNow write the Markdown review + JSON. Location for finding 1: nodes/srl/netns.go lines 39-49 (or 42). Use head revision. Line anchors: netns.go L39-L49. For finding 2: srl.go L389-L418.\n\nPermalk roots:\nhead: https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/\npaths: nodes/srl/netns.go → encoded \"nodes/srl/netns.go\" (no special chars).\n\nWrite the review now.",
+          "time": {
+            "start": 1793819166584,
+            "end": 1793819176788
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a7f46f550010vznKtvZZD5uMp",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f44095001AOeV9G8vAFHF3H",
+          "text": "All verification reads are complete. Here is the final review.\n\n---\n\n## Code Review: SR Linux netns holder for restart-persistent links\n\n### Summary\n\nThe PR introduces an internal `NetnsHolder` container (`nodes/netns_holder.go`) that owns the SR Linux node's network namespace, so dataplane links and the management IP survive container restarts triggered from within the node. The SR OS implementation is refactored onto the same shared holder type. The design is coherent and well-tested: the holder is hidden from `inspect` (unless `--all`), grouped under its root node for apply/destroy ordering (`core/runtime_state.go`, verified: internal containers sort first, so `deleteApplyNodes` deletes them last), and lifecycle flows (`stop`/`start`/`restart`/apply recreate) were traced end-to-end and behave correctly, including parking/restore via the holder's netns through the `srl.GetNSPath` override (`nodes/srl/netns.go:117`).\n\nDocs (`docs/manual/kinds/srl.md` \"Reboot\" section, `docs/manual/nodes.md#restart-policy`), the JSON schema (`unless-stopped` already present in `schemas/clab.schema.json`), the new robot suite (`04-srl-reboot.robot`, including a no-leftover-containers check) and the CI matrix (`04*.robot` in `.github/workflows/srlinux-tests.yml`) are all consistent with the implementation. No P0/P1 issues were found.\n\n### Severity summary\n\n| Priority | Count | Titles |\n|----------|-------|--------|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 1 | Unvalidated `<node>-netns` container name can collide with a user node |\n| P4 | 1 | `srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence |\n\n### Finding details\n\n**1. P3 — Unvalidated `<node>-netns` container name can collide with a user node**\nLocation: [`nodes/srl/netns.go` L39–L49 (head)](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/netns.go#L39-L49)\n\nProblem: The internal holder derives its container name as `n.Cfg.LongName + \"-netns\"` with no reservation of that suffix. Nothing rejects a topology that also contains a node literally named `srl1-netns` in the same lab, and the docker runtime resolves `network-mode: container:<name>` by exact container-name lookup (`runtime/docker/docker.go` `processNetworkMode`, lines 1895–1914).\n\nTrigger: Deploy a lab with an SR Linux node `srl1` and any node (any kind) named `srl1-netns`. The holder for `srl1` wants the long name `clab-<lab>-srl1-netns`, which is also the user node's long name. Depending on worker ordering, either the user node's `CreateContainer` or the holder's fails with a bare409 \"name already in use\" error; in partial states (user node container present, holder absent, e.g. after a failed earlier deploy), the `processNetworkMode` lookup for `srl1` can resolve `container:clab-<lab>-srl1-netns` to the user's node container instead of the holder.\n\nImpact: A confusing deploy failure on a legal topology, plus a narrow path where the SR Linux container joins the wrong network namespace. No silent corruption in the normal flow — the holder is always created before the node container inside `srl.Deploy`, so a conflict surfaces loudly — but the error gives no hint about the internal naming scheme.\n\nCorrection: Reserve the suffix in topology verification, e.g. reject node names that end in `-netns`, or add a cross-node check (where `VerifyContainerName` is already invoked over all nodes) that no node's long name equals another node's long name plus `-netns`. A one-line check with a clear message is proportionate.\n\n**2. P4 — `srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence**\nLocation: [`nodes/srl/srl.go` L389–L418 (head)](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/srl.go#L389-L418)\n\nProblem: The netns path of `srl.Deploy` re-implements the four steps of `DefaultNode.Deploy` (`nodes/default_node.go` L187–L211): setting `ClabEnvIntfs`, `CreateContainer`, `StartContainer`, and `SetState(Deployed)` — differing only in the create config (`n.containerConfig()` instead of `n.Cfg`). This is exactly the kind of copy that silently drifts if `DefaultNode.Deploy` later gains behavior (state transitions, error handling, post-start hooks). The copy-based `containerConfig()` approach itself is sound (it avoids mutating `n.Cfg.NetworkMode`, which keeps mgmt-IP planning, diffing, and state files consistent — verified).\n\nTrigger: Future maintenance of `DefaultNode.Deploy` (this is a latent maintenance cost, not a current defect).\n\nImpact: Behavioral drift risk between the srl netns path and all other node kinds; extra reading cost today.\n\nCorrection: Optional. A minimal hook — for instance letting `DefaultNode.Deploy` consult an optional overwrite method that returns the create config (the existing `NodeOverwrites` extension point in `nodes/default_node.go` L701–L722 is the natural place) — would let `srl.Deploy` keep only holder setup and `linkNetns`. If the maintainers prefer the current explicitness, documenting the coupling in a comment is acceptable.\n\n### Coverage notes\n\n- This is a source-only review; no tests were executed. The new unit tests (`nodes/srl/netns_test.go`, `nodes/sros/sros_test.go`, `core/apply_test.go`) and the `04-srl-reboot.robot` suite were inspected statically and their mock expectations match the traced implementation (e.g. the `Start`/`Stop`/`GetContainers`/`Delete` call sequences, and the internal-container-first sort guaranteeing the holder is deleted last).\n- Verified end-to-end: holder name resolution in `processNetworkMode` (exact-match, short name prefixing), mgmt-IP preservation through apply recreate (`collectExistingManagementAddresses` records the holder's address under the node name), park/restore ordering in `Stop`/`Start` (park happens while the holder still runs; `RestoreEndpoints` resolves the destination netns via `ExecFunction` → `GetNSPath`, which the srl override redirects to the fresh holder), destroy ordering, `inspect` filtering (`cmd/inspect.go` hides `InternalNode=true` unless `--all`), podman specgen handling of `container:` network mode, and the schema's `restart-policy` enum already accepting `unless-stopped`.\n- Out of scope / unverified: the `labruntime` (clabernetes) code path was not traced; `c.LabRuntime` is only set for lab runtime names and the PR targets the container-runtime path. The docs' advice to use `containerlab stop/start/restart` rather than runtime-level commands mitigates edge cases such as manually stopping the holder while the node runs (which would fail with a clear \"namespace path not available\" error on the next lifecycle op).\n- The `unless-stopped` default change for `nokia_srlinux` is user-visible and is documented in both `docs/manual/nodes.md#restart-policy` and `docs/manual/kinds/srl.md#reboot`; no schema change was needed.",
+          "time": {
+            "start": 1793819176789,
+            "end": 1793819194198
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1a7f4b34e001eg2vxGqy1HvqaN",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f44095001AOeV9G8vAFHF3H",
+          "callID": "call_a63b54404a8842cb8621eed3",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/srl/netns.go",
+              "limit": 5,
+              "offset": 39
+            },
+            "output": "<path>/source/head/nodes/srl/netns.go</path>\n<type>file</type>\n<content>\n39: \tshortName := n.Cfg.ShortName + \"-netns\"\n40: \tlabels[clabconstants.NodeName] = shortName\n41: \n42: \tlongName := n.Cfg.LongName + \"-netns\"\n43: \tlabels[clabconstants.LongName] = longName\n\n(Showing lines 39-43 of 132. Use offset=44 to continue.)\n</content>",
+            "title": "source/head/nodes/srl/netns.go",
+            "metadata": {
+              "preview": "\tshortName := n.Cfg.ShortName + \"-netns\"\n\tlabels[clabconstants.NodeName] = shortName\n\n\tlongName := n.Cfg.LongName + \"-netns\"\n\tlabels[clabconstants.LongName] = longName",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/srl/netns.go",
+                "text": "\tshortName := n.Cfg.ShortName + \"-netns\"\n\tlabels[clabconstants.NodeName] = shortName\n\n\tlongName := n.Cfg.LongName + \"-netns\"\n\tlabels[clabconstants.LongName] = longName",
+                "lineStart": 39,
+                "lineEnd": 43,
+                "totalLines": 132,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1793819194196,
+              "end": 1793819194204
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f4b35e0013xQd1ggBWpqd6e",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f44095001AOeV9G8vAFHF3H",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 84778,
+            "input": 1953,
+            "output": 1729,
+            "reasoning": 712,
+            "cache": {
+              "read": 80384,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a7f4b362001FkhWX8TG5KhAFh",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819194211
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_1a7f4b364001FfQKgatzCQkdU1",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f4b362001FkhWX8TG5KhAFh",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_1a7f2e1de001a7ghPFJRP4S2KB"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a7f4b386001gT7GYXjo6tYFzA",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819194246,
+          "completed": 1793819230502
+        },
+        "parentID": "msg_1a7f4b362001FkhWX8TG5KhAFh",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sE6exS",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 49657,
+          "input": 46120,
+          "output": 3422,
+          "reasoning": 115,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a7f4c174001kkd6985U7fuVyc",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f4b386001gT7GYXjo6tYFzA"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a7f4c176001ryYn2mQwaWcQA8",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f4b386001gT7GYXjo6tYFzA",
+          "text": "Combine prior summary with conversation. Update: docs read completed, workflow verified, tests verified, startup cli files exist, schema verified (unless-stopped present in enum), podman verified, deployNode flow confirmed, Deploy/Start/Stop/Delete confirmed in final files, DefaultNode.Deploy duplication confirmed, NetnsHolder fully read, deploy idempotency resolved (Deploy uses runtimeNodeGroups/apply path), findings refined (name collision P3/P4, Deploy duplication P4, dropped srl.Stop-on-error finding).\n\nNext move: emit the trusted result schema.",
+          "time": {
+            "start": 1793819197814,
+            "end": 1793819199326
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a7f4c760001MlMnIa0TWlMeMy",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f4b386001gT7GYXjo6tYFzA",
+          "text": "## Objective\n- Perform a read-only code review of a PR snapshot at `/source` (containerlab repo, head `6c575f9fb9cdafb92e27769cf1b6429b9040db9b`, base `91c22792bf11b95fcc34d8b882d745bd3f13083a`), checking all 14 changed paths, callers, tests, docs, and schema against `standards.json`, then return the trusted result schema. Tests are not executed (source-only review; must be disclosed).\n\n## Important Details\n- Snapshot layout: files under `/source/head/...` and `/source/base/...`; `/source/standards.json`, `/source/manifest.json`, `/source/diff.txt` at top level. Standards rules only exist under `/source/head/.cursor/rules/` (karpathy-guidelines.mdc, ponytail.mdc).\n- Permalinks: head=`https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/`, base=`https://github.com/srl-labs/containerlab/blob/91c22792bf11b95fcc34d8b882d745bd3f13083a/`.\n- PR subject: \"netns holder\" internal container (`srl-netns` node type) owns the SR Linux node's network namespace so links/mgmt IP survive container restarts; new default restart policy `unless-stopped` for srl (user-set policy kept); SROS refactored to reuse shared `NetnsHolder`; new `04*.robot` CI suite for srl reboot test.\n- 14 changed paths: M `.github/workflows/srlinux-tests.yml`, M `core/apply_test.go`, M `core/runtime_state.go`, M `docs/manual/kinds/srl.md`, M `docs/manual/nodes.md`, A `nodes/netns_holder.go`, A `nodes/srl/netns.go`, A `nodes/srl/netns_test.go`, M `nodes/srl/srl.go`, M `nodes/sros/netns.go`, M `nodes/sros/sros.go`, M `nodes/sros/sros_test.go`, A `tests/02-basic-srl/04-srl-reboot.clab.yml`, A `tests/02-basic-srl/04-srl-reboot.robot`.\n- Key verified design facts (all confirmed in final head files):\n  - `NetnsHolder` (nodes/netns_holder.go, 52 lines, fully read): embeds `DefaultNode`; `Init` sets `StopSignal=SIGTERM`; `EnsureRunning(ctx, node)`: Running→ok, Created/Stopped→`n.Start(ctx)`, Paused→`UnpauseContainer`, NotFound→\"…not found; recreate the node\", else→\"is %s\". `GetContainerName`/`GetContainerStatus` via promoted embedded DefaultNode.\n  - `srl.usesNetnsNode()` = `NetworkMode == \"\" && !IsRootNamespaceBased`; holder copies Image/RestartPolicy/MgmtIPv4Address/Sysctls/PortBindings, labels: `InternalNode=\"true\"`, NodeType=`srl-netns`, `RootNodeName`/`RootNodeLongName`.\n  - srl node's `n.Cfg.NetworkMode` stays `\"\"` — only the **copy** in `containerConfig()` gets `NetworkMode=\"container:<holder-short>\"`. `processNetworkMode` (docker.go:1856) sets `NetworkMode = \"container:\"+name` (by name, not ID) and no IPAM is sent for `container:` mode → static mgmt IP on node cfg safely ignored.\n  - `deployNode` (core/deploy.go:789-809): `PreDeploy` → `Deploy` → `UpdateConfigWithRuntimeInfo` (merges holder's network settings onto srl node entry — inspect/export/inventory correct). No separate holder lifecycle calls needed.\n  - Re-deploy idempotency resolved: `CLab.Deploy` (core/deploy.go:42) reconciles an already-deployed lab through the `apply` path using `runtimeNodeGroups` (group names use `RootNodeName` label so the holder collapses into node \"srl1\"); fresh deploy otherwise. No conflict issue for the holder on re-deploy.\n  - `docker CreateContainer` name-conflict handling: `ContainerCreate` errors on name conflict (only network creation at docker.go:591 has the IsConflict reuse; the IPAM retry at 1039-1074 is unrelated). So a name collision fails loudly.\n  - `srl.Deploy` (srl.go:389-418): holder config rebuilt via `*n.netnsNode.Config() = *n.newNetnsConfig()` (mgmt IP allocated after Init), holder `Deploy`, then duplicated CreateContainer/StartContainer/linkNetns/SetState. `srl.Start` (420-434): EnsureRunning → DefaultNode.Start → linkNetns. `srl.Stop` (438-448): DefaultNode.Stop → skip if holder not Running → `StopContainer(holder, StopSignal)`. `srl.Delete` (450): DefaultNode.Delete → DeleteNetnsSymlink → holder Delete.\n  - Parking/restore correctness verified: `RestoreEndpoints` → `ParkingNode.RestoreTo` → `moveEndpoint` → `dst.ExecFunction` → `GetNSPath` (srl override → holder `/proc/<pid>/ns/net`), NOT the `/run/netns/<longname>` symlink — so restore after holder recreation targets the correct new netns; `EnsureRunning` runs before `DefaultNode.Start` in `srl.Start`. `ExecFunction` (default_node.go:983) checks `ContainerHasJoinableNetns(status)`.\n  - `runtimeNodeGroups` (core/runtime_state.go:22): groupName = `RootNodeName` label if set; `deleteApplyNodes` (core/destroy.go:557) deletes containers in reverse of internal-first sort → node before holder; locked by new test `TestRuntimeNodeGroupsDeletesSRLNetnsHolderLast`.\n  - `DefaultNode.Reconcile` (default_node.go:417-453): Restart = Stop + Start (parks/restores endpoints) → srl safe under reconcile restart. LabRuntime (`c.LabRuntime`, set only when runtime name is a lab runtime per `options_clab.go:184` and `IsLabRuntimeName`) does not know about `InternalNode`/netns — lab runtime path unaffected by PR, out of scope; robot test uses classic docker path.\n  - Podman: `runtime/podman/util.go:204-226` parses `container:` NetNS mode cleanly; no mgmt network options applied → podman path works; podman CI jobs are `continue-on-error`.\n  - `sros.Stop` does NOT stop the netns holder for distributed nodes; srl.Stop DOES (comment: fresh netns on next start). Both coherent.\n  - `strconv` already imported in srl.go (line 18); `n.Cfg.Tmpfs[\"/run/netns\"]` tmpfs mount is pre-existing and host-side symlinks unaffected; `initNetnsNode()` called at end of `srl.Init` (line 358) after opts (WithRuntime) applied.\n- New CI test artifacts verified: `04-srl-reboot.clab.yml` (srl1/srl2 with startup-configs, link e1-1↔e1-1), `srl1-startup.cli`/`srl2-startup.cli` exist and configure 192.168.0.0/31 + 2002::/127 (ping checks valid; srl2 uses `{{.Env.SRL_LOCATION}}`); `.robot` asserts `unless-stopped` restart policy, chassis reboot → RestartCount increases → ping works, and destroy leaves no lab containers. Workflow matrix adds `04*.robot` (srlinux-tests.yml line 24).\n- Docs verified: `docs/manual/nodes.md` restart-policy section (134-158) claims defaults match code (`linux`→always, srl Init at srl.go:321 sets `unless-stopped`, user policy kept per netns_test.go `TestUserRestartPolicyIsKept`); `docs/manual/kinds/srl.md` has Reboot section; schema `schemas/clab.schema.json:206-219` enum already includes `unless-stopped`/`Unless-stopped` → no schema change needed.\n- Finalized candidate findings:\n  1. **P3**: internal holder name `n.Cfg.LongName + \"-netns\"` (nodes/srl/netns.go:42) collides with a user node literally named `<srl-node>-netns` in the same lab → confusing 409 \"already in use\" create conflict (docker `GetContainer` exact-name match). Always loud, never silent (holder is created before node create in `srl.Deploy`); narrow adversarial trigger; correction = reject such node names (cross-node validation at deploy/verify).\n  2. **P4**: `srl.Deploy` duplicates `DefaultNode.Deploy` body (CLAB_INTFS env, CreateContainer, StartContainer, SetState) — could drift; suggest a small create-config hook on the extension point.\n  3. **P4** (optional/minor): `unless-stopped` default is user-visible but documented.\n  - Dropped: `srl.Stop`-on-error holder leak (defensible fail-fast; error path rare — DefaultNode.Stop returns nil for Stopped/NotFound); manual `docker stop <holder>` edge (inherent to design, docs steer users to clab lifecycle).\n\n## Work State\n### Completed\n- Entire `/source/diff.txt` (1076 lines) reviewed; all 14 changed paths reviewed in final head form.\n- All previously-open verification reads done: `core/deploy.go` deployNode + Deploy/apply flow + createWaitForDependency/`createNamespaceSharingDependency`; `nodes/default_node.go` Deploy (187-211), GetNSPath (214-234), Reconcile (417-453), NodeOverwrites interface (706-722), ExecFunction (983), Park/RestoreEndpoints (1168-1237), Stop/Start (1239-1330); `links/parking_node.go` (full), `links/endpoint.go` moveEndpoint/moveLink (164-310); `runtime/docker/docker.go` CreateContainer (875-1080), processNetworkMode (1856+); `runtime/podman/util.go` network spec (180-226).\n- Verified: `nodes/netns_holder.go` (full, final), `nodes/srl/netns.go` (full, final), `nodes/srl/srl.go` Init/PreDeploy/Deploy/Start/Stop/Delete (final), `nodes/srl/netns_test.go` (full, imports/symbols compile-clean by eye).\n- Verified docs (`docs/manual/nodes.md` restart-policy section, `docs/manual/kinds/srl.md`), test artifacts (`04-srl-reboot.clab.yml`, `04-srl-reboot.robot`, `srl1-startup.cli`, `srl2-startup.cli` all present in `tests/02-basic-srl/`), workflow `04*.robot` matrix entry, schema enum for restart-policy.\n- Traced and dismissed many edge scenarios: docker-level stop/start of srl node (holder keeps netns — the feature), holder crash with `always` policy (P4-not-worth), stop while node NotFound, Paused holder, apply recreate with preserved mgmt IP, mgmt host routes, inventory/inspect filtering, deploy concurrency (srl1 sorts before srl1-netns), lab-runtime path (out of scope).\n- Findings list finalized (see Important Details).\n\n### Active\n- Emit the final trusted result schema (findings + coverage notes), disclosing that tests were not executed (source-only review).\n\n### Blocked\n- None.\n\n## Next Move\n1. Produce the final review output in the trusted result schema: findings (1×P3 name-collision `srl1-netns` vs internal holder LongName, `nodes/srl/netns.go:42`; 1×P4 `srl.Deploy` duplicating `DefaultNode.Deploy`; optional P4 notes on `unless-stopped` default visibility), coverage summary, and explicit disclosure that no tests/builds were run.\n2. Ensure every section of the result schema is populated with exact file paths/line numbers gathered above; do not continue the conversation beyond that.\n\n## Relevant Files\n- `/source/diff.txt`: fully read (1076 lines); all PR hunks reviewed.\n- `/source/standards.json`, `/source/manifest.json`: PR inventory (reviewed).\n- `/source/head/.cursor/rules/karpathy-guidelines.mdc`, `/source/head/.cursor/rules/ponytail.mdc`: applicable coding standards.\n- `/source/head/nodes/netns_holder.go`: new shared NetnsHolder type (fully reviewed).\n- `/source/head/nodes/srl/netns.go` (holder naming at line 42 — P3 finding site), `/source/head/nodes/srl/srl.go` (Init 248-359, Deploy 389-418, Start 420-434, Stop 438-448, Delete 450), `/source/head/nodes/srl/netns_test.go`: srl netns logic and tests (reviewed).\n- `/source/head/nodes/sros/netns.go`, `/source/head/nodes/sros/sros.go`, `/source/head/nodes/sros/sros_test.go`: sros refactor (key sections reviewed).\n- `/source/head/core/runtime_state.go`, `/source/head/core/destroy.go`, `/source/head/core/apply.go`, `/source/head/core/topology_reconcile.go`, `/source/head/core/deploy.go` (deployNode 789-809, Deploy 42+), `/source/head/core/network_mode.go`, `/source/head/core/lifecycle.go`, `/source/head/core/restart.go`, `/source/head/core/stop.go`, `/source/head/core/labruntime.go`, `/source/head/core/clab.go`, `/source/head/core/apply_test.go`: core apply/apply lifecycle paths (reviewed).\n- `/source/head/nodes/default_node.go`: Deploy/Start/Stop/Delete/Park/Restore/ExecFunction/Reconcile semantics (reviewed).\n- `/source/head/runtime/docker/docker.go`: CreateContainer/processNetworkMode/GetContainer (reviewed).\n- `/source/head/runtime/podman/util.go`: podman `container:` netmode handling (reviewed).\n- `/source/head/cmd/restart.go`, `/source/head/cmd/inspect.go`: restart command and inspect InternalNode filtering (reviewed).\n- `/source/head/docs/manual/kinds/srl.md`, `/source/head/docs/manual/nodes.md`: docs claims verified against implementation.\n- `/source/head/tests/02-basic-srl/04-srl-reboot.clab.yml`, `/source/head/tests/02-basic-srl/04-srl-reboot.robot`, `/source/head/tests/02-basic-srl/srl1-startup.cli`, `/source/head/tests/02-basic-srl/srl2-startup.cli`, `/source/head/.github/workflows/srlinux-tests.yml`: new CI test artifacts (verified).\n- `/source/head/schemas/clab.schema.json`: restart-policy enum includes `unless-stopped` (lines 206-219) — no change needed.\n- `/source/head/constants/labels.go`: `RootNodeName`, `InternalNode` label constants (verified).\n- `/source/head/links/parking_node.go`, `/source/head/links/endpoint.go`: parking/restore netns resolution via `GetNSPath` (verified).\n- `/source/head/core/options_clab.go`: LabRuntime initialization path (184) — out-of-scope note for lab runtime Restart/Stop not handling holders.\n- `/source/base/...`: base revisions for diffing.",
+          "time": {
+            "start": 1793819199328,
+            "end": 1793819230495
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f541220018BzXjdDIq3Z1YI",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f4b386001gT7GYXjo6tYFzA",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 49657,
+            "input": 46120,
+            "output": 3422,
+            "reasoning": 115,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1a7f54128001tRtL4rbL7Y4PRU",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819230504
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1a7f54129001AAKqJ5dJvjhC7K",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f54128001tRtL4rbL7Y4PRU",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1793819230505,
+            "end": 1793819230505
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1a7f54133001nt72o6PK2RiQ6b",
+        "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+        "time": {
+          "created": 1793819230515,
+          "completed": 1793819245987
+        },
+        "parentID": "msg_1a7f54128001tRtL4rbL7Y4PRU",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-sE6exS",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 22470,
+          "input": 20888,
+          "output": 1436,
+          "reasoning": 146,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1a7f549af0014jJ17rZiJ71BqY",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f54133001nt72o6PK2RiQ6b"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1a7f549b1001O4twx5a5G0IWH2",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f54133001nt72o6PK2RiQ6b",
+          "text": "The review is complete. Now I need to emit the final trusted result schema JSON block. The next step is to produce the final JSON output matching the schema. Both the Markdown review and JSON must describe the same findings.\n\nThe Markdown review was already provided. But wait — the prior turn gave the Markdown review, then I did two more tool calls (verification reads). The instructions say: finish with a complete Markdown review, then emit the JSON block with no text after it. Since the review is done and verified, I should now emit the final JSON. Actually, the requirement is that the Markdown review comes first, then the final JSON block. The previous assistant turn already delivered the Markdown review. Now I emit the JSON.",
+          "time": {
+            "start": 1793819232689,
+            "end": 1793819234347
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1a7f5502d001OT2W4P6UOhznvV",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f54133001nt72o6PK2RiQ6b",
+          "text": "```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P3\",\n      \"title\": \"Unvalidated `<node>-netns` container name can collide with a user node\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/srl/netns.go\",\n        \"start\": 39,\n        \"end\": 49\n      },\n      \"problem\": \"The internal netns holder derives its container name as `n.Cfg.LongName + \\\"-netns\\\"` with no reservation of that suffix. Nothing rejects a topology that also contains a node literally named `srl1-netns` in the same lab, and the docker runtime resolves `network-mode: container:<name>` by exact container-name lookup in `processNetworkMode` (`runtime/docker/docker.go`, lines 1895-1914).\",\n      \"trigger\": \"Deploy a lab with an SR Linux node `srl1` and any node (any kind) named `srl1-netns`. The holder for `srl1` wants the long name `clab-<lab>-srl1-netns`, which is also the user node's long name. Depending on worker ordering, either the user node's `CreateContainer` or the holder's fails with a bare 409 \\\"name already in use\\\" error; in partial states (user node container present, holder absent, e.g. after a failed earlier deploy), the `processNetworkMode` lookup for `srl1` can resolve `container:clab-<lab>-srl1-netns` to the user's node container instead of the holder.\",\n      \"impact\": \"A confusing deploy failure on a legal topology, plus a narrow path where the SR Linux container joins the wrong network namespace. No silent corruption in the normal flow — the holder is always created before the node container inside `srl.Deploy`, so a conflict surfaces loudly — but the error gives no hint about the internal naming scheme.\",\n      \"suggestion\": \"Reserve the suffix in topology verification, e.g. reject node names that end in `-netns`, or add a cross-node check (where `VerifyContainerName` is already invoked over all nodes) that no node's long name equals another node's long name plus `-netns`. A one-line check with a clear message is proportionate.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/srl/srl.go\",\n        \"start\": 389,\n        \"end\": 418\n      },\n      \"problem\": \"The netns path of `srl.Deploy` re-implements the four steps of `DefaultNode.Deploy` (`nodes/default_node.go` L187-L211): setting `ClabEnvIntfs`, `CreateContainer`, `StartContainer`, and `SetState(Deployed)` — differing only in the create config (`n.containerConfig()` instead of `n.Cfg`). This is a copy that can silently drift if `DefaultNode.Deploy` later gains behavior such as new state transitions, error handling, or post-start hooks. The copy-based `containerConfig()` approach itself is sound: it avoids mutating `n.Cfg.NetworkMode`, which keeps mgmt-IP planning, diffing, and state files consistent.\",\n      \"trigger\": \"Future maintenance of `DefaultNode.Deploy`; this is a latent maintenance cost, not a current defect.\",\n      \"impact\": \"Behavioral drift risk between the srl netns path and all other node kinds, plus extra reading cost today. No current incorrect behavior was found from the duplication.\",\n      \"suggestion\": \"Optional. A minimal hook — for instance letting `DefaultNode.Deploy` consult an optional overwrite method that returns the create config (the existing `NodeOverwrites` extension point in `nodes/default_node.go` L701-L722 is the natural place) — would let `srl.Deploy` keep only holder setup and `linkNetns`. If the maintainers prefer the current explicitness, documenting the coupling in a comment is acceptable.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"This is a source-only review; no tests were executed. The new unit tests (`nodes/srl/netns_test.go`, `nodes/sros/sros_test.go`, `core/apply_test.go`) and the `04-srl-reboot.robot` suite were inspected statically; their mock expectations match the traced implementation, including `Start`/`Stop`/`GetContainers`/`Delete` call sequences and the internal-container-first sort in `runtimeContainerLess` that guarantees the holder is deleted last by `deleteApplyNodes`.\",\n      \"Verified end-to-end: holder name resolution in `processNetworkMode` (exact-match, short-name prefixing), mgmt-IP preservation through apply recreate (`collectExistingManagementAddresses` records the holder's address under the node name), park/restore ordering in `Stop`/`Start` (parking happens while the holder still runs; `RestoreEndpoints` resolves the destination netns via `ExecFunction` and the `srl.GetNSPath` override to the fresh holder), destroy ordering, `inspect` filtering of `InternalNode=true` unless `--all`, podman specgen handling of `container:` network mode, and the `restart-policy` enum in `schemas/clab.schema.json` already accepting `unless-stopped`.\",\n      \"The holder design is consistent with the pre-existing internal-node convention used by `discoverTailscaleContainers` (`core/tailscale.go` L112-L137), which filters by `ToolType`/`NodeKind` labels so holders are excluded from Tailscale tool handling.\",\n      \"Out of scope / unverified: the `labruntime` (clabernetes) code path was not traced; `c.LabRuntime` is only set for lab runtime names and the PR targets the container-runtime path. The documented advice to use `containerlab stop/start/restart` rather than runtime-level commands mitigates edge cases such as manually stopping the holder while the node runs, which would fail with a clear \\\"namespace path not available\\\" error on the next lifecycle op.\",\n      \"The `unless-stopped` default change for `nokia_srlinux` is user-visible and is documented in both `docs/manual/nodes.md#restart-policy` and `docs/manual/kinds/srl.md#reboot`; no schema change was needed.\",\n      \"Manual docker-level `stop`/`kill` of the holder while the node runs is an inherent edge of the design and is discouraged by the docs; it was assessed and not reported as a finding.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1793819234349,
+            "end": 1793819245981
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1a7f57da00019YysnjSI31aLKu",
+          "sessionID": "ses_e5816ab9cffeUYvilvsz3xDjjq",
+          "messageID": "msg_1a7f54133001nt72o6PK2RiQ6b",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 22470,
+            "input": 20888,
+            "output": 1436,
+            "reasoning": 146,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P3 - Unvalidated `<node>-netns` container name can collide with a user node** | [nodes/srl/netns.go:39-49](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/netns.go#L39-L49) |\n| **P4 - `srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence** | [nodes/srl/srl.go:389-418](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/srl.go#L389-L418) |\n\n## P3 - Unvalidated `<node>-netns` container name can collide with a user node\n\n**Location:** [nodes/srl/netns.go:39-49](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/netns.go#L39-L49)\n\n**Problem:** The internal netns holder derives its container name as `n.Cfg.LongName + \"-netns\"` with no reservation of that suffix. Nothing rejects a topology that also contains a node literally named `srl1-netns` in the same lab, and the docker runtime resolves `network-mode: container:<name>` by exact container-name lookup in `processNetworkMode` &#40;[`runtime/docker/docker.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/runtime/docker/docker.go#L1-L1), lines 1895-1914&#41;.\n\n**Trigger:** Deploy a lab with an SR Linux node `srl1` and any node &#40;any kind&#41; named `srl1-netns`. The holder for `srl1` wants the long name `clab-<lab>-srl1-netns`, which is also the user node&#39;s long name. Depending on worker ordering, either the user node&#39;s `CreateContainer` or the holder&#39;s fails with a bare 409 &#34;name already in use&#34; error; in partial states &#40;user node container present, holder absent, e.g. after a failed earlier deploy&#41;, the `processNetworkMode` lookup for `srl1` can resolve `container:clab-<lab>-srl1-netns` to the user&#39;s node container instead of the holder.\n\n**Impact:** A confusing deploy failure on a legal topology, plus a narrow path where the SR Linux container joins the wrong network namespace. No silent corruption in the normal flow — the holder is always created before the node container inside `srl.Deploy`, so a conflict surfaces loudly — but the error gives no hint about the internal naming scheme.\n\n**Suggested correction:** Reserve the suffix in topology verification, e.g. reject node names that end in `-netns`, or add a cross-node check &#40;where `VerifyContainerName` is already invoked over all nodes&#41; that no node&#39;s long name equals another node&#39;s long name plus `-netns`. A one-line check with a clear message is proportionate.\n\n\n## P4 - `srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence\n\n**Location:** [nodes/srl/srl.go:389-418](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/srl.go#L389-L418)\n\n**Problem:** The netns path of `srl.Deploy` re-implements the four steps of `DefaultNode.Deploy` &#40;[`nodes/default_node.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/default_node.go#L1-L1) L187-L211&#41;&#58; setting `ClabEnvIntfs`, `CreateContainer`, `StartContainer`, and `SetState(Deployed)` — differing only in the create config &#40;`n.containerConfig()` instead of `n.Cfg`&#41;. This is a copy that can silently drift if `DefaultNode.Deploy` later gains behavior such as new state transitions, error handling, or post-start hooks. The copy-based `containerConfig()` approach itself is sound&#58; it avoids mutating `n.Cfg.NetworkMode`, which keeps mgmt-IP planning, diffing, and state files consistent.\n\n**Trigger:** Future maintenance of `DefaultNode.Deploy`; this is a latent maintenance cost, not a current defect.\n\n**Impact:** Behavioral drift risk between the srl netns path and all other node kinds, plus extra reading cost today. No current incorrect behavior was found from the duplication.\n\n**Suggested correction:** Optional. A minimal hook — for instance letting `DefaultNode.Deploy` consult an optional overwrite method that returns the create config &#40;the existing `NodeOverwrites` extension point in [`nodes/default_node.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/default_node.go#L1-L1) L701-L722 is the natural place&#41; — would let `srl.Deploy` keep only holder setup and `linkNetns`. If the maintainers prefer the current explicitness, documenting the coupling in a comment is acceptable.\n\n\n## Coverage\n\n- This is a source-only review; no tests were executed. The new unit tests &#40;[`nodes/srl/netns_test.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/srl/netns_test.go#L1-L1), [`nodes/sros/sros_test.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/nodes/sros/sros_test.go#L1-L1), [`core/apply_test.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/core/apply_test.go#L1-L1)&#41; and the [`04-srl-reboot.robot`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/tests/02-basic-srl/04-srl-reboot.robot#L1-L1) suite were inspected statically; their mock expectations match the traced implementation, including `Start`/`Stop`/`GetContainers`/`Delete` call sequences and the internal-container-first sort in `runtimeContainerLess` that guarantees the holder is deleted last by `deleteApplyNodes`.\n- Verified end-to-end&#58; holder name resolution in `processNetworkMode` &#40;exact-match, short-name prefixing&#41;, mgmt-IP preservation through apply recreate &#40;`collectExistingManagementAddresses` records the holder&#39;s address under the node name&#41;, park/restore ordering in `Stop`/`Start` &#40;parking happens while the holder still runs; `RestoreEndpoints` resolves the destination netns via `ExecFunction` and the `srl.GetNSPath` override to the fresh holder&#41;, destroy ordering, `inspect` filtering of `InternalNode=true` unless `--all`, podman specgen handling of `container:` network mode, and the `restart-policy` enum in [`schemas/clab.schema.json`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/schemas/clab.schema.json#L1-L1) already accepting `unless-stopped`.\n- The holder design is consistent with the pre-existing internal-node convention used by `discoverTailscaleContainers` &#40;[`core/tailscale.go`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/core/tailscale.go#L1-L1) L112-L137&#41;, which filters by `ToolType`/`NodeKind` labels so holders are excluded from Tailscale tool handling.\n- Out of scope / unverified&#58; the `labruntime` &#40;clabernetes&#41; code path was not traced; `c.LabRuntime` is only set for lab runtime names and the PR targets the container-runtime path. The documented advice to use `containerlab stop/start/restart` rather than runtime-level commands mitigates edge cases such as manually stopping the holder while the node runs, which would fail with a clear &#34;namespace path not available&#34; error on the next lifecycle op.\n- The `unless-stopped` default change for `nokia_srlinux` is user-visible and is documented in both [`docs/manual/nodes.md`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/docs/manual/nodes.md#L1-L1)&#35;restart-policy&#96; and [`docs/manual/kinds/srl.md`](https://github.com/srl-labs/containerlab/blob/6c575f9fb9cdafb92e27769cf1b6429b9040db9b/docs/manual/kinds/srl.md#L1-L1)&#35;reboot&#96;; no schema change was needed.\n- Manual docker-level `stop`/`kill` of the holder while the node runs is an inherent edge of the design and is discouraged by the docs; it was assessed and not reported as a finding.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P3\",\n      \"title\": \"Unvalidated `<node>-netns` container name can collide with a user node\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/srl/netns.go\",\n        \"start\": 39,\n        \"end\": 49\n      },\n      \"problem\": \"The internal netns holder derives its container name as `n.Cfg.LongName + \\\"-netns\\\"` with no reservation of that suffix. Nothing rejects a topology that also contains a node literally named `srl1-netns` in the same lab, and the docker runtime resolves `network-mode: container:<name>` by exact container-name lookup in `processNetworkMode` (`runtime/docker/docker.go`, lines 1895-1914).\",\n      \"trigger\": \"Deploy a lab with an SR Linux node `srl1` and any node (any kind) named `srl1-netns`. The holder for `srl1` wants the long name `clab-<lab>-srl1-netns`, which is also the user node's long name. Depending on worker ordering, either the user node's `CreateContainer` or the holder's fails with a bare 409 \\\"name already in use\\\" error; in partial states (user node container present, holder absent, e.g. after a failed earlier deploy), the `processNetworkMode` lookup for `srl1` can resolve `container:clab-<lab>-srl1-netns` to the user's node container instead of the holder.\",\n      \"impact\": \"A confusing deploy failure on a legal topology, plus a narrow path where the SR Linux container joins the wrong network namespace. No silent corruption in the normal flow — the holder is always created before the node container inside `srl.Deploy`, so a conflict surfaces loudly — but the error gives no hint about the internal naming scheme.\",\n      \"suggestion\": \"Reserve the suffix in topology verification, e.g. reject node names that end in `-netns`, or add a cross-node check (where `VerifyContainerName` is already invoked over all nodes) that no node's long name equals another node's long name plus `-netns`. A one-line check with a clear message is proportionate.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`srl.Deploy` duplicates the `DefaultNode.Deploy` create/start/state sequence\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/srl/srl.go\",\n        \"start\": 389,\n        \"end\": 418\n      },\n      \"problem\": \"The netns path of `srl.Deploy` re-implements the four steps of `DefaultNode.Deploy` (`nodes/default_node.go` L187-L211): setting `ClabEnvIntfs`, `CreateContainer`, `StartContainer`, and `SetState(Deployed)` — differing only in the create config (`n.containerConfig()` instead of `n.Cfg`). This is a copy that can silently drift if `DefaultNode.Deploy` later gains behavior such as new state transitions, error handling, or post-start hooks. The copy-based `containerConfig()` approach itself is sound: it avoids mutating `n.Cfg.NetworkMode`, which keeps mgmt-IP planning, diffing, and state files consistent.\",\n      \"trigger\": \"Future maintenance of `DefaultNode.Deploy`; this is a latent maintenance cost, not a current defect.\",\n      \"impact\": \"Behavioral drift risk between the srl netns path and all other node kinds, plus extra reading cost today. No current incorrect behavior was found from the duplication.\",\n      \"suggestion\": \"Optional. A minimal hook — for instance letting `DefaultNode.Deploy` consult an optional overwrite method that returns the create config (the existing `NodeOverwrites` extension point in `nodes/default_node.go` L701-L722 is the natural place) — would let `srl.Deploy` keep only holder setup and `linkNetns`. If the maintainers prefer the current explicitness, documenting the coupling in a comment is acceptable.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"This is a source-only review; no tests were executed. The new unit tests (`nodes/srl/netns_test.go`, `nodes/sros/sros_test.go`, `core/apply_test.go`) and the `04-srl-reboot.robot` suite were inspected statically; their mock expectations match the traced implementation, including `Start`/`Stop`/`GetContainers`/`Delete` call sequences and the internal-container-first sort in `runtimeContainerLess` that guarantees the holder is deleted last by `deleteApplyNodes`.\",\n      \"Verified end-to-end: holder name resolution in `processNetworkMode` (exact-match, short-name prefixing), mgmt-IP preservation through apply recreate (`collectExistingManagementAddresses` records the holder's address under the node name), park/restore ordering in `Stop`/`Start` (parking happens while the holder still runs; `RestoreEndpoints` resolves the destination netns via `ExecFunction` and the `srl.GetNSPath` override to the fresh holder), destroy ordering, `inspect` filtering of `InternalNode=true` unless `--all`, podman specgen handling of `container:` network mode, and the `restart-policy` enum in `schemas/clab.schema.json` already accepting `unless-stopped`.\",\n      \"The holder design is consistent with the pre-existing internal-node convention used by `discoverTailscaleContainers` (`core/tailscale.go` L112-L137), which filters by `ToolType`/`NodeKind` labels so holders are excluded from Tailscale tool handling.\",\n      \"Out of scope / unverified: the `labruntime` (clabernetes) code path was not traced; `c.LabRuntime` is only set for lab runtime names and the PR targets the container-runtime path. The documented advice to use `containerlab stop/start/restart` rather than runtime-level commands mitigates edge cases such as manually stopping the holder while the node runs, which would fail with a clear \\\"namespace path not available\\\" error on the next lifecycle op.\",\n      \"The `unless-stopped` default change for `nokia_srlinux` is user-visible and is documented in both `docs/manual/nodes.md#restart-policy` and `docs/manual/kinds/srl.md#reboot`; no schema change was needed.\",\n      \"Manual docker-level `stop`/`kill` of the holder while the node runs is an inherent edge of the design and is discouraged by the docs; it was assessed and not reported as a finding.\"\n    ]\n  }\n}\n```"
 }
