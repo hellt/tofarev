@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "00e195b4c827f2346ea35a0799fe9c4588f16697",
-  "updatedAt": "2026-11-09T19:12:00.943Z",
+  "updatedAt": "2026-11-09T19:14:15.945Z",
   "state": "running",
   "info": {
     "id": "ses_e3e4aa339ffentpDs95E5s6ocj",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 223204,
-      "output": 4201,
-      "reasoning": 12093,
+      "input": 243519,
+      "output": 4584,
+      "reasoning": 18480,
       "cache": {
-        "read": 1768704,
+        "read": 2522304,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1794251250886,
-      "updated": 1794251516554
+      "updated": 1794251629503
     }
   },
   "messages": [
@@ -4715,7 +4715,1163 @@
         "id": "msg_1c1b96a86001zHWgNTVZqo8AQ7",
         "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
         "time": {
-          "created": 1794251516550
+          "created": 1794251516550,
+          "completed": 1794251571854
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 58544,
+          "input": 2674,
+          "output": 25,
+          "reasoning": 3813,
+          "cache": {
+            "read": 52032,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1b970c1001f7pqWAiv1R9bVj",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1b96a86001zHWgNTVZqo8AQ7"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1b970c3001LJ3ifMUBbrJjM7",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1b96a86001zHWgNTVZqo8AQ7",
+          "text": "Good. The `empty_env` case: `want: EXPANDED: \"$GIVEN-unset\"` — interesting: with empty env, `${GIVEN}` is unset so left as `$GIVEN` (note: braces dropped), and `${CLAB_TEST_SECRET:=unset}` → \"unset\" (default applied). Wait but that means with empty env, `${GIVEN}` remains unexpanded. Consistent.\n\nBut wait — there's something interesting in \"empty_env\": `EXPANDED: \"$GIVEN-unset\"` — so default-expression `${CLAB_TEST_SECRET:=unset}` → \"unset\". And `${GIVEN}` → `$GIVEN`. Good.\n\nNow, does the old behavior with the old envsubst call match? For empty env, old code used process env (no such option existed). The new behavior for the CLI (no WithTopologyEnv) is unchanged. For library users passing env, the behavior of SubstituteEnvs with a custom env is defined by the new parse.Restrictions{NoDigit: true, NoReplace: true}.\n\nKey question I flagged earlier: does `parse.Restrictions` have NoEmpty or \"onlyknown\" semantics? The old call passed `onlyknown=false, noempty=true`. New Restrictions has NoDigit and NoReplace only. What did onlyknown=false, noempty=true do?\n\nIn a8m/envsubst (the original), `Restrictions` has: NoEmpty, NoDigit. `onlyknown` and `all` are separate concepts in the root package (all=true means expand everything; onlyknown=true means expand only vars that are set in environ). The hellt fork added \"NoReplace\" variants: `BytesRestrictedNoReplace(b, all, onlyknown, noempty, nodigit)`. Given old call (false, false, true, true): all=false? Hmm, weird — in a8m's envsubst root package, `Restricted(b []byte, all bool, onlyknown bool, restrictions)`? Let me recall a8m/envsubst:\n\n```go\nfunc Restricted(b []byte, all bool, onlyknown bool, r Restrictions) ([]byte, error)\n```\n\nwhere `all` — when true, expands all valid vars even if not set? Actually in a8m/envsubst: \"Restricted: replace variables in bytes with the value from environ. all: if true, replace all variables, even those that are not set. onlyknown: if true, replace only known vars\"...\n\nHmm, actually in a8m/envsubst README:\n\n```go\n// Replace variables in the given bytes with the value from environ.\nenvsubst.BytesRestricted(b []byte, all bool, onlyknown bool, noempty bool, nodigit bool) ([]byte, error)\n```\n\n- all: if set to true, expand all variables (even those not set — leaving empty)\n- onlyknown: if set to true, expand only variables that are set in the environ\n- noempty: do not expand variables that have an empty value? Hmm, \"do not expand variables that are set but empty\"? Actually the README says: \"noempty: if set to true, do not expand variables whose values are empty strings\"?\n\nHmm honestly: in a8m/envsubst's Restrictions doc:\n\n```\n// Restrictions provide options for limiting\n// the subset of variables to expand.\ntype Restrictions struct {\n\t// NoEmpty - do not expand vars initialized with an empty string\n\tNoEmpty bool\n\t// NoDigit - do not expand vars starting with a digit\n\tNoDigit bool\n}\n```\n\nAnd root package:\n\n```\n// Bytes Restricted replace variables in bytes with the values from environ.\n// all - if true, all variables are replaced, even if they are not set (empty)\n// onlyknown - if true, only variables that are set in environ are replaced\n// r - restrictions\nfunc Restricted(b []byte, all, onlyknown bool, r Restrictions) ([]byte, error)\n```\n\nSo old call `BytesRestrictedNoReplace(b, false, false, true, true)`:\n- all=false: only expand vars that exist in environ? No wait — all=false with onlyknown=false means: expand vars, and for unset vars leave unexpanded (the \"default\" shell-like behavior). all=true would expand unset vars to empty string.\n- onlyknown=false: meaning don't restrict to known vars — combined with all=false it means expand known vars, leave unknown.\n- noempty=true: don't expand vars initialized with empty string (leave as-is).\n- nodigit=true: don't expand vars starting with digit.\n\nAnd NoReplace (hellt fork addition): do not replace... what? Presumably it changed behavior so unset vars are left as `$VAR` rather than expanded/removed. Given all=false already does that... The hellt fork's NoReplace maybe relates to expressions with defaults: \"do not replace vars initialized with defaults\" per the comment. Hmm — so old behavior: `${VAR:=default}` left as literal?? But the docs table lists `${var:=$DEFAULT}` as supported. And the new test expects the default to be applied...\n\nHmm wait, maybe I misread the comment. Old comment (same text) said \"do not replace vars initialized with defaults\". But if the old code left `${VAR:=default}` literal, that contradicts docs. Let me check hellt/envsubst v0.2.0's actual API. I recall that hellt/envsubst v0.2.0 has `parse.Restrictions{NoReplace bool}` — NoReplace means \"don't replace variables that are not set\". Let me think about what makes the new test consistent:\n\nWith `env=[]` (empty non-nil), `${VAR:=default}` → \"default\". So default IS applied. With `${CLAB_TEST_PROCESS_VAR}` (unset in custom env) → left as `$CLAB_TEST_PROCESS_VAR`.\n\nFor the old code, would `${VAR:=default}` produce \"default\" or literal? If old behavior left default expressions literal, then the new code changes behavior for ALL CLI users (process env path also goes through the new code now). But the new code path for nil env uses `os.Environ()` — the env value is the same; the difference is only in the Restrictions flags. Old flags: noempty=true, nodigit=true, onlyknown=false, all=false + NoReplace. New flags: NoDigit=true, NoReplace=true. Missing: noempty.\n\nSo the potential regression: a var set in the environment to an EMPTY string. Old: `noempty=true` → left unexpanded. New: no corresponding restriction (assuming parse.Restrictions has a NoEmpty field that's now unset/false) → expands to empty string. That's a real behavior change for the CLI path too, not just the library env path.\n\nBut wait — maybe the hellt fork moved noempty into Restrictions and the fork's `parse.Restrictions` includes `NoEmpty`. If it does, the new call omitted it → regression. If it doesn't, then... I can't verify.\n\nHmm, but actually, wait. Let me reconsider: maybe in hellt/envsubst v0.2.0, `parse.Restrictions` is:\n\n```go\ntype Restrictions struct {\n\tNoEmpty bool\n\tNoDigit bool\n\tNoReplace bool\n}\n```\n\nI genuinely recall the hellt fork's root package having functions like:\n\n```go\nfunc BytesRestrictedNoReplace(b []byte, all bool, onlyknown bool, noempty bool, nodigit bool) ([]byte, error)\n```\n\nwhich internally does `parse.New(...).WithRestrictions(&Restrictions{...}).Parse()`. And v0.2.0 added the exported `parse.New` API so users can pass a custom environ (the old root-level functions only used `os.Environ()`). That's precisely why containerlab switched to `parse.New(\"bytes\", env, ...)` — the fork added `parse.New` with an env argument for this use case. So the fork's Restrictions likely mirrors all the old bools: NoEmpty, NoDigit, NoReplace (and maybe NoReplaceAll...).\n\nGiven the strong likelihood that `parse.Restrictions` has a `NoEmpty` field (mirroring the old noempty flag), its omission in the new call would change behavior: `${VAR}` where VAR is set to \"\" in the (process or custom) env would now expand to empty instead of staying literal.\n\nHold on, is noempty really about empty VALUES? From a8m/envsubst README:\n\n```\n| noempty | true | if set to true, do not expand vars initialized with an empty string |\n```\n\nYes. So old behavior: `FOO= os.Environ()` → `${FOO}` left as-is. New: expands to empty string.\n\nBut hmm — can I double check against the base tests/docs? The docs table in topo-def-file.md says `${var:-$DEFAULT}` evaluates to default \"If var is empty\". That's shell semantics, not the noempty restriction.\n\nSince I can't verify the lib's field names, how to handle? I can check whether the new code comments mention it. New comment: \"Vars that are not set get their default value or are left unexpanded.\" — no mention of empty. The dropped comment lines (\"do not replace vars initialized with defaults\") are preserved in file.go/template.go (\"do not replace vars initialized with defaults\" at file.go:82 and template.go:648). Hmm, those comments are stale-ish.\n\nActually — wait. I should reconsider what \"do not replace vars initialized with defaults\" means. Maybe in hellt's fork, `NoReplace` means: do not replace expressions with defaults... no, the test proves defaults ARE replaced (\"unset\" result).\n\nLet me look at how the a8m envsubst README describes `NoReplace`-style... Actually the hellt fork README (from memory):\n\n```\n## NoReplace\nSometimes it is desired to keep the variables that are not set as is, e.g. when the\ntemplate is rendered multiple times with different envs...\n```\n\nI believe NoReplace = leave unset vars unexpanded (don't replace with empty). And `noempty` = leave empty-valued vars unexpanded. Under NoReplace, `${VAR}` unset → `$VAR` preserved. Under noempty, `${VAR}` set-empty → `${VAR}` preserved.\n\nSo the new code drops the empty-value protection. Concrete trigger: in the CLI path (nil env → os.Environ()), any topology with `${SOMEVAR}` where SOMEVAR is exported as an empty string in the process env. Before: literal `${SOMEVAR}` remained in the topology (would then fail YAML? no, just stays as a literal string in value). After: expands to empty string, silently dropping the var reference.\n\nImpact assessment: real but subtle; it's a behavior change for CLI users. Also for the custom-env path (the PR's new feature) the empty-string case is the same.\n\nBut how confident am I that the old noempty flag means \"don't expand empty-valued vars\"? The a8m/envsubst README table:\n\n```\n| all | false | if true, all variables are replaced, even if they are not set (empty) |\n| onlyknown | false | if true, only variables that are set in environ are replaced |\n| noempty | true | if set to true, do not expand vars initialized with an empty string |\n| nodigit | true | if set to true, do not expand vars with names starting with a digit |\n```\n\nYes, that matches my memory of the a8m/envsubst docs. And the hellt fork is a fork of a8m's.\n\nAnd does `parse.Restrictions` in hellt v0.2.0 include NoEmpty? Since `BytesRestrictedNoReplace` in v0.1.x mapped (all, onlyknown, noempty, nodigit) → Restrictions internally, and v0.2.0 exposes `parse.New` + `Restrictions`... likely the same struct. I recall hellt/envsubst v0.2.0's parse.go having:\n\n```go\ntype Restrictions struct {\n\t// NoEmpty - do not expand vars initialized with an empty string\n\tNoEmpty bool\n\t// NoDigit - do not expand vars starting with a digit\n\tNoDigit bool\n\t// NoReplace - do not expand vars that are not set\n\tNoReplace bool\n}\n```\n\nI'm fairly confident NoEmpty exists. But \"fairly confident from memory\" — the instruction says put unresolved uncertainty in coverage notes. However, this is a code-level call with a concrete suspect. I think the right move: report as a finding with priority P3 (behavioral regression risk), clearly noting the lib-source limitation? The guidance: \"Return only supported, useful findings... State the trigger, evidence, and impact.\" And \"Put unresolved uncertainty in coverage notes; an empty findings list is valid.\"\n\nGiven the snapshot lacks the dependency source, and my confidence is moderate-high (NoEmpty is a well-documented a8m/envsubst Restrictions field; hellt's fork almost certainly kept it), I'll report it as a P3 finding while being explicit that the Restrictions field list could not be verified against the vendored source in this snapshot, and recommend verifying and adding `NoEmpty: true` + a regression test. Hmm, but if `NoEmpty` doesn't exist as a field, the finding is wrong. Let me weigh: the new code deliberately sets NoDigit and NoReplace. If Restrictions had only those two fields, then the old call's noempty flag had no equivalent in the fork's parse API at all — but the fork must implement noempty somewhere since BytesRestrictedNoReplace accepted it. If v0.2.0 restructured, the natural place is Restrictions. Either way, there's a plausible asymmetry: the new call may lose the empty-value protection.\n\nActually, wait — let me reconsider NoReplace's semantics once more, since it affects whether \"empty-valued\" behavior is even relevant. Under NoReplace (leave unset unexpanded), does the parser still expand empty-valued vars? Old: all=false & onlyknown=false & noempty=true & nodigit=true + fork's no-replace tweak. If the fork's \"NoReplace\" variant treats empty-valued as \"not set\", then NoReplace alone covers the noempty case, and the omission is harmless. Plausible! In the fork, \"NoReplace\" might mean: when the variable's value is empty (unset OR empty), don't replace. That would make the old noempty=true redundant alongside NoReplace, and the new call correct.\n\nHmm. a8m's restricted.go parse logic: when a variable is not found in environ: if all → replace with \"\", else keep as-is? Actually in a8m/envsubst, `Restricted(b, all=false, onlyknown=false, r)`: replaces known vars, leaves unknown ones unchanged. `noempty` restricts which KNOWN vars get expanded (those with empty values are skipped). `NoReplace` in hellt's fork... maybe it's exactly \"treat empty as unknown\"?\n\nI can't resolve this. Decision: put it in coverage notes as unresolved uncertainty with a concrete recommendation, not a formal finding? The instructions: \"Put unresolved uncertainty in coverage notes\". This is genuinely unresolved (lib source unavailable). But it's also the most substantive potential defect I've found. A middle path: report as P3 finding with explicit caveat that it depends on `parse.Restrictions` having a `NoEmpty`-equivalent field that must be verified, and recommend adding a regression test asserting empty-valued var behavior either way. Findings quality guidance says don't inflate uncertain suspicions into blocking defects — P3 with caveat is proportionate. Hmm, but \"Before reporting a suspected issue, check surrounding code...\" — I've done what I can. I'll include it as P3 with the caveat prominently stated, and also note it in coverage.\n\nHmm, actually let me reconsider once more. There's decent evidence in the PR itself: the new test `TestSubstituteEnvs` \"process_env_ignored\" expects unset → `$CLAB_TEST_PROCESS_VAR`. If NoReplace meant \"treat empty as unset\", then for empty-valued vars the new behavior ALSO leaves them unexpanded, and everything is equivalent. The PR author (Flosst) wrote hellt/envsubst v0.2.0 presumably with exactly this feature in mind (parse.New with custom env). It's likely they preserved semantics. The strongest signal: the PR author is Hellt-adjacent (srl-labs maintainer) and hellt/envsubst v0.2.0 was likely released FOR this PR. If v0.2.0's parse.New API was added for containerlab, the author would have ensured semantic equivalence. The omission of NoEmpty is then either (a) a deliberate decision that NoReplace covers it, or (b) an oversight.\n\nGiven real uncertainty in both directions, coverage note + a P4/P3 finding? I'll go with a coverage note only... Hmm. Let me think about what's most useful for maintainers: a concrete test to add (empty-valued var, process env path) pins the behavior regardless of which semantics is correct. That's a small, useful verification recommendation — fits \"Verification\" check #6. I'll make it a P4 optional finding: \"Add an empty-valued variable regression test / confirm noempty semantics preserved\". Actually, P4 is \"optional actionable improvement\" — that fits: add a test. And note the semantic question in coverage notes. That avoids asserting a defect I can't verify.\n\nNow let me also check: in `WithTopologyEnv`, the guard `c.TopoPaths.TopologyFileIsSet()`. What if the topology was loaded not via WithTopoPath but e.g. WithTopologyFromLab? That sets topo via WithTopoPath → TopologyFileIsSet true → error message still accurate (\"after the topology is loaded\"). Good.\n\nNext: check the remaining node files' diffs in detail and look for issues. Let me view the diff hunks for the nodes and types/types.go, node_definition_test, sros/config.go, vr-sros.go, srl.go, arcos.go, default_node.go, docs. I've seen the general pattern; let me look at the diff to see exact changes (need offsets past line 35).",
+          "time": {
+            "start": 1794251518147,
+            "end": 1794251571818
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba426e001UG4n1K0gwfK3Wm",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1b96a86001zHWgNTVZqo8AQ7",
+          "callID": "call_836d31155bde4b059c24825e",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "offset": 39,
+              "limit": 400
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n39: @@ -147,10 +147,15 @@ func (c *CLab) makeCopyForDestroy(\n40:  \t\t// a topology edited after deploy may no longer pass the mgmt-net link checks,\n41:  \t\t// which must not prevent the removal of the deployed lab.\n42:  \t\tWithSkippedMgmtNetLinksCheck(),\n43:  \t}\n44:  \n45: +\t// the copy must expand the topology with the same env vars as the deployment did\n46: +\tif c.topologyEnv != nil {\n47: +\t\tnewOpts = append(newOpts, WithTopologyEnv(c.topologyEnv))\n48: +\t}\n49: +\n50:  \t// Try to load topology file if it exists, otherwise use lab name only.\n51:  \t// This allows destroying labs even when the topology file has been deleted.\n52:  \t// WithTopoPath / WithLabNameOnly must run before WithNodeFilter so filterClabNodes\n53:  \t// sees topology nodes (see filterClabNodes in clab.go).\n54:  \tvarsFiles := opts.varsFiles\n55: diff --git a/core/destroy_test.go b/core/destroy_test.go\n56: index 9d52e7c..432f76c 100644\n57: --- a/core/destroy_test.go\n58: +++ b/core/destroy_test.go\n59: @@ -13,10 +13,11 @@ import (\n60:  \t\"sync\"\n61:  \t\"sync/atomic\"\n62:  \t\"testing\"\n63:  \t\"time\"\n64:  \n65: +\t\"github.com/google/go-cmp/cmp\"\n66:  \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n67:  \tclaberrors \"github.com/srl-labs/containerlab/errors\"\n68:  \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n69:  \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n70:  \tclabtypes \"github.com/srl-labs/containerlab/types\"\n71: @@ -942,10 +943,47 @@ topology:\n72:  \t}\n73:  \t// the mgmt-net link nodes are shared by the package, release their endpoints\n74:  \tt.Cleanup(cc.resetResolvedLinks)\n75:  }\n76:  \n77: +// TestMakeCopyForDestroyKeepsTopologyEnv verifies that the destroy copy expands the topology\n78: +// with the env vars the lab was deployed with, not with the process environment.\n79: +func TestMakeCopyForDestroyKeepsTopologyEnv(t *testing.T) {\n80: +\tregisterMgmtResolveRuntime()\n81: +\tsetMgmtResolveBehavior(t, &mgmtResolveBehavior{})\n82: +\tt.Setenv(\"LAB_SUFFIX\", \"process\")\n83: +\n84: +\ttopo := writeTopo(t, `\n85: +name: env-${LAB_SUFFIX:=unset}\n86: +topology:\n87: +  nodes:\n88: +    n1:\n89: +      kind: linux\n90: +      image: alpine\n91: +`)\n92: +\n93: +\tc, err := NewContainerLab(\n94: +\t\tWithTimeout(time.Minute),\n95: +\t\tWithTopologyEnv([]string{\"LAB_SUFFIX=given\"}),\n96: +\t\tWithTopoPath(topo, nil),\n97: +\t\tWithRuntime(\"mgmtresolvetest\", &clabruntime.RuntimeConfig{}),\n98: +\t\tWithSkippedBindsPathsCheck(),\n99: +\t)\n100: +\tif err != nil {\n101: +\t\tt.Fatal(err)\n102: +\t}\n103: +\n104: +\tcc, err := c.makeCopyForDestroy(context.Background(), topo, \"\", *NewDestroyOptions())\n105: +\tif err != nil {\n106: +\t\tt.Fatalf(\"makeCopyForDestroy failed: %v\", err)\n107: +\t}\n108: +\n109: +\tif d := cmp.Diff(\"env-given\", cc.Config.Name); d != \"\" {\n110: +\t\tt.Fatalf(\"lab name mismatch (-want +got):\\n%s\", d)\n111: +\t}\n112: +}\n113: +\n114:  func boolToInt(b bool) int {\n115:  \tif b {\n116:  \t\treturn 1\n117:  \t}\n118:  \n119: diff --git a/core/file.go b/core/file.go\n120: index 4e9e100..6d2485b 100644\n121: --- a/core/file.go\n122: +++ b/core/file.go\n123: @@ -11,12 +11,10 @@ import (\n124:  \t\"os\"\n125:  \t\"path/filepath\"\n126:  \t\"slices\"\n127:  \t\"text/template\"\n128:  \n129: -\t\"github.com/hellt/envsubst\"\n130: -\n131:  \t\"github.com/charmbracelet/log\"\n132:  \tclabtypes \"github.com/srl-labs/containerlab/types\"\n133:  \tclabutils \"github.com/srl-labs/containerlab/utils\"\n134:  \t\"gopkg.in/yaml.v2\"\n135:  )\n136: @@ -81,11 +79,11 @@ func (c *CLab) LoadTopologyFromFile(topo string, varsFiles []string) error {\n137:  \tlog.Debugf(\"topology:\\n%s\\n\", buf.String())\n138:  \n139:  \t// expand env vars if any\n140:  \t// do not replace vars initialized with defaults\n141:  \t// and do not replace vars that are not set\n142: -\tyamlFile, err := envsubst.BytesRestrictedNoReplace(buf.Bytes(), false, false, true, true)\n143: +\tyamlFile, err := clabutils.SubstituteEnvs(buf.Bytes(), c.topologyEnv)\n144:  \tif err != nil {\n145:  \t\treturn err\n146:  \t}\n147:  \n148:  \tc.renderedTopology = append(c.renderedTopology[:0], yamlFile...)\n149: @@ -107,11 +105,11 @@ func (c *CLab) LoadTopologyFromFile(topo string, varsFiles []string) error {\n150:  \t\treturn fmt.Errorf(\n151:  \t\t\t\"%w\\nConsult with release notes to see if any fields were changed/removed\", err,\n152:  \t\t)\n153:  \t}\n154:  \n155: -\tc.Config.Topology.ImportEnvs()\n156: +\tc.Config.Topology.ImportEnvsFrom(c.topologyEnv)\n157:  \n158:  \treturn nil\n159:  }\n160:  \n161:  func mergeTemplateVariables(dst, src any) any {\n162: diff --git a/core/options_clab.go b/core/options_clab.go\n163: index e049332..6cb55f9 100644\n164: --- a/core/options_clab.go\n165: +++ b/core/options_clab.go\n166: @@ -280,10 +280,28 @@ func WithTopologyVarsFiles(varsFiles []string) ClabOption {\n167:  \t\t}\n168:  \t\treturn nil\n169:  \t}\n170:  }\n171:  \n172: +// WithTopologyEnv sets the env vars (key=value entries) that are used instead of the\n173: +// process environment to expand env vars in the topology and in startup config templates,\n174: +// and that __IMPORT_ENVS imports. This keeps the environment of a program that embeds\n175: +// containerlab, e.g. its secrets, out of the topologies it deploys.\n176: +// It must precede the options that load the topology.\n177: +func WithTopologyEnv(env []string) ClabOption {\n178: +\treturn func(c *CLab) error {\n179: +\t\tif c.TopoPaths.TopologyFileIsSet() {\n180: +\t\t\treturn errors.New(\"topology env must be set before the topology is loaded\")\n181: +\t\t}\n182: +\n183: +\t\t// copy into a non-nil slice, so that an empty env doesn't fall back to the process env\n184: +\t\tc.topologyEnv = append(make([]string, 0, len(env)), env...)\n185: +\n186: +\t\treturn nil\n187: +\t}\n188: +}\n189: +\n190:  func WithTopoPath(path string, varsFiles []string) ClabOption {\n191:  \treturn func(c *CLab) error {\n192:  \t\tfile, err := c.ProcessTopoPath(path)\n193:  \t\tif err != nil {\n194:  \t\t\treturn err\n195: diff --git a/core/topology_env_test.go b/core/topology_env_test.go\n196: new file mode 100644\n197: index 0000000..6410b6a\n198: --- /dev/null\n199: +++ b/core/topology_env_test.go\n200: @@ -0,0 +1,96 @@\n201: +// Copyright 2020 Nokia\n202: +// Licensed under the BSD 3-Clause License.\n203: +// SPDX-License-Identifier: BSD-3-Clause\n204: +\n205: +package core\n206: +\n207: +import (\n208: +\t\"testing\"\n209: +\n210: +\t\"github.com/google/go-cmp/cmp\"\n211: +)\n212: +\n213: +const envTopology = `name: env-test\n214: +topology:\n215: +  nodes:\n216: +    node1:\n217: +      kind: linux\n218: +      image: alpine:3\n219: +      env:\n220: +        __IMPORT_ENVS: \"true\"\n221: +        EXPANDED: ${GIVEN}-${CLAB_TEST_SECRET:=unset}\n222: +`\n223: +\n224: +func TestWithTopologyEnv(t *testing.T) {\n225: +\ttests := map[string]struct {\n226: +\t\topts []ClabOption\n227: +\t\t// want holds the env vars of node1 the test checks, an empty value means unset\n228: +\t\twant map[string]string\n229: +\t\t// wantTopologyEnv is the env node1 expands its startup config templates with\n230: +\t\twantTopologyEnv []string\n231: +\t}{\n232: +\t\t\"given_env\": {\n233: +\t\t\topts: []ClabOption{WithTopologyEnv([]string{\"GIVEN=given\"})},\n234: +\t\t\twant: map[string]string{\n235: +\t\t\t\t\"EXPANDED\":         \"given-unset\",\n236: +\t\t\t\t\"GIVEN\":            \"given\",\n237: +\t\t\t\t\"CLAB_TEST_SECRET\": \"\",\n238: +\t\t\t},\n239: +\t\t\twantTopologyEnv: []string{\"GIVEN=given\"},\n240: +\t\t},\n241: +\t\t\"empty_env\": {\n242: +\t\t\topts: []ClabOption{WithTopologyEnv([]string{})},\n243: +\t\t\twant: map[string]string{\n244: +\t\t\t\t\"EXPANDED\":         \"$GIVEN-unset\",\n245: +\t\t\t\t\"GIVEN\":            \"\",\n246: +\t\t\t\t\"CLAB_TEST_SECRET\": \"\",\n247: +\t\t\t},\n248: +\t\t\twantTopologyEnv: []string{},\n249: +\t\t},\n250: +\t\t\"process_env\": {\n251: +\t\t\topts: nil,\n252: +\t\t\twant: map[string]string{\n253: +\t\t\t\t\"EXPANDED\":         \"process-secret\",\n254: +\t\t\t\t\"GIVEN\":            \"process\",\n255: +\t\t\t\t\"CLAB_TEST_SECRET\": \"secret\",\n256: +\t\t\t},\n257: +\t\t},\n258: +\t}\n259: +\n260: +\tfor name, tc := range tests {\n261: +\t\tt.Run(name, func(t *testing.T) {\n262: +\t\t\tt.Setenv(\"GIVEN\", \"process\")\n263: +\t\t\tt.Setenv(\"CLAB_TEST_SECRET\", \"secret\")\n264: +\n265: +\t\t\topts := append(tc.opts, WithTopoPath(writeTopo(t, envTopology), nil))\n266: +\n267: +\t\t\tc, err := NewContainerLab(opts...)\n268: +\t\t\tif err != nil {\n269: +\t\t\t\tt.Fatal(err)\n270: +\t\t\t}\n271: +\n272: +\t\t\tcfg := c.Nodes[\"node1\"].Config()\n273: +\t\t\tgot := map[string]string{}\n274: +\t\t\tfor k := range tc.want {\n275: +\t\t\t\tgot[k] = cfg.Env[k]\n276: +\t\t\t}\n277: +\n278: +\t\t\tif d := cmp.Diff(tc.want, got); d != \"\" {\n279: +\t\t\t\tt.Fatalf(\"env vars mismatch (-want +got):\\n%s\", d)\n280: +\t\t\t}\n281: +\t\t\tif d := cmp.Diff(tc.wantTopologyEnv, cfg.TopologyEnv); d != \"\" {\n282: +\t\t\t\tt.Fatalf(\"topology env mismatch (-want +got):\\n%s\", d)\n283: +\t\t\t}\n284: +\t\t})\n285: +\t}\n286: +}\n287: +\n288: +func TestWithTopologyEnvAfterTopology(t *testing.T) {\n289: +\t_, err := NewContainerLab(\n290: +\t\tWithTopoPath(writeTopo(t, envTopology), nil),\n291: +\t\tWithTopologyEnv([]string{\"GIVEN=given\"}),\n292: +\t)\n293: +\tif err == nil {\n294: +\t\tt.Fatal(\"expected an error when the topology env is set after the topology\")\n295: +\t}\n296: +}\n297: diff --git a/docs/manual/topo-def-file.md b/docs/manual/topo-def-file.md\n298: index 11d44b5..7182cbd 100644\n299: --- a/docs/manual/topo-def-file.md\n300: +++ b/docs/manual/topo-def-file.md\n301: @@ -788,10 +788,14 @@ In the example above, the `ALPINE_VERSION` environment variable is used to set t\n302:  | `${var:=$DEFAULT}` | If var not set or is empty, evaluate expression as $DEFAULT          |\n303:  | `${var+$OTHER}`    | If var set, evaluate expression as $OTHER, otherwise as empty string |\n304:  | `${var:+$OTHER}`   | If var set, evaluate expression as $OTHER, otherwise as empty string |\n305:  | `$$var`            | Escape expressions. Result will be `$var`.                           |\n306:  \n307: +/// note\n308: +Programs that use containerlab as a Go library can pass the environment variables to expand with the `core.WithTopologyEnv` option. The topology, the startup-config templates and `__IMPORT_ENVS` then use only these variables instead of the environment of the program, which keeps the program's own settings, such as secrets, out of the topologies it deploys.\n309: +///\n310: +\n311:  ## Magic Variables\n312:  \n313:  Magic variables are special strings that get replaced with actual values during the topology parsing.to make your lab configurations more dynamic and less verbose. These variables are surrounded by double underscores (`__variable__`) and can be seen in some of the advanced topology examples.\n314:  \n315:  Most variables can be used in startup-config paths, bind paths, and exec commands, including\n316: diff --git a/nodes/arrcus_arcos/arcos.go b/nodes/arrcus_arcos/arcos.go\n317: index 958c767..024a473 100644\n318: --- a/nodes/arrcus_arcos/arcos.go\n319: +++ b/nodes/arrcus_arcos/arcos.go\n320: @@ -85,11 +85,15 @@ func (n *arcos) createARCOSFiles(ctx context.Context) error {\n321:  \t\t// Use user-provided file as-is (no template processing)\n322:  \t\treturn clabutils.CopyFile(ctx, n.Cfg.StartupConfig, dst, 0o644)\n323:  \t}\n324:  \n325:  \t// If not specified, explicitly expand and write the embedded template\n326: -\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplate(strings.NewReader(cfgTemplate), n.Cfg)\n327: +\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n328: +\t\tstrings.NewReader(cfgTemplate),\n329: +\t\tn.Cfg,\n330: +\t\tn.Cfg.TopologyEnv,\n331: +\t)\n332:  \tif err != nil {\n333:  \t\treturn err\n334:  \t}\n335:  \treturn clabutils.CreateFile(dst, cfgBuf.String())\n336:  }\n337: diff --git a/nodes/default_node.go b/nodes/default_node.go\n338: index 2469363..b63f194 100644\n339: --- a/nodes/default_node.go\n340: +++ b/nodes/default_node.go\n341: @@ -675,11 +675,15 @@ func (d *DefaultNode) GenerateConfig(dst, t string) error {\n342:  \t\tlog.Debug(\"Existing config found\", \"node\", d.Cfg.ShortName, \"path\", dst)\n343:  \t\treturn nil\n344:  \t} else {\n345:  \t\tlog.Debug(\"Generating config\", \"node\", d.Cfg.ShortName, \"file\", d.Cfg.StartupConfig)\n346:  \n347: -\t\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplate(strings.NewReader(t), d.Cfg)\n348: +\t\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n349: +\t\t\tstrings.NewReader(t),\n350: +\t\t\td.Cfg,\n351: +\t\t\td.Cfg.TopologyEnv,\n352: +\t\t)\n353:  \t\tif err != nil {\n354:  \t\t\treturn err\n355:  \t\t}\n356:  \t\tlog.Debug(\"Generated config\", \"node\", d.Cfg.ShortName, \"content\", cfgBuf.String())\n357:  \n358: diff --git a/nodes/srl/srl.go b/nodes/srl/srl.go\n359: index f40163c..378b7ed 100644\n360: --- a/nodes/srl/srl.go\n361: +++ b/nodes/srl/srl.go\n362: @@ -740,11 +740,15 @@ func (n *srl) createSRLFiles() error {\n363:  \t\tc, err := os.ReadFile(n.Cfg.StartupConfig)\n364:  \t\tif err != nil {\n365:  \t\t\treturn err\n366:  \t\t}\n367:  \n368: -\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplate(bytes.NewReader(c), n.Cfg)\n369: +\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n370: +\t\t\tbytes.NewReader(c),\n371: +\t\t\tn.Cfg,\n372: +\t\t\tn.Cfg.TopologyEnv,\n373: +\t\t)\n374:  \t\tif err != nil {\n375:  \t\t\treturn err\n376:  \t\t}\n377:  \n378:  \t\t// Determine if startup-config is a JSON file\n379: diff --git a/nodes/sros/config.go b/nodes/sros/config.go\n380: index f32c26c..0c92ab3 100644\n381: --- a/nodes/sros/config.go\n382: +++ b/nodes/sros/config.go\n383: @@ -127,11 +127,15 @@ func (n *sros) buildStartupConfig(isPartial bool) (string, error) {\n384:  \t\tc, err := os.ReadFile(n.Cfg.StartupConfig)\n385:  \t\tif err != nil {\n386:  \t\t\treturn \"\", err\n387:  \t\t}\n388:  \n389: -\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplate(bytes.NewReader(c), n.Cfg)\n390: +\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n391: +\t\t\tbytes.NewReader(c),\n392: +\t\t\tn.Cfg,\n393: +\t\t\tn.Cfg.TopologyEnv,\n394: +\t\t)\n395:  \t\tif err != nil {\n396:  \t\t\treturn \"\", err\n397:  \t\t}\n398:  \t\treturn cBuf.String(), nil\n399:  \t}\n400: @@ -309,11 +313,15 @@ func (n *sros) addPartialConfig() error {\n401:  \t\t\t_, err = io.Copy(b, r)\n402:  \t\t\tif err != nil {\n403:  \t\t\t\treturn err\n404:  \t\t\t}\n405:  \n406: -\t\t\tconfigContent, err := clabutils.SubstituteEnvsAndTemplate(b, n.Cfg)\n407: +\t\t\tconfigContent, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n408: +\t\t\t\tb,\n409: +\t\t\t\tn.Cfg,\n410: +\t\t\t\tn.Cfg.TopologyEnv,\n411: +\t\t\t)\n412:  \t\t\tif err != nil {\n413:  \t\t\t\treturn err\n414:  \t\t\t}\n415:  \t\t\tif configContent.Len() == 0 {\n416:  \t\t\t\tlog.Warn(\n417: diff --git a/nodes/vr_sros/vr-sros.go b/nodes/vr_sros/vr-sros.go\n418: index 7f42fef..91ea935 100644\n419: --- a/nodes/vr_sros/vr-sros.go\n420: +++ b/nodes/vr_sros/vr-sros.go\n421: @@ -352,11 +352,15 @@ func (s *vrSROS) applyPartialConfig(ctx context.Context, addr, platformName,\n422:  \tusername, password string, config io.Reader,\n423:  ) error { // skipcq: GO-R1005\n424:  \tvar err error\n425:  \tvar d *network.Driver\n426:  \n427: -\tconfigContent, err := clabutils.SubstituteEnvsAndTemplate(config, s.Cfg)\n428: +\tconfigContent, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n429: +\t\tconfig,\n430: +\t\ts.Cfg,\n431: +\t\ts.Cfg.TopologyEnv,\n432: +\t)\n433:  \tif err != nil {\n434:  \t\treturn err\n435:  \t}\n436:  \n437:  \tconfigContentStr := configContent.String()\n438: diff --git a/types/node_definition.go b/types/node_definition.go\n\n(Showing lines 39-438 of 754. Use offset=439 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "@@ -147,10 +147,15 @@ func (c *CLab) makeCopyForDestroy(\n \t\t// a topology edited after deploy may no longer pass the mgmt-net link checks,\n \t\t// which must not prevent the removal of the deployed lab.\n \t\tWithSkippedMgmtNetLinksCheck(),\n \t}\n \n+\t// the copy must expand the topology with the same env vars as the deployment did\n+\tif c.topologyEnv != nil {\n+\t\tnewOpts = append(newOpts, WithTopologyEnv(c.topologyEnv))\n+\t}\n+\n \t// Try to load topology file if it exists, otherwise use lab name only.\n \t// This allows destroying labs even when the topology file has been deleted.\n \t// WithTopoPath / WithLabNameOnly must run before WithNodeFilter so filterClabNodes\n \t// sees topology nodes (see filterClabNodes in clab.go).\n \tvarsFiles := opts.varsFiles\ndiff --git a/core/destroy_test.go b/core/destroy_test.go\nindex 9d52e7c..432f76c 100644\n--- a/core/destroy_test.go\n+++ b/core/destroy_test.go",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "@@ -147,10 +147,15 @@ func (c *CLab) makeCopyForDestroy(\n \t\t// a topology edited after deploy may no longer pass the mgmt-net link checks,\n \t\t// which must not prevent the removal of the deployed lab.\n \t\tWithSkippedMgmtNetLinksCheck(),\n \t}\n \n+\t// the copy must expand the topology with the same env vars as the deployment did\n+\tif c.topologyEnv != nil {\n+\t\tnewOpts = append(newOpts, WithTopologyEnv(c.topologyEnv))\n+\t}\n+\n \t// Try to load topology file if it exists, otherwise use lab name only.\n \t// This allows destroying labs even when the topology file has been deleted.\n \t// WithTopoPath / WithLabNameOnly must run before WithNodeFilter so filterClabNodes\n \t// sees topology nodes (see filterClabNodes in clab.go).\n \tvarsFiles := opts.varsFiles\ndiff --git a/core/destroy_test.go b/core/destroy_test.go\nindex 9d52e7c..432f76c 100644\n--- a/core/destroy_test.go\n+++ b/core/destroy_test.go\n@@ -13,10 +13,11 @@ import (\n \t\"sync\"\n \t\"sync/atomic\"\n \t\"testing\"\n \t\"time\"\n \n+\t\"github.com/google/go-cmp/cmp\"\n \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n \tclaberrors \"github.com/srl-labs/containerlab/errors\"\n \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n \tclabtypes \"github.com/srl-labs/containerlab/types\"\n@@ -942,10 +943,47 @@ topology:\n \t}\n \t// the mgmt-net link nodes are shared by the package, release their endpoints\n \tt.Cleanup(cc.resetResolvedLinks)\n }\n \n+// TestMakeCopyForDestroyKeepsTopologyEnv verifies that the destroy copy expands the topology\n+// with the env vars the lab was deployed with, not with the process environment.\n+func TestMakeCopyForDestroyKeepsTopologyEnv(t *testing.T) {\n+\tregisterMgmtResolveRuntime()\n+\tsetMgmtResolveBehavior(t, &mgmtResolveBehavior{})\n+\tt.Setenv(\"LAB_SUFFIX\", \"process\")\n+\n+\ttopo := writeTopo(t, `\n+name: env-${LAB_SUFFIX:=unset}\n+topology:\n+  nodes:\n+    n1:\n+      kind: linux\n+      image: alpine\n+`)\n+\n+\tc, err := NewContainerLab(\n+\t\tWithTimeout(time.Minute),\n+\t\tWithTopologyEnv([]string{\"LAB_SUFFIX=given\"}),\n+\t\tWithTopoPath(topo, nil),\n+\t\tWithRuntime(\"mgmtresolvetest\", &clabruntime.RuntimeConfig{}),\n+\t\tWithSkippedBindsPathsCheck(),\n+\t)\n+\tif err != nil {\n+\t\tt.Fatal(err)\n+\t}\n+\n+\tcc, err := c.makeCopyForDestroy(context.Background(), topo, \"\", *NewDestroyOptions())\n+\tif err != nil {\n+\t\tt.Fatalf(\"makeCopyForDestroy failed: %v\", err)\n+\t}\n+\n+\tif d := cmp.Diff(\"env-given\", cc.Config.Name); d != \"\" {\n+\t\tt.Fatalf(\"lab name mismatch (-want +got):\\n%s\", d)\n+\t}\n+}\n+\n func boolToInt(b bool) int {\n \tif b {\n \t\treturn 1\n \t}\n \ndiff --git a/core/file.go b/core/file.go\nindex 4e9e100..6d2485b 100644\n--- a/core/file.go\n+++ b/core/file.go\n@@ -11,12 +11,10 @@ import (\n \t\"os\"\n \t\"path/filepath\"\n \t\"slices\"\n \t\"text/template\"\n \n-\t\"github.com/hellt/envsubst\"\n-\n \t\"github.com/charmbracelet/log\"\n \tclabtypes \"github.com/srl-labs/containerlab/types\"\n \tclabutils \"github.com/srl-labs/containerlab/utils\"\n \t\"gopkg.in/yaml.v2\"\n )\n@@ -81,11 +79,11 @@ func (c *CLab) LoadTopologyFromFile(topo string, varsFiles []string) error {\n \tlog.Debugf(\"topology:\\n%s\\n\", buf.String())\n \n \t// expand env vars if any\n \t// do not replace vars initialized with defaults\n \t// and do not replace vars that are not set\n-\tyamlFile, err := envsubst.BytesRestrictedNoReplace(buf.Bytes(), false, false, true, true)\n+\tyamlFile, err := clabutils.SubstituteEnvs(buf.Bytes(), c.topologyEnv)\n \tif err != nil {\n \t\treturn err\n \t}\n \n \tc.renderedTopology = append(c.renderedTopology[:0], yamlFile...)\n@@ -107,11 +105,11 @@ func (c *CLab) LoadTopologyFromFile(topo string, varsFiles []string) error {\n \t\treturn fmt.Errorf(\n \t\t\t\"%w\\nConsult with release notes to see if any fields were changed/removed\", err,\n \t\t)\n \t}\n \n-\tc.Config.Topology.ImportEnvs()\n+\tc.Config.Topology.ImportEnvsFrom(c.topologyEnv)\n \n \treturn nil\n }\n \n func mergeTemplateVariables(dst, src any) any {\ndiff --git a/core/options_clab.go b/core/options_clab.go\nindex e049332..6cb55f9 100644\n--- a/core/options_clab.go\n+++ b/core/options_clab.go\n@@ -280,10 +280,28 @@ func WithTopologyVarsFiles(varsFiles []string) ClabOption {\n \t\t}\n \t\treturn nil\n \t}\n }\n \n+// WithTopologyEnv sets the env vars (key=value entries) that are used instead of the\n+// process environment to expand env vars in the topology and in startup config templates,\n+// and that __IMPORT_ENVS imports. This keeps the environment of a program that embeds\n+// containerlab, e.g. its secrets, out of the topologies it deploys.\n+// It must precede the options that load the topology.\n+func WithTopologyEnv(env []string) ClabOption {\n+\treturn func(c *CLab) error {\n+\t\tif c.TopoPaths.TopologyFileIsSet() {\n+\t\t\treturn errors.New(\"topology env must be set before the topology is loaded\")\n+\t\t}\n+\n+\t\t// copy into a non-nil slice, so that an empty env doesn't fall back to the process env\n+\t\tc.topologyEnv = append(make([]string, 0, len(env)), env...)\n+\n+\t\treturn nil\n+\t}\n+}\n+\n func WithTopoPath(path string, varsFiles []string) ClabOption {\n \treturn func(c *CLab) error {\n \t\tfile, err := c.ProcessTopoPath(path)\n \t\tif err != nil {\n \t\t\treturn err\ndiff --git a/core/topology_env_test.go b/core/topology_env_test.go\nnew file mode 100644\nindex 0000000..6410b6a\n--- /dev/null\n+++ b/core/topology_env_test.go\n@@ -0,0 +1,96 @@\n+// Copyright 2020 Nokia\n+// Licensed under the BSD 3-Clause License.\n+// SPDX-License-Identifier: BSD-3-Clause\n+\n+package core\n+\n+import (\n+\t\"testing\"\n+\n+\t\"github.com/google/go-cmp/cmp\"\n+)\n+\n+const envTopology = `name: env-test\n+topology:\n+  nodes:\n+    node1:\n+      kind: linux\n+      image: alpine:3\n+      env:\n+        __IMPORT_ENVS: \"true\"\n+        EXPANDED: ${GIVEN}-${CLAB_TEST_SECRET:=unset}\n+`\n+\n+func TestWithTopologyEnv(t *testing.T) {\n+\ttests := map[string]struct {\n+\t\topts []ClabOption\n+\t\t// want holds the env vars of node1 the test checks, an empty value means unset\n+\t\twant map[string]string\n+\t\t// wantTopologyEnv is the env node1 expands its startup config templates with\n+\t\twantTopologyEnv []string\n+\t}{\n+\t\t\"given_env\": {\n+\t\t\topts: []ClabOption{WithTopologyEnv([]string{\"GIVEN=given\"})},\n+\t\t\twant: map[string]string{\n+\t\t\t\t\"EXPANDED\":         \"given-unset\",\n+\t\t\t\t\"GIVEN\":            \"given\",\n+\t\t\t\t\"CLAB_TEST_SECRET\": \"\",\n+\t\t\t},\n+\t\t\twantTopologyEnv: []string{\"GIVEN=given\"},\n+\t\t},\n+\t\t\"empty_env\": {\n+\t\t\topts: []ClabOption{WithTopologyEnv([]string{})},\n+\t\t\twant: map[string]string{\n+\t\t\t\t\"EXPANDED\":         \"$GIVEN-unset\",\n+\t\t\t\t\"GIVEN\":            \"\",\n+\t\t\t\t\"CLAB_TEST_SECRET\": \"\",\n+\t\t\t},\n+\t\t\twantTopologyEnv: []string{},\n+\t\t},\n+\t\t\"process_env\": {\n+\t\t\topts: nil,\n+\t\t\twant: map[string]string{\n+\t\t\t\t\"EXPANDED\":         \"process-secret\",\n+\t\t\t\t\"GIVEN\":            \"process\",\n+\t\t\t\t\"CLAB_TEST_SECRET\": \"secret\",\n+\t\t\t},\n+\t\t},\n+\t}\n+\n+\tfor name, tc := range tests {\n+\t\tt.Run(name, func(t *testing.T) {\n+\t\t\tt.Setenv(\"GIVEN\", \"process\")\n+\t\t\tt.Setenv(\"CLAB_TEST_SECRET\", \"secret\")\n+\n+\t\t\topts := append(tc.opts, WithTopoPath(writeTopo(t, envTopology), nil))\n+\n+\t\t\tc, err := NewContainerLab(opts...)\n+\t\t\tif err != nil {\n+\t\t\t\tt.Fatal(err)\n+\t\t\t}\n+\n+\t\t\tcfg := c.Nodes[\"node1\"].Config()\n+\t\t\tgot := map[string]string{}\n+\t\t\tfor k := range tc.want {\n+\t\t\t\tgot[k] = cfg.Env[k]\n+\t\t\t}\n+\n+\t\t\tif d := cmp.Diff(tc.want, got); d != \"\" {\n+\t\t\t\tt.Fatalf(\"env vars mismatch (-want +got):\\n%s\", d)\n+\t\t\t}\n+\t\t\tif d := cmp.Diff(tc.wantTopologyEnv, cfg.TopologyEnv); d != \"\" {\n+\t\t\t\tt.Fatalf(\"topology env mismatch (-want +got):\\n%s\", d)\n+\t\t\t}\n+\t\t})\n+\t}\n+}\n+\n+func TestWithTopologyEnvAfterTopology(t *testing.T) {\n+\t_, err := NewContainerLab(\n+\t\tWithTopoPath(writeTopo(t, envTopology), nil),\n+\t\tWithTopologyEnv([]string{\"GIVEN=given\"}),\n+\t)\n+\tif err == nil {\n+\t\tt.Fatal(\"expected an error when the topology env is set after the topology\")\n+\t}\n+}\ndiff --git a/docs/manual/topo-def-file.md b/docs/manual/topo-def-file.md\nindex 11d44b5..7182cbd 100644\n--- a/docs/manual/topo-def-file.md\n+++ b/docs/manual/topo-def-file.md\n@@ -788,10 +788,14 @@ In the example above, the `ALPINE_VERSION` environment variable is used to set t\n | `${var:=$DEFAULT}` | If var not set or is empty, evaluate expression as $DEFAULT          |\n | `${var+$OTHER}`    | If var set, evaluate expression as $OTHER, otherwise as empty string |\n | `${var:+$OTHER}`   | If var set, evaluate expression as $OTHER, otherwise as empty string |\n | `$$var`            | Escape expressions. Result will be `$var`.                           |\n \n+/// note\n+Programs that use containerlab as a Go library can pass the environment variables to expand with the `core.WithTopologyEnv` option. The topology, the startup-config templates and `__IMPORT_ENVS` then use only these variables instead of the environment of the program, which keeps the program's own settings, such as secrets, out of the topologies it deploys.\n+///\n+\n ## Magic Variables\n \n Magic variables are special strings that get replaced with actual values during the topology parsing.to make your lab configurations more dynamic and less verbose. These variables are surrounded by double underscores (`__variable__`) and can be seen in some of the advanced topology examples.\n \n Most variables can be used in startup-config paths, bind paths, and exec commands, including\ndiff --git a/nodes/arrcus_arcos/arcos.go b/nodes/arrcus_arcos/arcos.go\nindex 958c767..024a473 100644\n--- a/nodes/arrcus_arcos/arcos.go\n+++ b/nodes/arrcus_arcos/arcos.go\n@@ -85,11 +85,15 @@ func (n *arcos) createARCOSFiles(ctx context.Context) error {\n \t\t// Use user-provided file as-is (no template processing)\n \t\treturn clabutils.CopyFile(ctx, n.Cfg.StartupConfig, dst, 0o644)\n \t}\n \n \t// If not specified, explicitly expand and write the embedded template\n-\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplate(strings.NewReader(cfgTemplate), n.Cfg)\n+\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n+\t\tstrings.NewReader(cfgTemplate),\n+\t\tn.Cfg,\n+\t\tn.Cfg.TopologyEnv,\n+\t)\n \tif err != nil {\n \t\treturn err\n \t}\n \treturn clabutils.CreateFile(dst, cfgBuf.String())\n }\ndiff --git a/nodes/default_node.go b/nodes/default_node.go\nindex 2469363..b63f194 100644\n--- a/nodes/default_node.go\n+++ b/nodes/default_node.go\n@@ -675,11 +675,15 @@ func (d *DefaultNode) GenerateConfig(dst, t string) error {\n \t\tlog.Debug(\"Existing config found\", \"node\", d.Cfg.ShortName, \"path\", dst)\n \t\treturn nil\n \t} else {\n \t\tlog.Debug(\"Generating config\", \"node\", d.Cfg.ShortName, \"file\", d.Cfg.StartupConfig)\n \n-\t\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplate(strings.NewReader(t), d.Cfg)\n+\t\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n+\t\t\tstrings.NewReader(t),\n+\t\t\td.Cfg,\n+\t\t\td.Cfg.TopologyEnv,\n+\t\t)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \t\tlog.Debug(\"Generated config\", \"node\", d.Cfg.ShortName, \"content\", cfgBuf.String())\n \ndiff --git a/nodes/srl/srl.go b/nodes/srl/srl.go\nindex f40163c..378b7ed 100644\n--- a/nodes/srl/srl.go\n+++ b/nodes/srl/srl.go\n@@ -740,11 +740,15 @@ func (n *srl) createSRLFiles() error {\n \t\tc, err := os.ReadFile(n.Cfg.StartupConfig)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \n-\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplate(bytes.NewReader(c), n.Cfg)\n+\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n+\t\t\tbytes.NewReader(c),\n+\t\t\tn.Cfg,\n+\t\t\tn.Cfg.TopologyEnv,\n+\t\t)\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n \n \t\t// Determine if startup-config is a JSON file\ndiff --git a/nodes/sros/config.go b/nodes/sros/config.go\nindex f32c26c..0c92ab3 100644\n--- a/nodes/sros/config.go\n+++ b/nodes/sros/config.go\n@@ -127,11 +127,15 @@ func (n *sros) buildStartupConfig(isPartial bool) (string, error) {\n \t\tc, err := os.ReadFile(n.Cfg.StartupConfig)\n \t\tif err != nil {\n \t\t\treturn \"\", err\n \t\t}\n \n-\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplate(bytes.NewReader(c), n.Cfg)\n+\t\tcBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n+\t\t\tbytes.NewReader(c),\n+\t\t\tn.Cfg,\n+\t\t\tn.Cfg.TopologyEnv,\n+\t\t)\n \t\tif err != nil {\n \t\t\treturn \"\", err\n \t\t}\n \t\treturn cBuf.String(), nil\n \t}\n@@ -309,11 +313,15 @@ func (n *sros) addPartialConfig() error {\n \t\t\t_, err = io.Copy(b, r)\n \t\t\tif err != nil {\n \t\t\t\treturn err\n \t\t\t}\n \n-\t\t\tconfigContent, err := clabutils.SubstituteEnvsAndTemplate(b, n.Cfg)\n+\t\t\tconfigContent, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n+\t\t\t\tb,\n+\t\t\t\tn.Cfg,\n+\t\t\t\tn.Cfg.TopologyEnv,\n+\t\t\t)\n \t\t\tif err != nil {\n \t\t\t\treturn err\n \t\t\t}\n \t\t\tif configContent.Len() == 0 {\n \t\t\t\tlog.Warn(\ndiff --git a/nodes/vr_sros/vr-sros.go b/nodes/vr_sros/vr-sros.go\nindex 7f42fef..91ea935 100644\n--- a/nodes/vr_sros/vr-sros.go\n+++ b/nodes/vr_sros/vr-sros.go\n@@ -352,11 +352,15 @@ func (s *vrSROS) applyPartialConfig(ctx context.Context, addr, platformName,\n \tusername, password string, config io.Reader,\n ) error { // skipcq: GO-R1005\n \tvar err error\n \tvar d *network.Driver\n \n-\tconfigContent, err := clabutils.SubstituteEnvsAndTemplate(config, s.Cfg)\n+\tconfigContent, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n+\t\tconfig,\n+\t\ts.Cfg,\n+\t\ts.Cfg.TopologyEnv,\n+\t)\n \tif err != nil {\n \t\treturn err\n \t}\n \n \tconfigContentStr := configContent.String()\ndiff --git a/types/node_definition.go b/types/node_definition.go",
+                "lineStart": 39,
+                "lineEnd": 438,
+                "totalLines": 754,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794251571827,
+              "end": 1794251571845
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba4289001rR44J2PRp9LzNR",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1b96a86001zHWgNTVZqo8AQ7",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 58544,
+            "input": 2674,
+            "output": 25,
+            "reasoning": 3813,
+            "cache": {
+              "read": 52032,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba4296001B8UUai1VPoxDBF",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251571862,
+          "completed": 1794251574202
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 63583,
+          "input": 5194,
+          "output": 20,
+          "reasoning": 1,
+          "cache": {
+            "read": 58368,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba4af8001BLbRW5GFc98QPh",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4296001B8UUai1VPoxDBF"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba4b8c0018a4Da0sIW4i4YA",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4296001B8UUai1VPoxDBF",
+          "callID": "call_6422baed8ebb49649a810045",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "offset": 438
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n438: diff --git a/types/node_definition.go b/types/node_definition.go\n439: index 99e8edd..6f75348 100644\n440: --- a/types/node_definition.go\n441: +++ b/types/node_definition.go\n442: @@ -206,10 +206,16 @@ func (n NodeDefinition) MarshalYAML() (any, error) {\n443:  }\n444:  \n445:  // ImportEnvs imports all environment variables defined in the shell\n446:  // if __IMPORT_ENVS is set to true.\n447:  func (n *NodeDefinition) ImportEnvs() {\n448: +\tn.ImportEnvsFrom(nil)\n449: +}\n450: +\n451: +// ImportEnvsFrom imports the env vars of env (key=value entries)\n452: +// if __IMPORT_ENVS is set to true. A nil env imports the process environment.\n453: +func (n *NodeDefinition) ImportEnvsFrom(env []string) {\n454:  \tif n == nil || n.Env == nil {\n455:  \t\treturn\n456:  \t}\n457:  \n458:  \tvar importEnvs bool\n459: @@ -223,11 +229,15 @@ func (n *NodeDefinition) ImportEnvs() {\n460:  \n461:  \tif !importEnvs {\n462:  \t\treturn\n463:  \t}\n464:  \n465: -\tfor _, e := range os.Environ() {\n466: +\tif env == nil {\n467: +\t\tenv = os.Environ()\n468: +\t}\n469: +\n470: +\tfor _, e := range env {\n471:  \t\tkv := strings.SplitN(e, \"=\", 2)\n472:  \t\tif len(kv) < 2 {\n473:  \t\t\tcontinue\n474:  \t\t}\n475:  \t\tif _, exists := n.Env[kv[0]]; exists {\n476: diff --git a/types/node_definition_test.go b/types/node_definition_test.go\n477: index 6b84d3b..218ce67 100644\n478: --- a/types/node_definition_test.go\n479: +++ b/types/node_definition_test.go\n480: @@ -2,10 +2,11 @@ package types\n481:  \n482:  import (\n483:  \t\"reflect\"\n484:  \t\"testing\"\n485:  \n486: +\t\"github.com/google/go-cmp/cmp\"\n487:  \t\"gopkg.in/yaml.v2\"\n488:  )\n489:  \n490:  func TestNodeDefinitionYAML_CredentialsNested(t *testing.T) {\n491:  \tt.Parallel()\n492: @@ -87,5 +88,46 @@ pid-offset: 5\n493:  \t\t\tback.KindSpecificConfig,\n494:  \t\t\tb,\n495:  \t\t)\n496:  \t}\n497:  }\n498: +\n499: +func TestNodeDefinitionImportEnvsFrom(t *testing.T) {\n500: +\ttests := map[string]struct {\n501: +\t\tnodeEnv map[string]string\n502: +\t\tenv     []string\n503: +\t\twant    map[string]string\n504: +\t}{\n505: +\t\t\"import_env\": {\n506: +\t\t\tnodeEnv: map[string]string{importEnvsKey: \"true\", \"KEEP\": \"node\"},\n507: +\t\t\tenv:     []string{\"GIVEN=value\", \"KEEP=env\"},\n508: +\t\t\twant:    map[string]string{importEnvsKey: \"true\", \"KEEP\": \"node\", \"GIVEN\": \"value\"},\n509: +\t\t},\n510: +\t\t\"no_import_key\": {\n511: +\t\t\tnodeEnv: map[string]string{\"KEEP\": \"node\"},\n512: +\t\t\tenv:     []string{\"GIVEN=value\"},\n513: +\t\t\twant:    map[string]string{\"KEEP\": \"node\"},\n514: +\t\t},\n515: +\t}\n516: +\n517: +\tfor name, tc := range tests {\n518: +\t\tt.Run(name, func(t *testing.T) {\n519: +\t\t\tn := &NodeDefinition{Env: tc.nodeEnv}\n520: +\t\t\tn.ImportEnvsFrom(tc.env)\n521: +\n522: +\t\t\tif d := cmp.Diff(tc.want, n.Env); d != \"\" {\n523: +\t\t\t\tt.Fatalf(\"env vars mismatch (-want +got):\\n%s\", d)\n524: +\t\t\t}\n525: +\t\t})\n526: +\t}\n527: +}\n528: +\n529: +func TestNodeDefinitionImportEnvsFromProcessEnv(t *testing.T) {\n530: +\tt.Setenv(\"CLAB_TEST_PROCESS_VAR\", \"process\")\n531: +\n532: +\tn := &NodeDefinition{Env: map[string]string{importEnvsKey: \"true\"}}\n533: +\tn.ImportEnvsFrom(nil)\n534: +\n535: +\tif d := cmp.Diff(\"process\", n.Env[\"CLAB_TEST_PROCESS_VAR\"]); d != \"\" {\n536: +\t\tt.Fatalf(\"imported env var mismatch (-want +got):\\n%s\", d)\n537: +\t}\n538: +}\n539: diff --git a/types/topology.go b/types/topology.go\n540: index c3124ae..b3ad36e 100644\n541: --- a/types/topology.go\n542: +++ b/types/topology.go\n543: @@ -989,22 +989,28 @@ func (t *Topology) GetStages(nodeName string) (*Stages, error) {\n544:  \n545:  \treturn s, nil\n546:  }\n547:  \n548:  func (t *Topology) ImportEnvs() {\n549: -\tt.Defaults.ImportEnvs()\n550: +\tt.ImportEnvsFrom(nil)\n551: +}\n552: +\n553: +// ImportEnvsFrom imports the env vars of env (key=value entries) on every level\n554: +// that sets __IMPORT_ENVS to true. A nil env imports the process environment.\n555: +func (t *Topology) ImportEnvsFrom(env []string) {\n556: +\tt.Defaults.ImportEnvsFrom(env)\n557:  \n558:  \tfor _, k := range t.Kinds {\n559: -\t\tk.ImportEnvs()\n560: +\t\tk.ImportEnvsFrom(env)\n561:  \t}\n562:  \n563:  \tfor _, g := range t.Groups {\n564: -\t\tg.ImportEnvs()\n565: +\t\tg.ImportEnvsFrom(env)\n566:  \t}\n567:  \n568:  \tfor _, n := range t.Nodes {\n569: -\t\tn.ImportEnvs()\n570: +\t\tn.ImportEnvsFrom(env)\n571:  \t}\n572:  }\n573:  \n574:  // GetCertificateConfig returns the certificate configuration for the given node.\n575:  func (t *Topology) GetCertificateConfig(nodeName string) *CertificateConfig {\n576: diff --git a/types/types.go b/types/types.go\n577: index e085633..c10708f 100644\n578: --- a/types/types.go\n579: +++ b/types/types.go\n580: @@ -231,10 +231,13 @@ type NodeConfig struct {\n581:  \tEntrypoint       string            `json:\"entrypoint,omitempty\"`\n582:  \tCmd              string            `json:\"cmd,omitempty\"`\n583:  \t// Exec is a list of commands to execute inside the container backing the node.\n584:  \tExec []string          `json:\"exec,omitempty\"`\n585:  \tEnv  map[string]string `json:\"env,omitempty\"`\n586: +\t// TopologyEnv holds the env vars (key=value) the startup config templates are expanded\n587: +\t// with; nil means the process environment. It is not serialized.\n588: +\tTopologyEnv []string `json:\"-\"`\n589:  \t// Bind mounts strings (src:dest:options).\n590:  \tBinds []string `json:\"binds,omitempty\"`\n591:  \t// Volume mounts strings (name:dest:options).\n592:  \tVolumes []string `json:\"volumes,omitempty\"`\n593:  \t// Devices to map in the container\n594: diff --git a/utils/env.go b/utils/env.go\n595: index 411e387..292fbf1 100644\n596: --- a/utils/env.go\n597: +++ b/utils/env.go\n598: @@ -9,13 +9,31 @@ import (\n599:  \t\"os\"\n600:  \t\"reflect\"\n601:  \t\"regexp\"\n602:  \t\"strings\"\n603:  \n604: +\t\"github.com/hellt/envsubst/parse\"\n605:  \t\"github.com/joho/godotenv\"\n606:  )\n607:  \n608: +// SubstituteEnvs expands env vars in b with the values of env (key=value entries).\n609: +// A nil env uses the process environment. Vars that are not set get their default value\n610: +// or are left unexpanded.\n611: +func SubstituteEnvs(b []byte, env []string) ([]byte, error) {\n612: +\tif env == nil {\n613: +\t\tenv = os.Environ()\n614: +\t}\n615: +\n616: +\ts, err := parse.New(\"bytes\", env, &parse.Restrictions{NoDigit: true, NoReplace: true}).\n617: +\t\tParse(string(b))\n618: +\tif err != nil {\n619: +\t\treturn nil, err\n620: +\t}\n621: +\n622: +\treturn []byte(s), nil\n623: +}\n624: +\n625:  // ConvertEnvs converts env variables passed as a map to a list of them.\n626:  func ConvertEnvs(m map[string]string) []string {\n627:  \ts := make([]string, 0, len(m))\n628:  \tfor k, v := range m {\n629:  \t\ts = append(s, k+\"=\"+v)\n630: diff --git a/utils/env_test.go b/utils/env_test.go\n631: index 4634da1..aee91f2 100644\n632: --- a/utils/env_test.go\n633: +++ b/utils/env_test.go\n634: @@ -230,5 +230,49 @@ func TestMergeStringSlices(t *testing.T) {\n635:  \t\tif !cmp.Equal(res, tc.want) {\n636:  \t\t\tt.Fatalf(\"wanted %q got %q\", tc.want, res)\n637:  \t\t}\n638:  \t}\n639:  }\n640: +\n641: +func TestSubstituteEnvs(t *testing.T) {\n642: +\ttests := map[string]struct {\n643: +\t\tenv  []string\n644: +\t\tin   string\n645: +\t\twant string\n646: +\t}{\n647: +\t\t\"value_from_env\": {\n648: +\t\t\tenv:  []string{\"VAR=given\"},\n649: +\t\t\tin:   \"a: ${VAR}\",\n650: +\t\t\twant: \"a: given\",\n651: +\t\t},\n652: +\t\t\"default_value\": {\n653: +\t\t\tenv:  []string{},\n654: +\t\t\tin:   \"a: ${VAR:=default}\",\n655: +\t\t\twant: \"a: default\",\n656: +\t\t},\n657: +\t\t\"process_env_ignored\": {\n658: +\t\t\tenv:  []string{\"VAR=given\"},\n659: +\t\t\tin:   \"a: ${CLAB_TEST_PROCESS_VAR}\",\n660: +\t\t\twant: \"a: $CLAB_TEST_PROCESS_VAR\",\n661: +\t\t},\n662: +\t\t\"nil_env\": {\n663: +\t\t\tenv:  nil,\n664: +\t\t\tin:   \"a: ${CLAB_TEST_PROCESS_VAR}\",\n665: +\t\t\twant: \"a: process\",\n666: +\t\t},\n667: +\t}\n668: +\n669: +\tfor name, tc := range tests {\n670: +\t\tt.Run(name, func(t *testing.T) {\n671: +\t\t\tt.Setenv(\"CLAB_TEST_PROCESS_VAR\", \"process\")\n672: +\n673: +\t\t\tgot, err := SubstituteEnvs([]byte(tc.in), tc.env)\n674: +\t\t\tif err != nil {\n675: +\t\t\t\tt.Fatal(err)\n676: +\t\t\t}\n677: +\n678: +\t\t\tif d := cmp.Diff(tc.want, string(got)); d != \"\" {\n679: +\t\t\t\tt.Fatalf(\"expanded text mismatch (-want +got):\\n%s\", d)\n680: +\t\t\t}\n681: +\t\t})\n682: +\t}\n683: +}\n684: diff --git a/utils/template.go b/utils/template.go\n685: index 3de15f2..0f678ef 100644\n686: --- a/utils/template.go\n687: +++ b/utils/template.go\n688: @@ -11,12 +11,10 @@ import (\n689:  \t\"net/netip\"\n690:  \t\"reflect\"\n691:  \t\"strconv\"\n692:  \t\"strings\"\n693:  \t\"text/template\"\n694: -\n695: -\t\"github.com/hellt/envsubst\"\n696:  )\n697:  \n698:  func CreateFuncs() template.FuncMap {\n699:  \tf := template.FuncMap{\n700:  \t\t\"ToJSON\":       toJson,\n701: @@ -633,19 +631,25 @@ func (nf *NetFuncs) CIDRHost(hostnum any, prefix any) (string, error) {\n702:  }\n703:  \n704:  // SubstituteEnvsAndTemplate substitutes environment variables and template the reader `r`\n705:  // with the `data` template data.\n706:  func SubstituteEnvsAndTemplate(r io.Reader, data any) (*bytes.Buffer, error) {\n707: +\treturn SubstituteEnvsAndTemplateWithEnv(r, data, nil)\n708: +}\n709: +\n710: +// SubstituteEnvsAndTemplateWithEnv is like SubstituteEnvsAndTemplate, but expands env vars\n711: +// with the values of env (key=value entries). A nil env uses the process environment.\n712: +func SubstituteEnvsAndTemplateWithEnv(r io.Reader, data any, env []string) (*bytes.Buffer, error) {\n713:  \tb, err := io.ReadAll(r)\n714:  \tif err != nil {\n715:  \t\treturn nil, err\n716:  \t}\n717:  \n718:  \t// expand env vars in `b` if any were set\n719:  \t// do not replace vars initialized with defaults\n720:  \t// and do not replace vars that are not set\n721: -\tb, err = envsubst.BytesRestrictedNoReplace(b, false, false, true, true)\n722: +\tb, err = SubstituteEnvs(b, env)\n723:  \tif err != nil {\n724:  \t\treturn nil, err\n725:  \t}\n726:  \n727:  \tt, err := template.New(\"template\").Funcs(CreateFuncs()).Parse(string(b))\n728: diff --git a/utils/template_test.go b/utils/template_test.go\n729: index 34395c9..8276e29 100644\n730: --- a/utils/template_test.go\n731: +++ b/utils/template_test.go\n732: @@ -1367,5 +1367,22 @@ func TestNetCIDRHost(t *testing.T) {\n733:  \t\t\t\tt.Fatalf(\"wanted %v, got %v\", tc.want, got)\n734:  \t\t\t}\n735:  \t\t})\n736:  \t}\n737:  }\n738: +\n739: +func TestSubstituteEnvsAndTemplateWithEnv(t *testing.T) {\n740: +\tt.Setenv(\"CLAB_TEST_PROCESS_VAR\", \"process\")\n741: +\n742: +\tgot, err := SubstituteEnvsAndTemplateWithEnv(\n743: +\t\tstrings.NewReader(\"${VAR} ${CLAB_TEST_PROCESS_VAR:=unset} {{ .Name }}\"),\n744: +\t\tstruct{ Name string }{Name: \"srl1\"},\n745: +\t\t[]string{\"VAR=given\"},\n746: +\t)\n747: +\tif err != nil {\n748: +\t\tt.Fatal(err)\n749: +\t}\n750: +\n751: +\tif d := cmp.Diff(\"given unset srl1\", got.String()); d != \"\" {\n752: +\t\tt.Fatalf(\"rendered template mismatch (-want +got):\\n%s\", d)\n753: +\t}\n754: +}\n\n(End of file - total 754 lines)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/types/node_definition.go b/types/node_definition.go\nindex 99e8edd..6f75348 100644\n--- a/types/node_definition.go\n+++ b/types/node_definition.go\n@@ -206,10 +206,16 @@ func (n NodeDefinition) MarshalYAML() (any, error) {\n }\n \n // ImportEnvs imports all environment variables defined in the shell\n // if __IMPORT_ENVS is set to true.\n func (n *NodeDefinition) ImportEnvs() {\n+\tn.ImportEnvsFrom(nil)\n+}\n+\n+// ImportEnvsFrom imports the env vars of env (key=value entries)\n+// if __IMPORT_ENVS is set to true. A nil env imports the process environment.\n+func (n *NodeDefinition) ImportEnvsFrom(env []string) {\n \tif n == nil || n.Env == nil {\n \t\treturn\n \t}\n ",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/types/node_definition.go b/types/node_definition.go\nindex 99e8edd..6f75348 100644\n--- a/types/node_definition.go\n+++ b/types/node_definition.go\n@@ -206,10 +206,16 @@ func (n NodeDefinition) MarshalYAML() (any, error) {\n }\n \n // ImportEnvs imports all environment variables defined in the shell\n // if __IMPORT_ENVS is set to true.\n func (n *NodeDefinition) ImportEnvs() {\n+\tn.ImportEnvsFrom(nil)\n+}\n+\n+// ImportEnvsFrom imports the env vars of env (key=value entries)\n+// if __IMPORT_ENVS is set to true. A nil env imports the process environment.\n+func (n *NodeDefinition) ImportEnvsFrom(env []string) {\n \tif n == nil || n.Env == nil {\n \t\treturn\n \t}\n \n \tvar importEnvs bool\n@@ -223,11 +229,15 @@ func (n *NodeDefinition) ImportEnvs() {\n \n \tif !importEnvs {\n \t\treturn\n \t}\n \n-\tfor _, e := range os.Environ() {\n+\tif env == nil {\n+\t\tenv = os.Environ()\n+\t}\n+\n+\tfor _, e := range env {\n \t\tkv := strings.SplitN(e, \"=\", 2)\n \t\tif len(kv) < 2 {\n \t\t\tcontinue\n \t\t}\n \t\tif _, exists := n.Env[kv[0]]; exists {\ndiff --git a/types/node_definition_test.go b/types/node_definition_test.go\nindex 6b84d3b..218ce67 100644\n--- a/types/node_definition_test.go\n+++ b/types/node_definition_test.go\n@@ -2,10 +2,11 @@ package types\n \n import (\n \t\"reflect\"\n \t\"testing\"\n \n+\t\"github.com/google/go-cmp/cmp\"\n \t\"gopkg.in/yaml.v2\"\n )\n \n func TestNodeDefinitionYAML_CredentialsNested(t *testing.T) {\n \tt.Parallel()\n@@ -87,5 +88,46 @@ pid-offset: 5\n \t\t\tback.KindSpecificConfig,\n \t\t\tb,\n \t\t)\n \t}\n }\n+\n+func TestNodeDefinitionImportEnvsFrom(t *testing.T) {\n+\ttests := map[string]struct {\n+\t\tnodeEnv map[string]string\n+\t\tenv     []string\n+\t\twant    map[string]string\n+\t}{\n+\t\t\"import_env\": {\n+\t\t\tnodeEnv: map[string]string{importEnvsKey: \"true\", \"KEEP\": \"node\"},\n+\t\t\tenv:     []string{\"GIVEN=value\", \"KEEP=env\"},\n+\t\t\twant:    map[string]string{importEnvsKey: \"true\", \"KEEP\": \"node\", \"GIVEN\": \"value\"},\n+\t\t},\n+\t\t\"no_import_key\": {\n+\t\t\tnodeEnv: map[string]string{\"KEEP\": \"node\"},\n+\t\t\tenv:     []string{\"GIVEN=value\"},\n+\t\t\twant:    map[string]string{\"KEEP\": \"node\"},\n+\t\t},\n+\t}\n+\n+\tfor name, tc := range tests {\n+\t\tt.Run(name, func(t *testing.T) {\n+\t\t\tn := &NodeDefinition{Env: tc.nodeEnv}\n+\t\t\tn.ImportEnvsFrom(tc.env)\n+\n+\t\t\tif d := cmp.Diff(tc.want, n.Env); d != \"\" {\n+\t\t\t\tt.Fatalf(\"env vars mismatch (-want +got):\\n%s\", d)\n+\t\t\t}\n+\t\t})\n+\t}\n+}\n+\n+func TestNodeDefinitionImportEnvsFromProcessEnv(t *testing.T) {\n+\tt.Setenv(\"CLAB_TEST_PROCESS_VAR\", \"process\")\n+\n+\tn := &NodeDefinition{Env: map[string]string{importEnvsKey: \"true\"}}\n+\tn.ImportEnvsFrom(nil)\n+\n+\tif d := cmp.Diff(\"process\", n.Env[\"CLAB_TEST_PROCESS_VAR\"]); d != \"\" {\n+\t\tt.Fatalf(\"imported env var mismatch (-want +got):\\n%s\", d)\n+\t}\n+}\ndiff --git a/types/topology.go b/types/topology.go\nindex c3124ae..b3ad36e 100644\n--- a/types/topology.go\n+++ b/types/topology.go\n@@ -989,22 +989,28 @@ func (t *Topology) GetStages(nodeName string) (*Stages, error) {\n \n \treturn s, nil\n }\n \n func (t *Topology) ImportEnvs() {\n-\tt.Defaults.ImportEnvs()\n+\tt.ImportEnvsFrom(nil)\n+}\n+\n+// ImportEnvsFrom imports the env vars of env (key=value entries) on every level\n+// that sets __IMPORT_ENVS to true. A nil env imports the process environment.\n+func (t *Topology) ImportEnvsFrom(env []string) {\n+\tt.Defaults.ImportEnvsFrom(env)\n \n \tfor _, k := range t.Kinds {\n-\t\tk.ImportEnvs()\n+\t\tk.ImportEnvsFrom(env)\n \t}\n \n \tfor _, g := range t.Groups {\n-\t\tg.ImportEnvs()\n+\t\tg.ImportEnvsFrom(env)\n \t}\n \n \tfor _, n := range t.Nodes {\n-\t\tn.ImportEnvs()\n+\t\tn.ImportEnvsFrom(env)\n \t}\n }\n \n // GetCertificateConfig returns the certificate configuration for the given node.\n func (t *Topology) GetCertificateConfig(nodeName string) *CertificateConfig {\ndiff --git a/types/types.go b/types/types.go\nindex e085633..c10708f 100644\n--- a/types/types.go\n+++ b/types/types.go\n@@ -231,10 +231,13 @@ type NodeConfig struct {\n \tEntrypoint       string            `json:\"entrypoint,omitempty\"`\n \tCmd              string            `json:\"cmd,omitempty\"`\n \t// Exec is a list of commands to execute inside the container backing the node.\n \tExec []string          `json:\"exec,omitempty\"`\n \tEnv  map[string]string `json:\"env,omitempty\"`\n+\t// TopologyEnv holds the env vars (key=value) the startup config templates are expanded\n+\t// with; nil means the process environment. It is not serialized.\n+\tTopologyEnv []string `json:\"-\"`\n \t// Bind mounts strings (src:dest:options).\n \tBinds []string `json:\"binds,omitempty\"`\n \t// Volume mounts strings (name:dest:options).\n \tVolumes []string `json:\"volumes,omitempty\"`\n \t// Devices to map in the container\ndiff --git a/utils/env.go b/utils/env.go\nindex 411e387..292fbf1 100644\n--- a/utils/env.go\n+++ b/utils/env.go\n@@ -9,13 +9,31 @@ import (\n \t\"os\"\n \t\"reflect\"\n \t\"regexp\"\n \t\"strings\"\n \n+\t\"github.com/hellt/envsubst/parse\"\n \t\"github.com/joho/godotenv\"\n )\n \n+// SubstituteEnvs expands env vars in b with the values of env (key=value entries).\n+// A nil env uses the process environment. Vars that are not set get their default value\n+// or are left unexpanded.\n+func SubstituteEnvs(b []byte, env []string) ([]byte, error) {\n+\tif env == nil {\n+\t\tenv = os.Environ()\n+\t}\n+\n+\ts, err := parse.New(\"bytes\", env, &parse.Restrictions{NoDigit: true, NoReplace: true}).\n+\t\tParse(string(b))\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}\n+\n+\treturn []byte(s), nil\n+}\n+\n // ConvertEnvs converts env variables passed as a map to a list of them.\n func ConvertEnvs(m map[string]string) []string {\n \ts := make([]string, 0, len(m))\n \tfor k, v := range m {\n \t\ts = append(s, k+\"=\"+v)\ndiff --git a/utils/env_test.go b/utils/env_test.go\nindex 4634da1..aee91f2 100644\n--- a/utils/env_test.go\n+++ b/utils/env_test.go\n@@ -230,5 +230,49 @@ func TestMergeStringSlices(t *testing.T) {\n \t\tif !cmp.Equal(res, tc.want) {\n \t\t\tt.Fatalf(\"wanted %q got %q\", tc.want, res)\n \t\t}\n \t}\n }\n+\n+func TestSubstituteEnvs(t *testing.T) {\n+\ttests := map[string]struct {\n+\t\tenv  []string\n+\t\tin   string\n+\t\twant string\n+\t}{\n+\t\t\"value_from_env\": {\n+\t\t\tenv:  []string{\"VAR=given\"},\n+\t\t\tin:   \"a: ${VAR}\",\n+\t\t\twant: \"a: given\",\n+\t\t},\n+\t\t\"default_value\": {\n+\t\t\tenv:  []string{},\n+\t\t\tin:   \"a: ${VAR:=default}\",\n+\t\t\twant: \"a: default\",\n+\t\t},\n+\t\t\"process_env_ignored\": {\n+\t\t\tenv:  []string{\"VAR=given\"},\n+\t\t\tin:   \"a: ${CLAB_TEST_PROCESS_VAR}\",\n+\t\t\twant: \"a: $CLAB_TEST_PROCESS_VAR\",\n+\t\t},\n+\t\t\"nil_env\": {\n+\t\t\tenv:  nil,\n+\t\t\tin:   \"a: ${CLAB_TEST_PROCESS_VAR}\",\n+\t\t\twant: \"a: process\",\n+\t\t},\n+\t}\n+\n+\tfor name, tc := range tests {\n+\t\tt.Run(name, func(t *testing.T) {\n+\t\t\tt.Setenv(\"CLAB_TEST_PROCESS_VAR\", \"process\")\n+\n+\t\t\tgot, err := SubstituteEnvs([]byte(tc.in), tc.env)\n+\t\t\tif err != nil {\n+\t\t\t\tt.Fatal(err)\n+\t\t\t}\n+\n+\t\t\tif d := cmp.Diff(tc.want, string(got)); d != \"\" {\n+\t\t\t\tt.Fatalf(\"expanded text mismatch (-want +got):\\n%s\", d)\n+\t\t\t}\n+\t\t})\n+\t}\n+}\ndiff --git a/utils/template.go b/utils/template.go\nindex 3de15f2..0f678ef 100644\n--- a/utils/template.go\n+++ b/utils/template.go\n@@ -11,12 +11,10 @@ import (\n \t\"net/netip\"\n \t\"reflect\"\n \t\"strconv\"\n \t\"strings\"\n \t\"text/template\"\n-\n-\t\"github.com/hellt/envsubst\"\n )\n \n func CreateFuncs() template.FuncMap {\n \tf := template.FuncMap{\n \t\t\"ToJSON\":       toJson,\n@@ -633,19 +631,25 @@ func (nf *NetFuncs) CIDRHost(hostnum any, prefix any) (string, error) {\n }\n \n // SubstituteEnvsAndTemplate substitutes environment variables and template the reader `r`\n // with the `data` template data.\n func SubstituteEnvsAndTemplate(r io.Reader, data any) (*bytes.Buffer, error) {\n+\treturn SubstituteEnvsAndTemplateWithEnv(r, data, nil)\n+}\n+\n+// SubstituteEnvsAndTemplateWithEnv is like SubstituteEnvsAndTemplate, but expands env vars\n+// with the values of env (key=value entries). A nil env uses the process environment.\n+func SubstituteEnvsAndTemplateWithEnv(r io.Reader, data any, env []string) (*bytes.Buffer, error) {\n \tb, err := io.ReadAll(r)\n \tif err != nil {\n \t\treturn nil, err\n \t}\n \n \t// expand env vars in `b` if any were set\n \t// do not replace vars initialized with defaults\n \t// and do not replace vars that are not set\n-\tb, err = envsubst.BytesRestrictedNoReplace(b, false, false, true, true)\n+\tb, err = SubstituteEnvs(b, env)\n \tif err != nil {\n \t\treturn nil, err\n \t}\n \n \tt, err := template.New(\"template\").Funcs(CreateFuncs()).Parse(string(b))\ndiff --git a/utils/template_test.go b/utils/template_test.go\nindex 34395c9..8276e29 100644\n--- a/utils/template_test.go\n+++ b/utils/template_test.go\n@@ -1367,5 +1367,22 @@ func TestNetCIDRHost(t *testing.T) {\n \t\t\t\tt.Fatalf(\"wanted %v, got %v\", tc.want, got)\n \t\t\t}\n \t\t})\n \t}\n }\n+\n+func TestSubstituteEnvsAndTemplateWithEnv(t *testing.T) {\n+\tt.Setenv(\"CLAB_TEST_PROCESS_VAR\", \"process\")\n+\n+\tgot, err := SubstituteEnvsAndTemplateWithEnv(\n+\t\tstrings.NewReader(\"${VAR} ${CLAB_TEST_PROCESS_VAR:=unset} {{ .Name }}\"),\n+\t\tstruct{ Name string }{Name: \"srl1\"},\n+\t\t[]string{\"VAR=given\"},\n+\t)\n+\tif err != nil {\n+\t\tt.Fatal(err)\n+\t}\n+\n+\tif d := cmp.Diff(\"given unset srl1\", got.String()); d != \"\" {\n+\t\tt.Fatalf(\"rendered template mismatch (-want +got):\\n%s\", d)\n+\t}\n+}",
+                "lineStart": 438,
+                "lineEnd": 754,
+                "totalLines": 754,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1794251574161,
+              "end": 1794251574170
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba4bb50016X2xIhUNYXVgo1",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4296001B8UUai1VPoxDBF",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 63583,
+            "input": 5194,
+            "output": 20,
+            "reasoning": 1,
+            "cache": {
+              "read": 58368,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba4bc1001Xz81RzNJoCE1Cm",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251574210,
+          "completed": 1794251576542
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 67472,
+          "input": 3861,
+          "output": 19,
+          "reasoning": 40,
+          "cache": {
+            "read": 63552,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba52610011Gs1nxy1XmEcwk",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4bc1001Xz81RzNJoCE1Cm"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1ba5263001fgiPM8dwxV5cv6",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4bc1001Xz81RzNJoCE1Cm",
+          "text": "Now I have the full diff. Missing from earlier reading: core/clab.go diff (topologyEnv field) — let me check the top of the diff (lines 1-38).",
+          "time": {
+            "start": 1794251575907,
+            "end": 1794251576512
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba54c30012Fh0ptv42zM0iq",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4bc1001Xz81RzNJoCE1Cm",
+          "callID": "call_44f7b6543e50493fa30dff58",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 38
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n1: diff --git a/core/clab.go b/core/clab.go\n2: index a0a7836..9cd0425 100644\n3: --- a/core/clab.go\n4: +++ b/core/clab.go\n5: @@ -71,10 +71,13 @@ type CLab struct {\n6:  \t// labRuntimeIdentity is the Kubernetes identity lab runtime calls act as.\n7:  \tlabRuntimeIdentity clablabruntime.Identity\n8:  \t// managementNetworkOverridden reports whether a management network setting was\n9:  \t// explicitly overridden through a ClabOption rather than read from the topology.\n10:  \tmanagementNetworkOverridden bool\n11: +\t// topologyEnv holds the env vars (key=value) the topology and the startup config\n12: +\t// templates are expanded with; nil means the process environment.\n13: +\ttopologyEnv []string\n14:  \t// gitBranch and gitHash cache Git repository information\n15:  \t// to avoid repeated repository opens. Empty strings indicate not yet cached.\n16:  \tgitBranch string\n17:  \tgitHash   string\n18:  \n19: diff --git a/core/config.go b/core/config.go\n20: index c1beb45..d79ab40 100644\n21: --- a/core/config.go\n22: +++ b/core/config.go\n23: @@ -344,10 +344,11 @@ func (c *CLab) createNodeCfg( //nolint: funlen\n24:  \t\tUser:            c.Config.Topology.GetNodeUser(nodeName),\n25:  \t\tEntrypoint:      c.Config.Topology.GetNodeEntrypoint(nodeName),\n26:  \t\tCmd:             c.Config.Topology.GetNodeCmd(nodeName),\n27:  \t\tExec:            c.Config.Topology.GetNodeExec(nodeName),\n28:  \t\tEnv:             c.Config.Topology.GetNodeEnv(nodeName),\n29: +\t\tTopologyEnv:     c.topologyEnv,\n30:  \t\tNetworkMode:     c.Config.Topology.GetNodeNetworkMode(nodeName),\n31:  \t\tSysctls:         c.Config.Topology.GetSysCtl(nodeName),\n32:  \t\tRuntime:         c.Config.Topology.GetNodeRuntime(nodeName),\n33:  \t\tDevices:         c.Config.Topology.GetNodeDevices(nodeName),\n34:  \t\tCapAdd:          c.Config.Topology.GetNodeCapAdd(nodeName),\n35: diff --git a/core/destroy.go b/core/destroy.go\n36: index 0cd39b1..596e129 100644\n37: --- a/core/destroy.go\n38: +++ b/core/destroy.go\n\n(Showing lines 1-38 of 754. Use offset=39 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/core/clab.go b/core/clab.go\nindex a0a7836..9cd0425 100644\n--- a/core/clab.go\n+++ b/core/clab.go\n@@ -71,10 +71,13 @@ type CLab struct {\n \t// labRuntimeIdentity is the Kubernetes identity lab runtime calls act as.\n \tlabRuntimeIdentity clablabruntime.Identity\n \t// managementNetworkOverridden reports whether a management network setting was\n \t// explicitly overridden through a ClabOption rather than read from the topology.\n \tmanagementNetworkOverridden bool\n+\t// topologyEnv holds the env vars (key=value) the topology and the startup config\n+\t// templates are expanded with; nil means the process environment.\n+\ttopologyEnv []string\n \t// gitBranch and gitHash cache Git repository information\n \t// to avoid repeated repository opens. Empty strings indicate not yet cached.\n \tgitBranch string\n \tgitHash   string\n \ndiff --git a/core/config.go b/core/config.go\nindex c1beb45..d79ab40 100644",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/core/clab.go b/core/clab.go\nindex a0a7836..9cd0425 100644\n--- a/core/clab.go\n+++ b/core/clab.go\n@@ -71,10 +71,13 @@ type CLab struct {\n \t// labRuntimeIdentity is the Kubernetes identity lab runtime calls act as.\n \tlabRuntimeIdentity clablabruntime.Identity\n \t// managementNetworkOverridden reports whether a management network setting was\n \t// explicitly overridden through a ClabOption rather than read from the topology.\n \tmanagementNetworkOverridden bool\n+\t// topologyEnv holds the env vars (key=value) the topology and the startup config\n+\t// templates are expanded with; nil means the process environment.\n+\ttopologyEnv []string\n \t// gitBranch and gitHash cache Git repository information\n \t// to avoid repeated repository opens. Empty strings indicate not yet cached.\n \tgitBranch string\n \tgitHash   string\n \ndiff --git a/core/config.go b/core/config.go\nindex c1beb45..d79ab40 100644\n--- a/core/config.go\n+++ b/core/config.go\n@@ -344,10 +344,11 @@ func (c *CLab) createNodeCfg( //nolint: funlen\n \t\tUser:            c.Config.Topology.GetNodeUser(nodeName),\n \t\tEntrypoint:      c.Config.Topology.GetNodeEntrypoint(nodeName),\n \t\tCmd:             c.Config.Topology.GetNodeCmd(nodeName),\n \t\tExec:            c.Config.Topology.GetNodeExec(nodeName),\n \t\tEnv:             c.Config.Topology.GetNodeEnv(nodeName),\n+\t\tTopologyEnv:     c.topologyEnv,\n \t\tNetworkMode:     c.Config.Topology.GetNodeNetworkMode(nodeName),\n \t\tSysctls:         c.Config.Topology.GetSysCtl(nodeName),\n \t\tRuntime:         c.Config.Topology.GetNodeRuntime(nodeName),\n \t\tDevices:         c.Config.Topology.GetNodeDevices(nodeName),\n \t\tCapAdd:          c.Config.Topology.GetNodeCapAdd(nodeName),\ndiff --git a/core/destroy.go b/core/destroy.go\nindex 0cd39b1..596e129 100644\n--- a/core/destroy.go\n+++ b/core/destroy.go",
+                "lineStart": 1,
+                "lineEnd": 38,
+                "totalLines": 754,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794251576520,
+              "end": 1794251576537
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba54db001BHpnZvM1YGC1CG",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba4bc1001Xz81RzNJoCE1Cm",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 67472,
+            "input": 3861,
+            "output": 19,
+            "reasoning": 40,
+            "cache": {
+              "read": 63552,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba54e6001DEWl3uEEfq5GTF",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251576551,
+          "completed": 1794251581234
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 68374,
+          "input": 696,
+          "output": 27,
+          "reasoning": 259,
+          "cache": {
+            "read": 67392,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba5bc8001aEUC9coXPP3wuX",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba54e6001DEWl3uEEfq5GTF"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1ba5bca001UMy8gC3pDiPCiP",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba54e6001DEWl3uEEfq5GTF",
+          "text": "The diff is complete. The manifest listed 21 paths; the diff has: core/clab.go, core/config.go, core/destroy.go, core/destroy_test.go, core/file.go, core/options_clab.go, core/topology_env_test.go, docs/manual/topo-def-file.md, nodes/arrcus_arcos/arcos.go, nodes/default_node.go, nodes/srl/srl.go, nodes/sros/config.go, nodes/vr_sros/vr-sros.go, types/node_definition.go, types/node_definition_test.go, types/topology.go, types/types.go, utils/env.go, utils/env_test.go, utils/template.go, utils/template_test.go. That's 21.\n\nNow let me examine remaining areas:\n\n1. Are there other entry points where a CLab is constructed for library users that need topologyEnv propagation? E.g., `cmd/` uses CLI options. `core/apply.go` — does the reconcile path create new CLab copies? Let me check apply.go for makeCopy-like logic. Also `core/topology_reconcile.go` — does apply use makeCopyForDestroy? And `core/api.go`? Let me grep for `NewContainerLab(` call sites to see which ones may need topologyEnv.",
+          "time": {
+            "start": 1794251578314,
+            "end": 1794251581189
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba67070014z8jow2870sddP",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba54e6001DEWl3uEEfq5GTF",
+          "callID": "call_89dd7f2e2d7c48bd8b251c67",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "NewContainerLab\\("
+            },
+            "output": "Found 100 matches (more matches available)\n/source/head/cmd/validate.go:\n  Line 31: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/capture.go:\n  Line 127: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 212: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/start.go:\n  Line 44: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/inspect.go:\n  Line 128: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/stop.go:\n  Line 44: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/destroy.go:\n  Line 105: \tclab, err := clabcore.NewContainerLab(clabOptions...)\n\n\n/source/head/cmd/tools_sshx.go:\n  Line 314: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 440: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 467: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 580: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/tools_veth_test.go:\n  Line 37: \t\tc, err := clabcore.NewContainerLab()\n\n\n/source/head/cmd/save.go:\n  Line 26: \t\t\tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/deploy.go:\n  Line 252: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/graph.go:\n  Line 114: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/tools_api_status.go:\n  Line 35: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/tools_gotty.go:\n  Line 325: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 450: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 477: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 607: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/tools_netem.go:\n  Line 247: \t\tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n  Line 540: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/tools_disableTxOffload.go:\n  Line 25: \t\t\tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/core/events/stream.go:\n  Line 26: \tclab, err := clabcore.NewContainerLab(opts.ClabOptions...)\n\n\n/source/head/core/events/parity_test.go:\n  Line 63: \tc, err := clabcore.NewContainerLab(clabcore.WithTopoPath(path, nil))\n\n  Line 233: \tbyName, err := clabcore.NewContainerLab(clabcore.WithLabNameOnly(\"parity\"))\n\n  Line 362: \tc9sLab, err := clabcore.NewContainerLab(clabcore.WithLabNameOnly(\"parity\"))\n\n\n/source/head/core/network_test.go:\n  Line 65: \t_, err = NewContainerLab(WithTopoPath(path, nil))\n\n  Line 370: \tc, err := NewContainerLab(WithTopoPath(\"test_data/topo12.yml\", nil))\n\n  Line 612: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 670: \t\t\t_, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 688: \t_, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 713: \tif _, err := NewContainerLab(\n\n  Line 720: \t_, err := NewContainerLab(WithTopoPath(writeTopo(t, fmt.Sprintf(topo, missing)), nil))\n\n  Line 728: \tc, err := NewContainerLab()\n\n  Line 752: \tc, err := NewContainerLab()\n\n  Line 791: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 904: \t\t_, err := NewContainerLab(WithTopoPath(multi, nil), opt)\n\n  Line 912: \tc, err := NewContainerLab(WithTopoPath(single, nil), WithManagementNetworkName(\"other\"))\n\n  Line 953: \tc, err := NewContainerLab()\n\n  Line 1026: \tc, err := NewContainerLab(WithTopoPath(writeTopo(t, mgmtNetLinkTopo), nil))\n\n  Line 1061: \tc, err := NewContainerLab(WithTopoPath(writeTopo(t, mgmtNetLinkTopo), nil))\n\n  Line 1128: \t\t\t_, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 1160: \tif _, err := NewContainerLab(WithTopoPath(path, nil)); err != nil {\n\n  Line 1190: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 1245: \t\t\tc, err := NewContainerLab(\n\n\n/source/head/cmd/logs.go:\n  Line 74: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/restart.go:\n  Line 44: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/topo_select.go:\n  Line 42: \tclab, err := clabcore.NewContainerLab(o.Global.toClabOptions()...)\n\n\n/source/head/core/labruntime_cluster_test.go:\n  Line 32: \tc, err := NewContainerLab(\n\n  Line 167: \t\tother, err := NewContainerLab(\n\n  Line 197: \t\tc, err := NewContainerLab(\n\n\n/source/head/cmd/tools_snapshot.go:\n  Line 85: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/cmd/tools_veth.go:\n  Line 83: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/core/destroy_test.go:\n  Line 33: \tc, err := NewContainerLab(\n\n  Line 56: \t_, err := NewContainerLab(\n\n  Line 73: \tc, err := NewContainerLab(WithLabNameOnly(\"my-lab\"))\n\n  Line 346: \t\t\tc, err := NewContainerLab(\n\n  Line 393: \tc, err := NewContainerLab(\n\n  Line 484: \tc, err := NewContainerLab(\n\n  Line 539: \tc, err := NewContainerLab(\n\n  Line 607: \tc, err := NewContainerLab(\n\n  Line 646: \tc, err := NewContainerLab(\n\n  Line 870: \t\t\tc, err := NewContainerLab(\n\n  Line 925: \tif _, err := NewContainerLab(WithTopoPath(topo, nil)); err == nil {\n\n  Line 929: \tc, err := NewContainerLab(\n\n  Line 964: \tc, err := NewContainerLab(\n\n\n/source/head/core/options_clab_test.go:\n  Line 19: \tc, err := NewContainerLab(WithTopologyVarsFiles([]string{varsPath}))\n\n  Line 47: \tc, err := NewContainerLab(WithTopologyVarsFiles(varsPaths))\n\n\n/source/head/core/destroy.go:\n  Line 195: \tcc, err := NewContainerLab(newOpts...)\n\n\n/source/head/core/clab.go:\n  Line 88: func NewContainerLab(opts ...ClabOption) (*CLab, error) {\n\n\n/source/head/cmd/exec.go:\n  Line 65: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/core/topology_env_test.go:\n  Line 67: \t\t\tc, err := NewContainerLab(opts...)\n\n  Line 89: \t_, err := NewContainerLab(\n\n\n/source/head/core/deploy_test.go:\n  Line 77: \t\t\tc, err := NewContainerLab(tt.option)\n\n  Line 94: \tc, err := NewContainerLab()\n\n  Line 484: \tc, err := NewContainerLab()\n\n\n/source/head/cmd/inspect_interfaces.go:\n  Line 33: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\n\n/source/head/core/tailscale_test.go:\n  Line 98: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 164: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 174: \tc, err := NewContainerLab(WithTopoPath(writeTailscaleTopo(t, `\n\n  Line 211: \tc, err := NewContainerLab(WithTopoPath(writeTailscaleTopo(t, `\n\n  Line 260: \t_, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 277: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 314: \tc, err := NewContainerLab(WithTopoPath(writeTailscaleTopo(t, tailscaleSSOTopo), nil))\n\n  Line 355: \t\tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 378: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 401: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 428: \tc, err := NewContainerLab(WithTopoPath(path, nil), WithNodeFilter([]string{\"n1\"}))\n\n  Line 449: \tc, err := NewContainerLab(\n\n  Line 754: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 787: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 838: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 885: \tc, err := NewContainerLab(WithTopoPath(path, nil))\n\n  Line 902: \tc, err := NewContainerLab(WithTopoPath(writeTailscaleTopo(t, `\n\n\n/source/head/core/clab_test.go:\n  Line 683: \t\t\tc, err := NewContainerLab()\n\n\n/source/head/core/config_test.go:\n  Line 59: \t\t\tc, err := NewContainerLab(opts...)\n\n  Line 108: \t\t\tc, err := NewContainerLab(opts...)\n\n  Line 168: \t\t\tc, err := NewContainerLab(WithTopoPath(topoFile, nil))\n\n  Line 238: \t\t\tc, err := NewContainerLab(opts...)\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "title": "NewContainerLab\\(",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "time": {
+              "start": 1794251581196,
+              "end": 1794251581229
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba672f001wyZDTJqQDBAfPd",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba54e6001DEWl3uEEfq5GTF",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 68374,
+            "input": 696,
+            "output": 27,
+            "reasoning": 259,
+            "cache": {
+              "read": 67392,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba6739001CzRzDwa4p580mH",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251581241,
+          "completed": 1794251584707
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 71003,
+          "input": 2506,
+          "output": 60,
+          "reasoning": 85,
+          "cache": {
+            "read": 68352,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba6eb200131gyi88KVXJi7Y",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba6739001CzRzDwa4p580mH"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1ba6eb50018d18lHVAe5iU3n",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba6739001CzRzDwa4p580mH",
+          "text": "The internal CLI paths use `ToClabOptions()` — they don't call WithTopologyEnv, so `topologyEnv` stays nil → process env, unchanged behavior. Good.\n\nAre there other library-facing entry points that load topology files besides NewContainerLab options? E.g., `clabernetes` calls LoadTopologyFromFile? Let me check other callers of `LoadTopologyFromFile` and `ImportEnvs`.",
+          "time": {
+            "start": 1794251583157,
+            "end": 1794251584528
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba7412001E6aqUR4ezzZP8e",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba6739001CzRzDwa4p580mH",
+          "callID": "call_73cb62378a884b138c9f8cbe",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "LoadTopologyFromFile|\\.ImportEnvs\\(\\)"
+            },
+            "output": "Found 3 matches\n/source/head/core/file.go:\n  Line 29: // LoadTopologyFromFile loads a topology by the topo file path\n\n  Line 32: func (c *CLab) LoadTopologyFromFile(topo string, varsFiles []string) error {\n\n\n/source/head/core/options_clab.go:\n  Line 310: \t\tif err := c.LoadTopologyFromFile(file, varsFiles); err != nil {\n",
+            "title": "LoadTopologyFromFile|\\.ImportEnvs\\(\\)",
+            "metadata": {
+              "matches": 3,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251584534,
+              "end": 1794251584551
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba74b1001dcYIH2dAco4fTh",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba6739001CzRzDwa4p580mH",
+          "callID": "call_90d79437eec146798da3e475",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/clab.go",
+              "limit": 120,
+              "offset": 60
+            },
+            "output": "<path>/source/head/core/clab.go</path>\n<type>file</type>\n<content>\n60: \t// nodeFilter is a list of node names to be deployed,\n61: \t// names are provided exactly as they are listed in the topology file.\n62: \tnodeFilter []string\n63: \t// checkBindsPaths toggle enables or disables binds paths checks\n64: \t// when set to true, bind sources are verified to exist on the host.\n65: \tcheckBindsPaths bool\n66: \t// checkMgmtNetLinks toggle enables or disables the mgmt-net link checks\n67: \t// when set to true, mgmt-net links must select a defined bridge management network.\n68: \tcheckMgmtNetLinks bool\n69: \t// customOwner is the user-specified owner label for the lab\n70: \tcustomOwner string\n71: \t// labRuntimeIdentity is the Kubernetes identity lab runtime calls act as.\n72: \tlabRuntimeIdentity clablabruntime.Identity\n73: \t// managementNetworkOverridden reports whether a management network setting was\n74: \t// explicitly overridden through a ClabOption rather than read from the topology.\n75: \tmanagementNetworkOverridden bool\n76: \t// topologyEnv holds the env vars (key=value) the topology and the startup config\n77: \t// templates are expanded with; nil means the process environment.\n78: \ttopologyEnv []string\n79: \t// gitBranch and gitHash cache Git repository information\n80: \t// to avoid repeated repository opens. Empty strings indicate not yet cached.\n81: \tgitBranch string\n82: \tgitHash   string\n83: \n84: \trenderedTopology []byte\n85: }\n86: \n87: // NewContainerLab function defines a new container lab.\n88: func NewContainerLab(opts ...ClabOption) (*CLab, error) {\n89: \tc := &CLab{\n90: \t\tConfig: &Config{\n91: \t\t\tMgmt:     new(clabtypes.MgmtNet),\n92: \t\t\tTopology: clabtypes.NewTopology(),\n93: \t\t},\n94: \t\tTopoPaths:         &clabtypes.TopoPaths{},\n95: \t\tm:                 new(sync.RWMutex),\n96: \t\tNodes:             make(map[string]clabnodes.Node),\n97: \t\tLinks:             make(map[int]clablinks.Link),\n98: \t\tRuntimes:          make(map[string]clabruntime.ContainerRuntime),\n99: \t\tCert:              &clabcert.Cert{},\n100: \t\tcheckBindsPaths:   true,\n101: \t\tcheckMgmtNetLinks: true,\n102: \t\tdependencyManager: clabcoredependency_manager.NewDependencyManager(),\n103: \t}\n104: \n105: \tc.Reg = clabnodes.NewNodeRegistry()\n106: \tc.RegisterNodes()\n107: \n108: \tfor _, opt := range opts {\n109: \t\terr := opt(c)\n110: \t\tif err != nil {\n111: \t\t\treturn nil, err\n112: \t\t}\n113: \t}\n114: \n115: \tvar err error\n116: \tif c.TopoPaths.TopologyFileIsSet() {\n117: \t\tif c.LabRuntime != nil {\n118: \t\t\terr = c.prepareLabRuntimeTopology()\n119: \t\t} else {\n120: \t\t\terr = c.parseTopology()\n121: \t\t}\n122: \t}\n123: \n124: \t// Extract the host systems DNS servers and populate the\n125: \t// Nodes DNS Config with these if not specifically provided\n126: \tfileSystem := os.DirFS(\"/\")\n127: \tif err := c.extractDNSServers(fileSystem); err != nil {\n128: \t\treturn nil, err\n129: \t}\n130: \n131: \treturn c, err\n132: }\n133: \n134: // RuntimeInitializer returns a runtime initializer function for a provided runtime name.\n135: // Order of preference: cli flag -> env var -> default value of docker.\n136: func RuntimeInitializer(name string) (string, clabruntime.Initializer, error) {\n137: \tname = resolveRuntimeName(name)\n138: \n139: \truntimeInitializer, ok := clabruntime.ContainerRuntimes[name]\n140: \tif !ok {\n141: \t\treturn name, nil, fmt.Errorf(\"unknown container runtime %q\", name)\n142: \t}\n143: \n144: \treturn name, runtimeInitializer, nil\n145: }\n146: \n147: func resolveRuntimeName(name string) string {\n148: \tenvN := os.Getenv(\"CLAB_RUNTIME\")\n149: \tlog.Debugf(\"env runtime var value is %v\", envN)\n150: \n151: \tswitch {\n152: \tcase name != \"\":\n153: \t\treturn strings.ToLower(name)\n154: \tcase envN != \"\":\n155: \t\treturn strings.ToLower(envN)\n156: \tdefault:\n157: \t\treturn clabruntimedocker.RuntimeName\n158: \t}\n159: }\n160: \n161: func (c *CLab) prepareLabRuntimeTopology() error {\n162: \tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n163: \n164: \tif strings.Contains(c.Config.Name, gitBranchVar) ||\n165: \t\tstrings.Contains(c.Config.Name, gitHashVar) {\n166: \t\tr := c.magicTopoNameReplacer()\n167: \t\toldName := c.Config.Name\n168: \t\tc.Config.Name = r.Replace(c.Config.Name)\n169: \t\tlog.Debugf(\n170: \t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n171: \t\t\toldName,\n172: \t\t\tc.Config.Name,\n173: \t\t)\n174: \t}\n175: \n176: \tif err := c.sanitizeLabRuntimeNames(); err != nil {\n177: \t\treturn err\n178: \t}\n179: \n\n(Showing lines 60-179 of 1008. Use offset=180 to continue.)\n</content>",
+            "title": "source/head/core/clab.go",
+            "metadata": {
+              "preview": "\t// nodeFilter is a list of node names to be deployed,\n\t// names are provided exactly as they are listed in the topology file.\n\tnodeFilter []string\n\t// checkBindsPaths toggle enables or disables binds paths checks\n\t// when set to true, bind sources are verified to exist on the host.\n\tcheckBindsPaths bool\n\t// checkMgmtNetLinks toggle enables or disables the mgmt-net link checks\n\t// when set to true, mgmt-net links must select a defined bridge management network.\n\tcheckMgmtNetLinks bool\n\t// customOwner is the user-specified owner label for the lab\n\tcustomOwner string\n\t// labRuntimeIdentity is the Kubernetes identity lab runtime calls act as.\n\tlabRuntimeIdentity clablabruntime.Identity\n\t// managementNetworkOverridden reports whether a management network setting was\n\t// explicitly overridden through a ClabOption rather than read from the topology.\n\tmanagementNetworkOverridden bool\n\t// topologyEnv holds the env vars (key=value) the topology and the startup config\n\t// templates are expanded with; nil means the process environment.\n\ttopologyEnv []string\n\t// gitBranch and gitHash cache Git repository information",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/clab.go",
+                "text": "\t// nodeFilter is a list of node names to be deployed,\n\t// names are provided exactly as they are listed in the topology file.\n\tnodeFilter []string\n\t// checkBindsPaths toggle enables or disables binds paths checks\n\t// when set to true, bind sources are verified to exist on the host.\n\tcheckBindsPaths bool\n\t// checkMgmtNetLinks toggle enables or disables the mgmt-net link checks\n\t// when set to true, mgmt-net links must select a defined bridge management network.\n\tcheckMgmtNetLinks bool\n\t// customOwner is the user-specified owner label for the lab\n\tcustomOwner string\n\t// labRuntimeIdentity is the Kubernetes identity lab runtime calls act as.\n\tlabRuntimeIdentity clablabruntime.Identity\n\t// managementNetworkOverridden reports whether a management network setting was\n\t// explicitly overridden through a ClabOption rather than read from the topology.\n\tmanagementNetworkOverridden bool\n\t// topologyEnv holds the env vars (key=value) the topology and the startup config\n\t// templates are expanded with; nil means the process environment.\n\ttopologyEnv []string\n\t// gitBranch and gitHash cache Git repository information\n\t// to avoid repeated repository opens. Empty strings indicate not yet cached.\n\tgitBranch string\n\tgitHash   string\n\n\trenderedTopology []byte\n}\n\n// NewContainerLab function defines a new container lab.\nfunc NewContainerLab(opts ...ClabOption) (*CLab, error) {\n\tc := &CLab{\n\t\tConfig: &Config{\n\t\t\tMgmt:     new(clabtypes.MgmtNet),\n\t\t\tTopology: clabtypes.NewTopology(),\n\t\t},\n\t\tTopoPaths:         &clabtypes.TopoPaths{},\n\t\tm:                 new(sync.RWMutex),\n\t\tNodes:             make(map[string]clabnodes.Node),\n\t\tLinks:             make(map[int]clablinks.Link),\n\t\tRuntimes:          make(map[string]clabruntime.ContainerRuntime),\n\t\tCert:              &clabcert.Cert{},\n\t\tcheckBindsPaths:   true,\n\t\tcheckMgmtNetLinks: true,\n\t\tdependencyManager: clabcoredependency_manager.NewDependencyManager(),\n\t}\n\n\tc.Reg = clabnodes.NewNodeRegistry()\n\tc.RegisterNodes()\n\n\tfor _, opt := range opts {\n\t\terr := opt(c)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}\n\n\tvar err error\n\tif c.TopoPaths.TopologyFileIsSet() {\n\t\tif c.LabRuntime != nil {\n\t\t\terr = c.prepareLabRuntimeTopology()\n\t\t} else {\n\t\t\terr = c.parseTopology()\n\t\t}\n\t}\n\n\t// Extract the host systems DNS servers and populate the\n\t// Nodes DNS Config with these if not specifically provided\n\tfileSystem := os.DirFS(\"/\")\n\tif err := c.extractDNSServers(fileSystem); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn c, err\n}\n\n// RuntimeInitializer returns a runtime initializer function for a provided runtime name.\n// Order of preference: cli flag -> env var -> default value of docker.\nfunc RuntimeInitializer(name string) (string, clabruntime.Initializer, error) {\n\tname = resolveRuntimeName(name)\n\n\truntimeInitializer, ok := clabruntime.ContainerRuntimes[name]\n\tif !ok {\n\t\treturn name, nil, fmt.Errorf(\"unknown container runtime %q\", name)\n\t}\n\n\treturn name, runtimeInitializer, nil\n}\n\nfunc resolveRuntimeName(name string) string {\n\tenvN := os.Getenv(\"CLAB_RUNTIME\")\n\tlog.Debugf(\"env runtime var value is %v\", envN)\n\n\tswitch {\n\tcase name != \"\":\n\t\treturn strings.ToLower(name)\n\tcase envN != \"\":\n\t\treturn strings.ToLower(envN)\n\tdefault:\n\t\treturn clabruntimedocker.RuntimeName\n\t}\n}\n\nfunc (c *CLab) prepareLabRuntimeTopology() error {\n\tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n\n\tif strings.Contains(c.Config.Name, gitBranchVar) ||\n\t\tstrings.Contains(c.Config.Name, gitHashVar) {\n\t\tr := c.magicTopoNameReplacer()\n\t\toldName := c.Config.Name\n\t\tc.Config.Name = r.Replace(c.Config.Name)\n\t\tlog.Debugf(\n\t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n\t\t\toldName,\n\t\t\tc.Config.Name,\n\t\t)\n\t}\n\n\tif err := c.sanitizeLabRuntimeNames(); err != nil {\n\t\treturn err\n\t}\n",
+                "lineStart": 60,
+                "lineEnd": 179,
+                "totalLines": 1008,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794251584694,
+              "end": 1794251584702
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba74c0001kSprdUm2nzTwxb",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba6739001CzRzDwa4p580mH",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 71003,
+            "input": 2506,
+            "output": 60,
+            "reasoning": 85,
+            "cache": {
+              "read": 68352,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba74cb001K9LO1xnpcrXEyB",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251584715,
+          "completed": 1794251589242
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 72554,
+          "input": 1471,
+          "output": 40,
+          "reasoning": 131,
+          "cache": {
+            "read": 70912,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba7cc7001VzNgRtK5LQ9DLm",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba74cb001K9LO1xnpcrXEyB"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1ba7cc9001c5ur5INaD9bqtk",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba74cb001K9LO1xnpcrXEyB",
+          "text": "`parseTopology` also calls LoadTopologyFromFile? Let's check parseTopology in clab.go to see if there's another envsubst path. Actually, parseTopology likely calls c.LoadTopologyFromFile too. Grep for it... the grep above showed LoadTopologyFromFile only defined in file.go and called in options_clab.go:310. So parseTopology must call it? Let me check what parseTopology does — maybe it calls LoadTopologyFromFile via different name. Grep \"LoadTopology\" in clab.go... Only 2 matches shown above (definition and one call). So where is the topology parsed? Let me check `parseTopology`.",
+          "time": {
+            "start": 1794251586761,
+            "end": 1794251589217
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba8664001jLmylzNefrouiu",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba74cb001K9LO1xnpcrXEyB",
+          "callID": "call_6caf7bfac6ec4840a9a462b5",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/core",
+              "pattern": "func \\(c \\*CLab\\) parseTopology|LoadTopology|readTopology"
+            },
+            "output": "Found 6 matches\n/source/head/core/config.go:\n  Line 65: func (c *CLab) parseTopology() error {\n\n  Line 177: // LoadTopologyNodes builds the topology's nodes and links for a lab runtime, without a\n\n  Line 181: func (c *CLab) LoadTopologyNodes() error {\n\n\n/source/head/core/file.go:\n  Line 29: // LoadTopologyFromFile loads a topology by the topo file path\n\n  Line 32: func (c *CLab) LoadTopologyFromFile(topo string, varsFiles []string) error {\n\n\n/source/head/core/options_clab.go:\n  Line 310: \t\tif err := c.LoadTopologyFromFile(file, varsFiles); err != nil {\n",
+            "title": "func \\(c \\*CLab\\) parseTopology|LoadTopology|readTopology",
+            "metadata": {
+              "matches": 6,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251589224,
+              "end": 1794251589237
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba8677001b9UFr9Mdl3lTVL",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba74cb001K9LO1xnpcrXEyB",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 72554,
+            "input": 1471,
+            "output": 40,
+            "reasoning": 131,
+            "cache": {
+              "read": 70912,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba86820018ZAbwnfD4nMT5Z",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251589250,
+          "completed": 1794251591312
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 72735,
+          "input": 260,
+          "output": 26,
+          "reasoning": 1,
+          "cache": {
+            "read": 72448,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba8db7001X9etJ7TOE6568h",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba86820018ZAbwnfD4nMT5Z"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba8e7f001MKTDcZPiQatg8J",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba86820018ZAbwnfD4nMT5Z",
+          "callID": "call_9b25121079134b869a4de654",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/config.go",
+              "limit": 140,
+              "offset": 60
+            },
+            "output": "<path>/source/head/core/config.go</path>\n<type>file</type>\n<content>\n60: \t// may be used by other packages to enable debug logging\n61: \tDebug bool `json:\"debug\"`\n62: }\n63: \n64: // ParseTopology parses the lab topology.\n65: func (c *CLab) parseTopology() error {\n66: \tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n67: \n68: \tif strings.Contains(c.Config.Name, gitBranchVar) ||\n69: \t\tstrings.Contains(c.Config.Name, gitHashVar) {\n70: \t\tr := c.magicTopoNameReplacer()\n71: \t\toldName := c.Config.Name\n72: \t\tc.Config.Name = r.Replace(c.Config.Name)\n73: \t\tlog.Debugf(\n74: \t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n75: \t\t\toldName,\n76: \t\t\tc.Config.Name,\n77: \t\t)\n78: \t}\n79: \n80: \terr := c.TopoPaths.SetLabDirByPrefix(c.Config.Name)\n81: \tif err != nil {\n82: \t\treturn err\n83: \t}\n84: \n85: \tif c.Config.Prefix == nil {\n86: \t\tc.Config.Prefix = new(string)\n87: \t\t*c.Config.Prefix = defaultPrefix\n88: \t}\n89: \n90: \tif err := c.validateKindSpecificConfigKeys(); err != nil {\n91: \t\treturn err\n92: \t}\n93: \n94: \t// initialize Nodes and Links variable\n95: \tc.Nodes = make(map[string]clabnodes.Node)\n96: \tc.Links = make(map[int]clablinks.Link)\n97: \n98: \t// initialize the Node information from the topology map\n99: \tnodeNames := make([]string, 0, len(c.Config.Topology.Nodes))\n100: \tfor nodeName := range c.Config.Topology.Nodes {\n101: \t\tnodeNames = append(nodeNames, nodeName)\n102: \t}\n103: \n104: \tsort.Strings(nodeNames)\n105: \n106: \t// collect node runtimes in a map[NodeName] -> RuntimeName\n107: \tnodeRuntimes := make(map[string]string)\n108: \n109: \tfor nodeName, topologyNode := range c.Config.Topology.Nodes {\n110: \t\t// this case is when runtime was overridden at the node level\n111: \t\tif r := c.Config.Topology.GetNodeRuntime(nodeName); r != \"\" {\n112: \t\t\tlog.Warn(\n113: \t\t\t\t\"Deprecation notice\",\n114: \t\t\t\t\"notice\",\n115: \t\t\t\t\"Per-node runtime is deprecated and will be removed in a future release. \"+\n116: \t\t\t\t\t\"Set the lab runtime with the --runtime flag or CLAB_RUNTIME env var instead\",\n117: \t\t\t\t\"node\",\n118: \t\t\t\tnodeName,\n119: \t\t\t\t\"runtime\",\n120: \t\t\t\tr,\n121: \t\t\t)\n122: \n123: \t\t\tnodeRuntimes[nodeName] = r\n124: \t\t\tcontinue\n125: \t\t}\n126: \n127: \t\t// this case if for non-default runtimes overriding the global default\n128: \t\tif topologyNode != nil {\n129: \t\t\tif r, ok := clabnodes.NonDefaultRuntimes[topologyNode.Kind]; ok {\n130: \t\t\t\tnodeRuntimes[nodeName] = r\n131: \t\t\t\tcontinue\n132: \t\t\t}\n133: \t\t}\n134: \n135: \t\t// saving the global default runtime\n136: \t\tnodeRuntimes[nodeName] = c.globalRuntimeName\n137: \t}\n138: \n139: \t// initialize any extra runtimes\n140: \tfor _, r := range nodeRuntimes {\n141: \t\t// Nodes of a lab runtime are only described here; they are not run by a local\n142: \t\t// container runtime.\n143: \t\tif c.LabRuntime != nil {\n144: \t\t\tbreak\n145: \t\t}\n146: \n147: \t\t// this is the case for already init'ed runtimes\n148: \t\tif _, ok := c.Runtimes[r]; ok {\n149: \t\t\tcontinue\n150: \t\t}\n151: \n152: \t\tif rInit, ok := clabruntime.ContainerRuntimes[r]; ok {\n153: \t\t\tnewRuntime := rInit()\n154: \t\t\tdefaultConfig := c.Runtimes[c.globalRuntimeName].Config()\n155: \n156: \t\t\terr := newRuntime.Init(\n157: \t\t\t\tclabruntime.WithConfig(&defaultConfig),\n158: \t\t\t)\n159: \t\t\tif err != nil {\n160: \t\t\t\treturn fmt.Errorf(\"failed to init the container runtime: %s\", err)\n161: \t\t\t}\n162: \n163: \t\t\tc.Runtimes[r] = newRuntime\n164: \t\t}\n165: \t}\n166: \n167: \tfor idx, nodeName := range nodeNames {\n168: \t\terr = c.NewNode(nodeName, nodeRuntimes[nodeName], c.Config.Topology.Nodes[nodeName], idx)\n169: \t\tif err != nil {\n170: \t\t\treturn err\n171: \t\t}\n172: \t}\n173: \n174: \treturn c.injectTailscaleSidecars()\n175: }\n176: \n177: // LoadTopologyNodes builds the topology's nodes and links for a lab runtime, without a\n178: // container runtime behind them. Lab runtimes skip this when they parse a topology; commands\n179: // that render the topology file itself, such as graph, need the nodes. With a local runtime the\n180: // nodes are already built, and it does nothing.\n181: func (c *CLab) LoadTopologyNodes() error {\n182: \tif c.LabRuntime == nil || !c.TopoPaths.TopologyFileIsSet() {\n183: \t\treturn nil\n184: \t}\n185: \n186: \treturn c.parseTopology()\n187: }\n188: \n189: // NewNode initializes a new node object.\n190: func (c *CLab) NewNode(\n191: \tnodeName,\n192: \tnodeRuntime string,\n193: \tnodeDef *clabtypes.NodeDefinition,\n194: \tidx int,\n195: ) error {\n196: \tnodeCfg, err := c.createNodeCfg(nodeName, nodeDef, idx)\n197: \tif err != nil {\n198: \t\treturn err\n199: \t}\n\n(Showing lines 60-199 of 1112. Use offset=200 to continue.)\n</content>",
+            "title": "source/head/core/config.go",
+            "metadata": {
+              "preview": "\t// may be used by other packages to enable debug logging\n\tDebug bool `json:\"debug\"`\n}\n\n// ParseTopology parses the lab topology.\nfunc (c *CLab) parseTopology() error {\n\tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n\n\tif strings.Contains(c.Config.Name, gitBranchVar) ||\n\t\tstrings.Contains(c.Config.Name, gitHashVar) {\n\t\tr := c.magicTopoNameReplacer()\n\t\toldName := c.Config.Name\n\t\tc.Config.Name = r.Replace(c.Config.Name)\n\t\tlog.Debugf(\n\t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n\t\t\toldName,\n\t\t\tc.Config.Name,\n\t\t)\n\t}\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/config.go",
+                "text": "\t// may be used by other packages to enable debug logging\n\tDebug bool `json:\"debug\"`\n}\n\n// ParseTopology parses the lab topology.\nfunc (c *CLab) parseTopology() error {\n\tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n\n\tif strings.Contains(c.Config.Name, gitBranchVar) ||\n\t\tstrings.Contains(c.Config.Name, gitHashVar) {\n\t\tr := c.magicTopoNameReplacer()\n\t\toldName := c.Config.Name\n\t\tc.Config.Name = r.Replace(c.Config.Name)\n\t\tlog.Debugf(\n\t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n\t\t\toldName,\n\t\t\tc.Config.Name,\n\t\t)\n\t}\n\n\terr := c.TopoPaths.SetLabDirByPrefix(c.Config.Name)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif c.Config.Prefix == nil {\n\t\tc.Config.Prefix = new(string)\n\t\t*c.Config.Prefix = defaultPrefix\n\t}\n\n\tif err := c.validateKindSpecificConfigKeys(); err != nil {\n\t\treturn err\n\t}\n\n\t// initialize Nodes and Links variable\n\tc.Nodes = make(map[string]clabnodes.Node)\n\tc.Links = make(map[int]clablinks.Link)\n\n\t// initialize the Node information from the topology map\n\tnodeNames := make([]string, 0, len(c.Config.Topology.Nodes))\n\tfor nodeName := range c.Config.Topology.Nodes {\n\t\tnodeNames = append(nodeNames, nodeName)\n\t}\n\n\tsort.Strings(nodeNames)\n\n\t// collect node runtimes in a map[NodeName] -> RuntimeName\n\tnodeRuntimes := make(map[string]string)\n\n\tfor nodeName, topologyNode := range c.Config.Topology.Nodes {\n\t\t// this case is when runtime was overridden at the node level\n\t\tif r := c.Config.Topology.GetNodeRuntime(nodeName); r != \"\" {\n\t\t\tlog.Warn(\n\t\t\t\t\"Deprecation notice\",\n\t\t\t\t\"notice\",\n\t\t\t\t\"Per-node runtime is deprecated and will be removed in a future release. \"+\n\t\t\t\t\t\"Set the lab runtime with the --runtime flag or CLAB_RUNTIME env var instead\",\n\t\t\t\t\"node\",\n\t\t\t\tnodeName,\n\t\t\t\t\"runtime\",\n\t\t\t\tr,\n\t\t\t)\n\n\t\t\tnodeRuntimes[nodeName] = r\n\t\t\tcontinue\n\t\t}\n\n\t\t// this case if for non-default runtimes overriding the global default\n\t\tif topologyNode != nil {\n\t\t\tif r, ok := clabnodes.NonDefaultRuntimes[topologyNode.Kind]; ok {\n\t\t\t\tnodeRuntimes[nodeName] = r\n\t\t\t\tcontinue\n\t\t\t}\n\t\t}\n\n\t\t// saving the global default runtime\n\t\tnodeRuntimes[nodeName] = c.globalRuntimeName\n\t}\n\n\t// initialize any extra runtimes\n\tfor _, r := range nodeRuntimes {\n\t\t// Nodes of a lab runtime are only described here; they are not run by a local\n\t\t// container runtime.\n\t\tif c.LabRuntime != nil {\n\t\t\tbreak\n\t\t}\n\n\t\t// this is the case for already init'ed runtimes\n\t\tif _, ok := c.Runtimes[r]; ok {\n\t\t\tcontinue\n\t\t}\n\n\t\tif rInit, ok := clabruntime.ContainerRuntimes[r]; ok {\n\t\t\tnewRuntime := rInit()\n\t\t\tdefaultConfig := c.Runtimes[c.globalRuntimeName].Config()\n\n\t\t\terr := newRuntime.Init(\n\t\t\t\tclabruntime.WithConfig(&defaultConfig),\n\t\t\t)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"failed to init the container runtime: %s\", err)\n\t\t\t}\n\n\t\t\tc.Runtimes[r] = newRuntime\n\t\t}\n\t}\n\n\tfor idx, nodeName := range nodeNames {\n\t\terr = c.NewNode(nodeName, nodeRuntimes[nodeName], c.Config.Topology.Nodes[nodeName], idx)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn c.injectTailscaleSidecars()\n}\n\n// LoadTopologyNodes builds the topology's nodes and links for a lab runtime, without a\n// container runtime behind them. Lab runtimes skip this when they parse a topology; commands\n// that render the topology file itself, such as graph, need the nodes. With a local runtime the\n// nodes are already built, and it does nothing.\nfunc (c *CLab) LoadTopologyNodes() error {\n\tif c.LabRuntime == nil || !c.TopoPaths.TopologyFileIsSet() {\n\t\treturn nil\n\t}\n\n\treturn c.parseTopology()\n}\n\n// NewNode initializes a new node object.\nfunc (c *CLab) NewNode(\n\tnodeName,\n\tnodeRuntime string,\n\tnodeDef *clabtypes.NodeDefinition,\n\tidx int,\n) error {\n\tnodeCfg, err := c.createNodeCfg(nodeName, nodeDef, idx)\n\tif err != nil {\n\t\treturn err\n\t}",
+                "lineStart": 60,
+                "lineEnd": 199,
+                "totalLines": 1112,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794251591299,
+              "end": 1794251591306
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba8e8d001EpqYd5R5ftOiG1",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba86820018ZAbwnfD4nMT5Z",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 72735,
+            "input": 260,
+            "output": 26,
+            "reasoning": 1,
+            "cache": {
+              "read": 72448,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1ba8e980013x4HG48OY882eD",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251591320,
+          "completed": 1794251595766
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 74321,
+          "input": 1435,
+          "output": 64,
+          "reasoning": 118,
+          "cache": {
+            "read": 72704,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1ba95d4001FsTYTwoauonrwS",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba8e980013x4HG48OY882eD"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1ba95d6001MQEG6BkvGm0VG0",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba8e980013x4HG48OY882eD",
+          "text": "Good — `createNodeCfg` covers all node creation via NewNode.\n\nNow, check the lab runtime topology path — `prepareLabRuntimeTopology` → does it call LoadTopologyNodes → parseTopology → NewNode → createNodeCfg. Good.\n\nNow let's consider the nodes that read `n.Cfg.TopologyEnv` — all updated. Are there any other places calling `SubstituteEnvsAndTemplate` (the wrapper) inside the repo? Earlier grep found wrapper defined and callers use WithEnv variant. Let me verify no remaining internal callers of the wrapper besides tests.",
+          "time": {
+            "start": 1794251593174,
+            "end": 1794251595565
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba9f30001i9bG6s0b0VS84W",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba8e980013x4HG48OY882eD",
+          "callID": "call_200dd30408b9411aaed084b7",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "SubstituteEnvsAndTemplate\\(|SubstituteEnvsAndTemplateWithEnv\\("
+            },
+            "output": "Found 11 matches\n/source/head/nodes/vr_sros/vr-sros.go:\n  Line 357: \tconfigContent, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n\n\n/source/head/nodes/arrcus_arcos/arcos.go:\n  Line 90: \tcfgBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n\n\n/source/head/nodes/sros/config.go:\n  Line 132: \t\tcBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n\n  Line 318: \t\t\tconfigContent, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n\n\n/source/head/nodes/srl/srl.go:\n  Line 745: \t\tcBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n\n\n/source/head/nodes/default_node.go:\n  Line 680: \t\tcfgBuf, err := clabutils.SubstituteEnvsAndTemplateWithEnv(\n\n\n/source/head/utils/template.go:\n  Line 635: func SubstituteEnvsAndTemplate(r io.Reader, data any) (*bytes.Buffer, error) {\n\n  Line 636: \treturn SubstituteEnvsAndTemplateWithEnv(r, data, nil)\n\n  Line 641: func SubstituteEnvsAndTemplateWithEnv(r io.Reader, data any, env []string) (*bytes.Buffer, error) {\n\n\n/source/head/utils/template_test.go:\n  Line 1373: func TestSubstituteEnvsAndTemplateWithEnv(t *testing.T) {\n\n  Line 1376: \tgot, err := SubstituteEnvsAndTemplateWithEnv(\n",
+            "title": "SubstituteEnvsAndTemplate\\(|SubstituteEnvsAndTemplateWithEnv\\(",
+            "metadata": {
+              "matches": 11,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251595574,
+              "end": 1794251595594
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1ba9fcf00131cH086BNkCcfF",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba8e980013x4HG48OY882eD",
+          "callID": "call_c2a78b3d0cc2410083d6c41d",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "TopologyEnv"
+            },
+            "output": "Found 28 matches\n/source/head/types/types.go:\n  Line 236: \t// TopologyEnv holds the env vars (key=value) the startup config templates are expanded\n\n  Line 238: \tTopologyEnv []string `json:\"-\"`\n\n\n/source/head/nodes/vr_sros/vr-sros.go:\n  Line 360: \t\ts.Cfg.TopologyEnv,\n\n\n/source/head/nodes/arrcus_arcos/arcos.go:\n  Line 93: \t\tn.Cfg.TopologyEnv,\n\n\n/source/head/nodes/srl/srl.go:\n  Line 748: \t\t\tn.Cfg.TopologyEnv,\n\n\n/source/head/nodes/default_node.go:\n  Line 683: \t\t\td.Cfg.TopologyEnv,\n\n\n/source/head/nodes/sros/config.go:\n  Line 135: \t\t\tn.Cfg.TopologyEnv,\n\n  Line 321: \t\t\t\tn.Cfg.TopologyEnv,\n\n\n/source/head/labruntime/clabernetes/primitives.go:\n  Line 109: \tvar envelope c9sTopologyEnvelope\n\n  Line 158: // c9sTopologyEnvelope mirrors the clabernetes Topology envelope: metadata is read straight off\n\n  Line 160: type c9sTopologyEnvelope struct {\n\n\n/source/head/core/destroy.go:\n  Line 154: \t\tnewOpts = append(newOpts, WithTopologyEnv(c.topologyEnv))\n\n\n/source/head/core/destroy_test.go:\n  Line 948: // TestMakeCopyForDestroyKeepsTopologyEnv verifies that the destroy copy expands the topology\n\n  Line 950: func TestMakeCopyForDestroyKeepsTopologyEnv(t *testing.T) {\n\n  Line 966: \t\tWithTopologyEnv([]string{\"LAB_SUFFIX=given\"}),\n\n\n/source/head/core/topology_env_test.go:\n  Line 24: func TestWithTopologyEnv(t *testing.T) {\n\n  Line 29: \t\t// wantTopologyEnv is the env node1 expands its startup config templates with\n\n  Line 30: \t\twantTopologyEnv []string\n\n  Line 33: \t\t\topts: []ClabOption{WithTopologyEnv([]string{\"GIVEN=given\"})},\n\n  Line 39: \t\t\twantTopologyEnv: []string{\"GIVEN=given\"},\n\n  Line 42: \t\t\topts: []ClabOption{WithTopologyEnv([]string{})},\n\n  Line 48: \t\t\twantTopologyEnv: []string{},\n\n  Line 81: \t\t\tif d := cmp.Diff(tc.wantTopologyEnv, cfg.TopologyEnv); d != \"\" {\n\n  Line 88: func TestWithTopologyEnvAfterTopology(t *testing.T) {\n\n  Line 91: \t\tWithTopologyEnv([]string{\"GIVEN=given\"}),\n\n\n/source/head/core/config.go:\n  Line 349: \t\tTopologyEnv:     c.topologyEnv,\n\n\n/source/head/core/options_clab.go:\n  Line 285: // WithTopologyEnv sets the env vars (key=value entries) that are used instead of the\n\n  Line 290: func WithTopologyEnv(env []string) ClabOption {\n",
+            "title": "TopologyEnv",
+            "metadata": {
+              "matches": 28,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251595734,
+              "end": 1794251595755
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1ba9fef001jUmU6amFDdrxmv",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1ba8e980013x4HG48OY882eD",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 74321,
+            "input": 1435,
+            "output": 64,
+            "reasoning": 118,
+            "cache": {
+              "read": 72704,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1baa001001RUtzwbZqUsFe0f",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251595777,
+          "completed": 1794251615834
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 76494,
+          "input": 1063,
+          "output": 46,
+          "reasoning": 1145,
+          "cache": {
+            "read": 74240,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1baa715001dc6oFXw8RbaLWs",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baa001001RUtzwbZqUsFe0f"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1baa717001qMm5tu0682spxM",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baa001001RUtzwbZqUsFe0f",
+          "text": "Interesting: clabernetes (`labruntime/clabernetes/primitives.go`) — it has a c9s topology envelope. Does clabernetes load topologies via LoadTopologyFromFile? The clabernetes labruntime likely transcends the topology YAML directly. Since `WithTopologyEnv` is a core option and clabernetes lab runtime is created via `clablabruntime.Init`, the clabernetes flow may not go through NewContainerLab's LoadTopologyFromFile at all... Actually `NewContainerLab` with `WithRuntime(\"clabernetes\")` → `prepareLabRuntimeTopology` → LoadTopologyFromFile → uses c.topologyEnv. Fine — covered automatically.\n\nNow, are there other paths where env expansion of the topology happens? E.g., `magicTopoNameReplacer` uses git vars, not env.\n\nWhat about `c.Config.Topology.ImportEnvsFrom(c.topologyEnv)` — the CLI path passes nil → os.Environ(). Same as before.\n\nNow potential issues to check:\n\nA) `ImportEnvsFrom` mutates the topology node Env maps. When the topology is loaded from the lab state file for reconcile (topology_reconcile.go reads old topo from state?) — the state file stores the topology with imported envs baked in (pre-existing behavior). Not new.\n\nB) `WithTopologyEnv` copies env into a new slice — good defensive copy.\n\nC) The empty-env distinction: `WithTopologyEnv([]string{})` → topologyEnv = [] (non-nil) → SubstituteEnvs uses [] → no vars; ImportEnvsFrom with [] imports nothing. Test covers it. Good.\n\nD) makeCopyForDestroy only adds WithTopologyEnv when `c.topologyEnv != nil`. When the original c was created by the CLI, topologyEnv is nil → the copy uses process env → same behavior as before. When the library user set WithTopologyEnv → copy re-expands topo with the same env. But there's a subtlety: the copy's `NodeFilter` and `SkippedBindsPathsCheck`... fine.\n\nBut wait: what about `destroy --all` / the outer destroy flow where `c` itself comes from `NewContainerLab(...)`? The copy inherits topologyEnv. Good.\n\nWhat about other commands that create a fresh CLab for an existing lab, e.g., `cmd/destroy.go` for a single lab — it builds options from CLI (no WithTopologyEnv) → topology re-expanded with process env, not with deployment env. Before this PR, that was the only behavior; but now that a library program deploys with a custom env, CLI destroy from outside won't know the env. That's inherent — the deployed state file doesn't record the env. Is that a gap? The lab state file (`core/state.go`) doesn't persist topologyEnv. So `containerlab destroy -t topo.yml` by a CLI user works with process env — unchanged. A library user who deploys with a custom env must also use makeCopyForDestroy-based flows (in-process destroy) — covered. But what about `inspect`, `save`, `restart`, `logs` etc. in the same library process with a custom env? Those create new CLab instances with just topo path → re-expand with process env. E.g., in-process `inspect`/`save` after deploy with custom env: the topology re-expansion could produce different names (if the topo name uses env vars) and mismatch the deployed lab. That's a real inconsistency for library users, but handling it would require the env to be persisted in the state file or passed to every command — a design decision beyond this PR's scope. Worth a note? It's a P4-level observation at most. Hmm, but is it even a defect? The PR documents the option; library users calling other commands get default behavior. Actually, if a library user deploys with env X and then calls `Deploy`'s subsequent internal flows — are there other in-core copy constructors? Let me check `core/apply.go` and other places that build a new CLab for an existing lab... `destroy.go:195` is the only NewContainerLab call in core (non-test). Good.\n\nE) The `WithTopologyEnv` after-topology check uses `c.TopoPaths.TopologyFileIsSet()`. But what about `WithTopologyVarsFiles` — that sets vars file paths without topology; calling WithTopologyEnv after WithTopologyVarsFiles is fine (env applies at load time).\n\nF) Potential issue: `WithTopologyEnv` doesn't validate env entries format (key=value). If a user passes a malformed entry, envsubst might treat... e.g., \"VAR\" without \"=\" → parse env lookup likely ignores it; ImportEnvsFrom skips entries without \"=\". Fine.\n\nG) `cmd/version.go:176 c.Env = os.Environ()` — unrelated (build info command? it's in types? \"c.Env = os.Environ()\" in cmd/version.go — that's for the version info command. Not topology-related).\n\nH) Now the bigger semantic question: the old `BytesRestrictedNoReplace(b, false, false, true, true)`. New: `parse.New(\"bytes\", env, &Restrictions{NoDigit: true, NoReplace: true})`. Missing: noempty. Question stands as analyzed. Let me see if I can find hellt/envsubst v0.2.0's docs in the repo (maybe a doc file or a note). Search the repo for \"NoReplace\" mentions outside utils.",
+          "time": {
+            "start": 1794251597591,
+            "end": 1794251615647
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1baeda1001SqZGmGfsxWQeCN",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baa001001RUtzwbZqUsFe0f",
+          "callID": "call_82500910364e41b9883fbcdd",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "NoReplace|NoEmpty|RestrictedNoReplace"
+            },
+            "output": "Found 1 matches\n/source/head/utils/env.go:\n  Line 26: \ts, err := parse.New(\"bytes\", env, &parse.Restrictions{NoDigit: true, NoReplace: true}).\n",
+            "title": "NoReplace|NoEmpty|RestrictedNoReplace",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251615656,
+              "end": 1794251615685
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1baee31001NXk27nMwVnuxR9",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baa001001RUtzwbZqUsFe0f",
+          "callID": "call_6badeb839a6544718145f911",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/go.sum",
+              "pattern": "hellt/envsubst"
+            },
+            "output": "Found 4 matches\n/source/head/go.mod:\n  Line 34: \tgithub.com/hellt/envsubst v0.2.0\n\n\n/source/head/go.sum:\n  Line 304: github.com/hellt/envsubst v0.2.0 h1:aQxJs/8S/BzWB0jK5XdNaZ8mZNyrcMjkAt19nmmOVtg=\n\n  Line 305: github.com/hellt/envsubst v0.2.0/go.mod h1:O9TgI/aky9VPrVN1Dcb+kDkdWHd24D7KUKeX8o6etR8=\n\n\n/source/head/utils/env.go:\n  Line 14: \t\"github.com/hellt/envsubst/parse\"\n",
+            "title": "hellt/envsubst",
+            "metadata": {
+              "matches": 4,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251615799,
+              "end": 1794251615828
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1baee560019wXc4tKHxTl7vg",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baa001001RUtzwbZqUsFe0f",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 76494,
+            "input": 1063,
+            "output": 46,
+            "reasoning": 1145,
+            "cache": {
+              "read": 74240,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1baee63001Qv6FVQs56eNlwt",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251615843,
+          "completed": 1794251626748
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 77447,
+          "input": 419,
+          "output": 27,
+          "reasoning": 713,
+          "cache": {
+            "read": 76288,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1baf65b001RefXMDBRfttpgb",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baee63001Qv6FVQs56eNlwt"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1baf65d001X1VoqF4BwuWq3D",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baee63001Qv6FVQs56eNlwt",
+          "text": "The library source is not in the snapshot. I can't verify `parse.Restrictions` fields. I'll treat the empty-valued-var semantics as an unresolved uncertainty in coverage notes plus recommend a regression test.\n\nNow, let me think about other potential issues:\n\n1. **`ImportEnvsFrom` with empty env** (`[]string{}`): For `WithTopologyEnv([]string{})`, `__IMPORT_ENVS` imports nothing — matches test (\"GIVEN\": \"\" in empty_env because node env EXPANDED stays literal). Good.\n\n2. **Nil-vs-empty asymmetry in `NodeDefinition.ImportEnvsFrom`**: if env is nil → process env. OK.\n\n3. **`SubstituteEnvsAndTemplate` wrapper retained**: kept for API compat (external users). Internal callers all updated. Good — no duplication issue since it's a one-line delegation.\n\n4. **Comment staleness**: file.go and template.go still say \"do not replace vars initialized with defaults\" — which now appears inaccurate (the new tests prove defaults ARE applied: `${CLAB_TEST_PROCESS_VAR:=unset}` → \"unset\"). Actually wait — what does \"vars initialized with defaults\" mean? Maybe it means: when a var has a default expression AND the var is set, don't apply the default (i.e., the default doesn't override)? The old behavior with `noempty=true`: `${VAR:=default}` with VAR set to empty → hmm.\n\nHonestly, this comment predates the PR (it existed at base verbatim — see diff context lines \"expand env vars if any / do not replace vars initialized with defaults / and do not replace vars that are not set\" — those lines are context, unchanged). The new `SubstituteEnvs` doc comment says \"Vars that are not set get their default value or are left unexpanded.\" That's clearer. The stale comments at file.go:81-83 and template.go:647-649 remain but were pre-existing. Not introduced by this PR; could be a P4 nit to update. Minor; maybe skip or mention as P4. Given \"one finding per root cause\" and it's pre-existing text, I might mention it briefly as a P4 (docs accuracy), since the PR touched these lines' behavior. It's low-value; I'll consider it a coverage note instead. Hmm, the comment \"do not replace vars initialized with defaults\" is arguably misleading, but pre-existing. I'll note in coverage, not as a finding.\n\n5. **`cmd/version.go:176`** — unrelated.\n\n6. **Docs**: the new note is in `topo-def-file.md` under the env-var expansion section. Also `nodes.md` documents `__IMPORT_ENVS`. Should the `__IMPORT_ENVS` doc mention the WithTopologyEnv behavior? The note covers it. Good enough.\n\n7. **Schema check**: `__IMPORT_ENVS` isn't in `schemas/clab.schema.json`. Wait — grep found no `__IMPORT_ENVS` in the schema. Does the schema have `additionalProperties: false` at the env level? Let me check the schema for the env property to see whether `__IMPORT_ENVS` would fail validation. If the schema's `env` object doesn't allow `__IMPORT_ENVS` with additionalProperties: false, topologies using it would fail validation — but that's pre-existing (ImportEnvs existed before). Not introduced here. Let me quickly check.",
+          "time": {
+            "start": 1794251617885,
+            "end": 1794251626711
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1bb18db001aAzEvlIF33WHHW",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baee63001Qv6FVQs56eNlwt",
+          "callID": "call_5756c5485fc3496fb69f8b95",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/schemas/clab.schema.json",
+              "pattern": "\"env\"|additionalProperties"
+            },
+            "output": "Found 45 matches\n/source/head/schemas/clab.schema.json:\n  Line 71:                     \"additionalProperties\": false,\n\n  Line 120:                     \"additionalProperties\": false,\n\n  Line 161:             \"additionalProperties\": false\n\n  Line 163:         \"env\": {\n\n  Line 375:                 \"env\": {\n\n  Line 629:                         \"additionalProperties\": false\n\n  Line 742:                     \"additionalProperties\": false\n\n  Line 1160:             \"additionalProperties\": false\n\n  Line 1215:             \"additionalProperties\": false\n\n  Line 1305:             \"additionalProperties\": false\n\n  Line 1341:             \"additionalProperties\": false\n\n  Line 1375:             \"additionalProperties\": false\n\n  Line 1406:             \"additionalProperties\": false\n\n  Line 1448:             \"additionalProperties\": false\n\n  Line 1490:             \"additionalProperties\": false\n\n  Line 1517:             \"additionalProperties\": false\n\n  Line 1554:             \"additionalProperties\": false\n\n  Line 1559:             \"additionalProperties\": true\n\n  Line 1593:             \"additionalProperties\": true\n\n  Line 1641:             \"additionalProperties\": false\n\n  Line 1672:             \"additionalProperties\": false\n\n  Line 1706:             \"additionalProperties\": false\n\n  Line 1738:             \"additionalProperties\": false\n\n  Line 1762:             \"additionalProperties\": false,\n\n  Line 1830:                     \"additionalProperties\": false\n\n  Line 1843:                     \"additionalProperties\": false\n\n  Line 1856:                     \"additionalProperties\": false\n\n  Line 1869:                     \"additionalProperties\": false\n\n  Line 1882:                     \"additionalProperties\": false\n\n  Line 1885:             \"additionalProperties\": false\n\n  Line 1902:                 \"additionalProperties\": false\n\n  Line 1931:                     \"additionalProperties\": false\n\n  Line 1938:                         \"additionalProperties\": false,\n\n  Line 2370:                                     \"additionalProperties\": false\n\n  Line 2378:                         \"additionalProperties\": false\n\n  Line 2401:                         \"additionalProperties\": false\n\n  Line 2404:                 \"env\": {\n\n  Line 2424:             \"additionalProperties\": false,\n\n  Line 2471:             \"additionalProperties\": false\n\n  Line 2647:                                         \"env\"\n\n  Line 3273:                     \"additionalProperties\": false\n\n  Line 3921:                     \"additionalProperties\": false\n\n  Line 3964:             \"additionalProperties\": false,\n\n  Line 3978:             \"additionalProperties\": false\n\n  Line 3992:     \"additionalProperties\": false,\n",
+            "title": "\"env\"|additionalProperties",
+            "metadata": {
+              "matches": 45,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794251626721,
+              "end": 1794251626741
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1bb18f8001vsZ46UK1XbH3Q2",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1baee63001Qv6FVQs56eNlwt",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 77447,
+            "input": 419,
+            "output": 27,
+            "reasoning": 713,
+            "cache": {
+              "read": 76288,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1bb1905001fjjWsc1CAwX2BN",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251626757,
+          "completed": 1794251629489
+        },
+        "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-UEPAS5",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 78158,
+          "input": 736,
+          "output": 29,
+          "reasoning": 81,
+          "cache": {
+            "read": 77312,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1c1bb1ff40013N1659u4CpiZen",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1bb1905001fjjWsc1CAwX2BN"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1c1bb1ff7001SfeNrXo3xDD9hQ",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1bb1905001fjjWsc1CAwX2BN",
+          "text": "The `env` property at line 163 — let me check its definition. If it's `{\"type\": \"object\"}` without additionalProperties: false, then `__IMPORT_ENVS` is fine. Schema doesn't need changes for this PR (no user-facing topology schema change; `TopologyEnv` is Go-internal and `json:\"-\"`). Quick check of line 163.",
+          "time": {
+            "start": 1794251628535,
+            "end": 1794251629453
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1c1bb2390001fIKJdeHYOGuqM4",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1bb1905001fjjWsc1CAwX2BN",
+          "callID": "call_2c167658f2b4412d87eb0e43",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/schemas/clab.schema.json",
+              "limit": 10,
+              "offset": 160
+            },
+            "output": "<path>/source/head/schemas/clab.schema.json</path>\n<type>file</type>\n<content>\n160:             \"minProperties\": 1,\n161:             \"additionalProperties\": false\n162:         },\n163:         \"env\": {\n164:             \"type\": \"object\",\n165:             \"description\": \"environment variables\",\n166:             \"markdownDescription\": \"[environment variables](https://containerlab.dev/manual/nodes/#env)\",\n167:             \"patternProperties\": {\n168:                 \".+\": {\n169:                     \"anyOf\": [\n\n(Showing lines 160-169 of 3997. Use offset=170 to continue.)\n</content>",
+            "title": "source/head/schemas/clab.schema.json",
+            "metadata": {
+              "preview": "            \"minProperties\": 1,\n            \"additionalProperties\": false\n        },\n        \"env\": {\n            \"type\": \"object\",\n            \"description\": \"environment variables\",\n            \"markdownDescription\": \"[environment variables](https://containerlab.dev/manual/nodes/#env)\",\n            \"patternProperties\": {\n                \".+\": {\n                    \"anyOf\": [",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/schemas/clab.schema.json",
+                "text": "            \"minProperties\": 1,\n            \"additionalProperties\": false\n        },\n        \"env\": {\n            \"type\": \"object\",\n            \"description\": \"environment variables\",\n            \"markdownDescription\": \"[environment variables](https://containerlab.dev/manual/nodes/#env)\",\n            \"patternProperties\": {\n                \".+\": {\n                    \"anyOf\": [",
+                "lineStart": 160,
+                "lineEnd": 169,
+                "totalLines": 3997,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794251629461,
+              "end": 1794251629481
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1c1bb23ac001glK8LxnSvB0PqC",
+          "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+          "messageID": "msg_1c1bb1905001fjjWsc1CAwX2BN",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 78158,
+            "input": 736,
+            "output": 29,
+            "reasoning": 81,
+            "cache": {
+              "read": 77312,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1c1bb23b90013GYoYnkPJ5ROW1",
+        "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
+        "time": {
+          "created": 1794251629498
         },
         "parentID": "msg_1c1b9161a001NU76ls22Qfb9Ez",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -4740,18 +5896,18 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_1c1b970c1001f7pqWAiv1R9bVj",
+          "id": "prt_1c1bb2aa5001zYZOHLD8kPYHF1",
           "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
-          "messageID": "msg_1c1b96a86001zHWgNTVZqo8AQ7"
+          "messageID": "msg_1c1bb23b90013GYoYnkPJ5ROW1"
         },
         {
           "type": "reasoning",
-          "id": "prt_1c1b970c3001LJ3ifMUBbrJjM7",
+          "id": "prt_1c1bb2aa7001D4KNoEib0GvjWX",
           "sessionID": "ses_e3e4aa339ffentpDs95E5s6ocj",
-          "messageID": "msg_1c1b96a86001zHWgNTVZqo8AQ7",
+          "messageID": "msg_1c1bb23b90013GYoYnkPJ5ROW1",
           "text": "",
           "time": {
-            "start": 1794251518147
+            "start": 1794251631271
           }
         }
       ]
