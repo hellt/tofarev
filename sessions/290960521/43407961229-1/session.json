@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "1c9b3577d08f7524fd228e5ab4df3dd3fc107f53",
-  "updatedAt": "2026-11-13T10:20:20.473Z",
+  "updatedAt": "2026-11-13T10:22:35.476Z",
   "state": "running",
   "info": {
     "id": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 88269,
-      "output": 166,
-      "reasoning": 117,
+      "input": 182336,
+      "output": 309,
+      "reasoning": 5716,
       "cache": {
-        "read": 3264,
+        "read": 96896,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1794565085415,
-      "updated": 1794565184041
+      "updated": 1794565329034
     }
   },
   "messages": [
@@ -724,7 +724,8 @@
         "id": "msg_1d46b9a24001Ce2Cpb3gT2XX1c",
         "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
         "time": {
-          "created": 1794565184036
+          "created": 1794565184036,
+          "completed": 1794565220509
         },
         "parentID": "msg_1d46a1f70001REibDVUjhvUdJT",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -737,14 +738,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 53728,
+          "input": 29399,
+          "output": 48,
+          "reasoning": 25,
           "cache": {
-            "read": 0,
+            "read": 24256,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -832,6 +835,318 @@
               "start": 1794565220460,
               "end": 1794565220466
             }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46c2899001JuwcyMgkiq1ran",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46b9a24001Ce2Cpb3gT2XX1c",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 53728,
+            "input": 29399,
+            "output": 48,
+            "reasoning": 25,
+            "cache": {
+              "read": 24256,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46c28a3001vr1NLdqv5hwDqb",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565220515,
+          "completed": 1794565325300
+        },
+        "parentID": "msg_1d46a1f70001REibDVUjhvUdJT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69501,
+          "input": 63925,
+          "output": 55,
+          "reasoning": 5521,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46c8a9e001Q0FsMTtxqbR3AE",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46c28a3001vr1NLdqv5hwDqb"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46c8aa0001vBHrDTSxpGGsQh",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46c28a3001vr1NLdqv5hwDqb",
+          "text": "Now let me think about the changes:\n\n1. New `reported` map on watcher: tracks what each link was last reported as (attributes + since).\n2. `emit` replaces `emitInterfaceEvent` calls: tracks reported state, converts `update`→`create` when the link was reported under a different ifname before (after sending a delete under the old name).\n3. `emitStats` moves stats emission to watcher; also emits a create event if the link was renamed (track returns true).\n4. `reportStitchMarks`: on netem ticker tick, for veth links reported under their own name within stitchMarkWindow (1 minute), check whether the host-side stitch interface now exists (via `interfaceAttributes` which calls `overlayToolsInterface` → `ToolsInterface` → `netlink.LinkByName` in root namespace). If ifname differs (i.e., stitch interface now exists), emit an update (which will trigger track → delete old name → create new name... wait).\n\nWait — in `reportStitchMarks`, it calls `w.emit(registry, \"update\", snapshot)`. Inside emit, attributes = interfaceAttributes(...) which now resolves to stitch name. `track` sees previous ifname == snapshot.Name (the node's own name e.g. \"eth1\"), and new attributes ifname is \"clab-s-...\" — different → sends delete under previous name, returns true → action \"update\" → becomes \"create\". Then sends create with new attributes. Good.\n\nNow, key issue: `emit` delete path. `w.reported[snapshot.Index]` attributes used as delete event attributes. But `attributes = previous.attributes` — this map is the stored clone. It's sent to the channel. Note `track` stores `maps.Clone(attributes)`, so the stored map is a private copy. OK.\n\nBut wait: in emit delete path, if `previous` doesn't exist, `attributes = interfaceAttributes(...)` is computed but then... it's used in sendInterfaceEvent. Fine.\n\nHmm, but there's a subtlety: `emit` delete path calls `interfaceAttributes(w.container, snapshot)` even when `previous` exists — wasted work? Actually it computes attributes unconditionally at line 682 before checking reported. When previous exists, the freshly computed attributes are discarded. `interfaceAttributes` calls `overlayToolsInterface` which calls `clablinks.ToolsInterface` → `netlink.LinkByName` — a netlink syscall in root namespace. For every delete event of a tracked link this is a wasted syscall. Minor performance, P4-ish. Actually wait, when previous exists, the computed attributes are unused — dead computation. Small but could be reordered. That's a minor perf/cleanliness point.\n\nMore important potential issues:\n\nA. `reportStitchMarks` is only called on netemTicker ticks, and the netem poll interval defaults to 1s. But it scans all states and for each candidate veth reported recently, calls `interfaceAttributes` → `ToolsInterface` → `netlink.LinkByName`. If the stitch hasn't been marked yet, this returns not-ok, so each tick it retries. That's a netlink syscall per candidate link per tick for up to 1 minute (stitchMarkWindow). That's a deliberate design (\"how long after a link is first reported its host-side stitch interface is looked for\"). Cost: per-tick per-link LinkByName for up to a minute. Bounded by stitchMarkWindow. Probably acceptable; ponytail ceiling maybe. Could note as P4.\n\nB. Race condition on `w.reported`? The watcher runs in a single goroutine (run → watch loop). `emit`, `emitStats`, `reportStitchMarks` are all called from the watch loop goroutine. Is `emit` called anywhere concurrently? Let's check: `collectAndEmitStats` is called from watch loop. All within the same goroutine. The registry's `events` channel send is fine. So no data race. But wait — `netlink.LinkSubscribeWithOptions` spawns an internal goroutine that writes to the updates channel; watcher consumes. Fine.\n\nC. `reportStitchMarks` uses `interfaceAttributes(w.container, snapshot)[\"ifname\"] != snapshot.Name` to detect marked stitch. Note `interfaceAttributes` sets `ifname` from `interfaceSnapshotAttributes` = snapshot.Name, then `overlayToolsInterface` overrides if if stitch exists. So the check is: stitch exists → ifname becomes stitch name ≠ snapshot.Name → emit update. Fine.\n\nBut there's an ordering subtlety: `reportStitchMarks` runs before... it emits \"update\" with the stitch-marked attributes. `track` will detect rename and emit delete of old name first. But the condition `reported.attributes[\"ifname\"] != snapshot.Name` — \"reported under their own name\" — means only links last reported under their node's own name are candidates. If the stitch was already reported (i.e., the last emit resolved to the stitch name), reported.attributes[\"ifname\"] is the stitch name, so the check `reported.attributes[\"ifname\"] != snapshot.Name` skips. Good — avoids repeated re-emits.\n\nBut wait: what about a link reported as stitch but then re-reported under its own name? E.g., after resubscribe, `processExisting` emits \"update\" with snapshot attributes — interfaceAttributes would resolve stitch if it exists, so reported becomes stitch name again. Hmm, `interfaceAttributes` is always applied, so if stitch exists, the emitted attributes always have stitch ifname. So when would `reported.attributes[\"ifname\"] == snapshot.Name`? When the stitch doesn't exist yet (link freshly created, before the host-side mark) — then interfaceAttributes leaves ifname = snapshot.Name. So reported holds the node's own name. Then when mark happens, reportStitchMarks finds reported.attributes[\"ifname\"] == snapshot.Name and stitch now exists → emits update → delete old + create new.\n\nHmm wait, but actually the ordering: the deployment creates the node-end veth in the node namespace; watcher sees RTM_NEWLINK create. At that point the stitch interface (host-side far end) may not exist yet or may not be marked. Later markFarEnd adds altname to the far end in root ns. `ToolsInterface` looks up by altname — altname addition doesn't change the node ns link. So the node-side watcher would never see an update for it. Hence the polling in reportStitchMarks. Makes sense.\n\nNow the timing issue: `since` is when the link was FIRST reported (track preserves previous.since when known). stitchMarkWindow = 1 minute from first report. If a lab deploy takes longer than a minute (large lab, slow node start), the stitch mark happens >1 min after the node link was first reported... but wait, since is preserved across tracks, so `since` = first report of that index. For a node whose interfaces come up during deploy, deploy of whole lab may exceed 1 minute → the stitch-mark update is never reported. Then the interface stays reported under its own name (\"eth1\") instead of the stitch name (\"clab-s-...\"). Is there a later correction? Subsequent updates to that link (e.g., RTM_NEWLINK state changes) go through emit → interfaceAttributes → if stitch now exists, ifname is stitch name → track detects rename → delete+create. So any later update event self-corrects. But if the link never changes again, the report stays under the node name until... resubscribe? On resubscribe, processExisting with exists → emit \"update\" → same as above: if stitch exists, attributes get stitch ifname → rename detected → delete+create. So it self-corrects on any update or resubscribe. It's a heuristic with a ceiling: mark window of 1 minute; deploy of a large lab could exceed it. Ponytail rule: \"Mark deliberate simplifications that cut a real corner with a known ceiling... with a `ponytail:` comment naming the ceiling and upgrade path.\" There's a comment explaining the window but no `ponytail:` marker. Hmm, the rule says mark deliberate simplifications with a known ceiling with a ponytail comment. This is a heuristic with a ceiling (1-minute window). Worth a P4 note? The comment does name the window rationale. Borderline. I could mention as P4: window may be too short for slow deploys; suggest comment/consider refreshing `since` on update. Actually wait — `since` is preserved from the FIRST report, meaning even repeated updates don't refresh the window. For a node whose interface was created at t=0 but marked at t=70s (slow lab), no report. But any subsequent link attribute change fixes it. Also after resubscribe (which happens on subscription errors), fixes. I'd call this P3/P4. The comment says \"Deploying a veth-stitch link marks that interface right after it creates the link\" — usually quick. I'll flag as P4 with the note that `since` never refreshes so long deploys (>1 min between node link creation and mark) miss the rename; suggest refreshing `since` on each emit update or documenting.\n\nHmm wait, actually think again: does `since` refresh on track when known? `since := previous.since` — preserved. So window = time since first report of this index. But note: the index in the node namespace — when a node redeploys, indexes may be reused by different links! The `reported` map is keyed by interface index. If a link is deleted and a new link gets the same index (kernel reuses ifindex? Actually ifindexes are monotonically allocated per netns and generally not reused until wraparound; but after a container restart, the netns is new but the watcher... hmm, watchers are per container ID and stopped/restarted via registry.Start on container events. On restart, a new watcher is created (Stop deletes watcher). So reported map is fresh. Within a running container, ifindexes increase monotonically; reuse is unlikely. OK.\n\nBut wait — there's an actual subtle bug: `emit` delete path: `if previous, ok := w.reported[snapshot.Index]; ok { attributes = previous.attributes }`. But this sends the STORED map (the clone) directly to the channel — fine since it's a private clone. However, in `emitStats`, after `track` returns true (rename), it sends \"create\" with `maps.Clone(attributes)` and then mutates `attributes` with stats for the \"stats\" event. Why clone for create? Because `attributes` will be mutated by `interfaceStatsAttributes` for the stats event; the create event should not carry counters. But the map stored in `w.reported` by `track` is a clone, so mutation after track doesn't affect stored state — actually track stores `maps.Clone(attributes)` before the mutation. So sending `attributes` (uncloned) for \"create\" would be safe... unless the consumer mutates it. The clone is defensive for the create event since the same map is then mutated and sent as \"stats\". Reasonable. But in `TestEmitStatsReportsRenamedLinkFirst`, they assert create has no counters. Fine.\n\nHmm wait, actually there's a subtle issue in emitStats: `track` is called, which may send a \"delete\" event for the old name, and stores the NEW attributes clone. Then \"create\" sent. Then stats event with mutated attributes. The stats event's attributes map is the same map that... no clone issue: `interfaceStatsAttributes(attributes, metrics)` mutates the local `attributes` map (the one from interfaceAttributes, not the stored clone). Fine.\n\nD. What about the \"delete\" event in emit when previous exists: the stored `previous.attributes` includes the old stitch ifname etc. Good — deletion names the link as clients know it.\n\nE. Now the big question: `reportStitchMarks` and event ordering/consistency. `reportStitchMarks` calls `w.emit(registry, \"update\", snapshot)` where `snapshot` comes from `states`. It emits an update even though the netlink snapshot didn't change (the change is on the host side). `track` handles the rename. But if the stitch was marked and the attributes now resolve to the stitch name, `track` stores new attributes with the stitch ifname. Subsequent calls to `reportStitchMarks` will skip because `reported.attributes[\"ifname\"] != snapshot.Name`. Good.\n\nBut one problem: `reportStitchMarks` emits update events for links whose stitch got marked — but the emitted \"update\" event has attributes identical (except rename) to previous create event. The event is emitted as \"update\" (converted to \"create\" by track's rename path... wait: `track` returns true → in emit, `action == \"update\"` → action becomes \"create\"). So the sequence is delete(old name), create(new name). Good.\n\nBut there's a scenario: stitch marked AFTER the node link was already reported under stitch name? Not possible—stitch name resolution only succeeds after altname exists.\n\nF. Missing edge: `processExisting` on the FIRST subscription when `includeSnapshot` false and initial=true: nothing emitted, but `states[snapshot.Index] = snapshot` — the link is tracked in `states` but NOT in `w.reported`! Wait — that's the pre-existing behavior... In base, emitInterfaceEvent was only called in some branches. In head, emit is only called in the same branches. So when a link exists at subscription start and includeSnapshot is false, no event is emitted and `w.reported` is never populated. Later, if that link changes (RTM_NEWLINK), processUpdate emits \"update\" → emit → track → not known → returns false, action stays \"update\". Client sees \"update\" for an interface it never got a create for. That's pre-existing behavior though (base did the same: emitInterfaceEvent \"update\" for unknown link). Hmm, but with the new reported-tracking, this case (update for a never-reported link) still emits \"update\" rather than \"create\". Pre-existing semantics; not worsened. Actually wait — is it? In base, same. So not a new issue.\n\nHmm, but here's a NEW wrinkle: with includeSnapshot=false (the `events` command default?), initial links are not reported. Then `reportStitchMarks` requires `w.reported[idx]` to exist — for never-reported links, skipped. Fine.\n\nG. Now the deletion-ordering bug candidate: In `removeVanishedLinks`, emit(registry, \"delete\", snapshot) — uses `w.reported` for the last-known name. Good.\n\nH. Potential double-delete or ordering issue in `watch`: after resubscribe, `removeVanishedLinks` emits deletes; then the listing (ListExisting) replays links. `processExisting` for existing unchanged links: `exists && snapshot.equal(previous)` → return (no emit). But the `w.reported` state: after resubscribe, reported still holds old entries (reported map persists across watch calls since it's on the watcher). For a link whose stitch got marked while subscription was down: on resubscribe, processExisting sees exists && snapshot not equal? snapshot.equal compares node-side fields only (Name, Alias, MTU, MAC, OperState, Type, netem) — the stitch mark doesn't change the node-side link, so equal → return, no emit! So after a resubscribe, if the stitch mark happened while unsubscribed, `reportStitchMarks` will pick it up: reported.attributes[\"ifname\"] == snapshot.Name (node name) and within window? The window is since FIRST report — could be way more than 1 minute ago if subscription ran a while. Then the rename is never reported until some other update. Hmm — this is the same ceiling as the window. Resubscribes are relatively rare though.\n\nWait, actually think about the primary flow again: the deploy marks the interface \"right after it creates the link\". Watcher sees the RTM_NEWLINK for the node-end veth and emits create with ifname = node's own name (e.g. eth1) because the stitch altname doesn't exist yet. Then within a second or so, markFarEnd adds the altname. The netem ticker fires every ~1s and reportStitchMarks picks it up within a second → delete(eth1) + create(clab-s-xxxx). So the end state converges quickly. The window is just to avoid scanning forever. OK.\n\nBut hmm — actually wait. Is there a subtlety: when `reportStitchMarks` finds the stitch exists and calls emit(update), track sends delete + create. But what if between the create event (under node name) and the mark, the client... fine.\n\nNow, what about the `index` attribute? interfaceAttributes sets attributes[\"index\"] from snapshot.Index (node-ns index), then overlayToolsInterface overwrites with stitch link's index (host-ns index). Fine, pre-existing.\n\nI. Now potential correctness bug: in `reportStitchMarks`, the emitted update event uses the states snapshot which may be stale vs. current link state? It's the same snapshot used for prior events. Fine.\n\nJ. Event flood concern: `reportStitchMarks` calls `interfaceAttributes` for each candidate — which calls `ToolsInterface` → `netlink.LinkByName` in the ROOT namespace. This is a syscall per veth per tick during the window. For a large lab (e.g., 100-node lab with many veth-stitch links), during the first minute after each node's links are created, this is e.g. 100 links × 1/sec = 100 syscalls/sec per watcher — actually per watcher (per container). Each watcher handles one container's interfaces. So per container, its own links. Fine, bounded.\n\nBut hold on — `reportStitchMarks` iterates over ALL states (all interfaces of the container), including `lo` (Type \"device\"?) — lo type is \"lo\"? netlink Link.Type() for loopback returns \"lo\"? Actually loopback device type is \"loopback\"? In vishvananda/netlink, `Link.Type()` for Loopback returns \"loopback\"? Let me think — `dummy`, `veth`, `bridge`, `device`, `loopback`. Anyway, filter is Type == \"veth\", so lo excluded. Only veths.\n\nK. Another possible issue: `stitchMarkWindow` is a package-level `var`, not const — fine for tests.\n\nL. Now the tests: `TestReportStitchMarksLeavesUnmarkedLinks` — uses registry with t.Context() etc. But note that `watcher.emit(registry, \"create\", states[7])` — `interfaceAttributes` calls `overlayToolsInterface` with container without labels → `TopoIdentity` returns \"\", \"\" → return. So ifname stays \"e1-1\". Then `reportStitchMarks`: for idx 7: reported.attributes[\"ifname\"] == \"e1-1\" == snapshot.Name, within window, type veth → `interfaceAttributes(...)[\"ifname\"]` — still \"e1-1\" (no stitch) → no emit. Good. For idx 8: since is 2 minutes ago → skip. want = two creates. Good.\n\nWait — there's a test issue: `TestReportStitchMarksLeavesUnmarkedLinks` doesn't actually test that a marked link DOES get reported. There's no positive test for reportStitchMarks' rename path (well, `TestEmitReportsRenamedLinkDeleted` tests emit's rename handling but not reportStitchMarks itself). Coverage note, not a finding per se. Actually a small gap: no test that `reportStitchMarks` emits an update when the stitch interface exists. But testing that would require mocking `ToolsInterface` (netlink.LinkByName in root ns) — hard in unit test; they'd need a real host link with the altname. The tests for emit cover the rename logic. Acceptable; coverage note.\n\nM. Now check `TestEmitStatsReportsRenamedLinkFirst`: registry has includeStats=true. `emitStats` checks `!registry.includeStats` → registry.includeStats is true. `snapshot.HasStats` — snapshotFromLink with Statistics set → HasStats true. track → rename → sends delete (old attrs, with alias e1-1, ifname clab-s-0011aabb), stores new clone. sends create with maps.Clone(attributes). Then interfaceStatsAttributes mutates attributes, sends stats. The assertion: hasCounters != (action == \"stats\") → for delete: hasCounters false, action != stats → ok. create: clone before mutation → no counters → ok. stats: has counters → ok.\n\nWait — does `interfaceAttributes` for the delete event in `track`... track sends `previous.attributes` which is the stored map {\"ifname\": \"clab-s-0011aabb\", \"alias\": \"e1-1\"}. OK.\n\nBut hmm — one thing: in emitStats, when `track` returns true (rename), it sends a \"create\" event with metrics.Timestamp — but no counters. And then a \"stats\" event. So a client gets delete, create (no stats), stats. Consistent.\n\nN. Now think about `emit` \"snapshot\" action with rename: if action is \"snapshot\" and track returns true (renamed), action stays \"snapshot\" — the client gets delete(old) + snapshot(new). Is \"snapshot\" treated like create by clients? Pre-existing semantics: snapshot events only on first subscription with includeSnapshot. Can a snapshot event rename? reported is empty at first subscription (fresh watcher), so track can't detect rename → returns false. Fine.\n\nActually wait — can `reported` be non-nil at first subscription? Watcher is new on Start; `reported` nil. But on resubscribe within the same run() loop, processExisting with !initial → \"create\" action; with exists → \"update\". Reported map persists across resubscribes — that's the point.\n\nO. Now — a genuine question: does the rename detection handle the case where the same ifname is reused by a different index? E.g., node-ns link \"eth1\" deleted (delete event, reported entry removed), then new link at different index also named \"eth1\"? Fine.\n\nP. Now the more serious check — `emit`'s delete path sends `previous.attributes` — but `previous.attributes` map was stored in `track` as a clone, and it's also referenced in `w.reported` before deletion. After `delete(w.reported, ...)`, the map is sent to channel. No mutation. Fine.\n\nQ. Potential missing `since` update: In `track`, when known and ifname unchanged, since is preserved (first report). When renamed, since also preserved (since = previous.since). Hmm — should the window restart after rename? After rename to stitch name, reportStitchMarks skips (ifname mismatch), so irrelevant.\n\nR. Now think about `collectAndEmitStats` + `emitStats`: `collectAndEmitStats` updates `states[idx] = state` with the fresh current link attributes but does NOT compare equality — it unconditionally updates state from current. Pre-existing. Fine.\n\nS. One more: `reportStitchMarks` emits \"update\" events for links where stitch got marked, but does NOT update `states` — states snapshot unchanged (node-side). That's fine; emit uses snapshot from states.\n\nT. Now, is `w.reported` also updated by `reportStitchMarks` indirectly through emit → track. Yes.\n\nU. Potential issue: In `emit`, the delete path when previous doesn't exist: computes attributes and sends a delete event for a link never reported. When is emit(\"delete\") called for unreported links? `removeVanishedLinks` — states entries always have corresponding... hmm, states entries exist without reported entries when includeSnapshot=false at first subscription (links present at start are tracked in states but never reported). Then if such a link is deleted while subscription down, removeVanishedLinks emits delete with fresh interfaceAttributes. Client never saw a create — sending a delete for an unknown interface. Pre-existing behavior (base did the same via emitInterfaceEvent). Not worsened. Actually wait — in base, was it? Base removeVanishedLinks: `registry.emitInterfaceEvent(w.container, \"delete\", snapshot)` — same. Yes pre-existing.\n\nAlso processUpdate RTM_DELLINK only fires when `exists` in states. But states can contain unreported links (includeSnapshot=false case). Same pre-existing.\n\nHmm, actually with the new tracking available, this could have been fixed (use w.reported to decide whether to send delete). But not required.\n\nV. Now the netlink.go change removes `emitInterfaceStatsEvent` from registry and adds `emitStats` on watcher. `sendInterfaceEvent` retains the container==nil guard? No! Look: base `emitInterfaceEvent` had `if container == nil { return }`. Head `sendInterfaceEvent` does NOT check container == nil — it dereferences `container.ShortID`. But `emit` and `emitStats` check `w.container == nil` before calling. Is `sendInterfaceEvent` called anywhere else with a possibly-nil container? Let me grep for sendInterfaceEvent callers. In head: emit (guarded), emitStats (guarded), track (called from emit/emitStats which are guarded; track uses w.container — non-nil by then). Any other callers? Need to check. Let me grep.\n\nAlso check `labRuntimeInterfaceAttributes` callers — separate file probably. Let me grep the head repo for `sendInterfaceEvent` and other usages.\n\nW. Also check docs: `docs/cmd/events.md` — does the events command doc mention interface events/rename behavior? The change adds new event sequences (delete+create on rename). Docs may describe event actions. Let me check events.md for interface event documentation.\n\nX. Check schema: interface events aren't in clab.schema.json domain (that's topology). Not needed.\n\nLet me now grep for sendInterfaceEvent callers, ToolsInterface callers, and check the events docs.",
+          "time": {
+            "start": 1794565245601,
+            "end": 1794565325068
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46dc1110014K3eUDOvDZsiOa",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46c28a3001vr1NLdqv5hwDqb",
+          "callID": "call_cf0185fe2dda4fe9b3694b5a",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "sendInterfaceEvent|emitInterfaceStatsEvent|emitInterfaceEvent"
+            },
+            "output": "Found 6 matches\n/source/head/core/events/netlink.go:\n  Line 688: \t\tregistry.sendInterfaceEvent(w.container, action, attributes, time.Now())\n\n  Line 698: \tregistry.sendInterfaceEvent(w.container, action, attributes, time.Now())\n\n  Line 713: \t\tregistry.sendInterfaceEvent(\n\n  Line 722: \tregistry.sendInterfaceEvent(w.container, \"stats\", attributes, metrics.Timestamp)\n\n  Line 749: \tregistry.sendInterfaceEvent(w.container, \"delete\", previous.attributes, time.Now())\n\n  Line 934: func (r *netlinkRegistry) sendInterfaceEvent(\n",
+            "title": "sendInterfaceEvent|emitInterfaceStatsEvent|emitInterfaceEvent",
+            "metadata": {
+              "matches": 6,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565325079,
+              "end": 1794565325116
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46dc1c4001X3mAfx7vOpP0s1",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46c28a3001vr1NLdqv5hwDqb",
+          "callID": "call_17237cfa346c4041badb9224",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "ToolsInterface|reportStitchMarks|stitchMarkWindow"
+            },
+            "output": "Found 20 matches\n/source/head/core/netem.go:\n  Line 97: \tif _, ok := clablinks.ToolsInterface(n.lab, n.node, iface); !ok {\n\n\n/source/head/core/events/netlink_test.go:\n  Line 11: func TestOverlayToolsInterfaceLeavesAttributesWhenNotStitched(t *testing.T) {\n\n  Line 32: \t\t\toverlayToolsInterface(container, attrs)\n\n\n/source/head/core/events/netlink.go:\n  Line 263: // stitchMarkWindow is how long after a link is first reported its host-side\n\n  Line 267: var stitchMarkWindow = time.Minute\n\n  Line 441: \t\t\tw.reportStitchMarks(states, registry)\n\n  Line 650: // reportStitchMarks reports the links whose host-side stitch interface got\n\n  Line 654: func (w *netlinkWatcher) reportStitchMarks(\n\n  Line 662: \t\t\ttime.Since(reported.since) > stitchMarkWindow {\n\n  Line 867: \toverlayToolsInterface(container, attributes)\n\n  Line 896: // overlayToolsInterface rewrites attributes to the host-side stitch interface\n\n  Line 898: func overlayToolsInterface(\n\n  Line 916: \ttools, ok := clablinks.ToolsInterface(lab, node, topoName)\n\n\n/source/head/core/events/netlink_watch_test.go:\n  Line 525: \t\tsince:      time.Now().Add(-2 * stitchMarkWindow),\n\n  Line 528: \twatcher.reportStitchMarks(states, registry)\n\n\n/source/head/core/list.go:\n  Line 176: \tif tools, ok := clablinks.ToolsInterface(lab, node, topoName); ok {\n\n\n/source/head/links/link_veth_stitched.go:\n  Line 299: // ToolsInterface returns the host-netns interface veth-stitch (and similar\n\n  Line 302: func ToolsInterface(labName, node, iface string) (netlink.Link, bool) {\n\n\n/source/head/links/link_veth_stitched_test.go:\n  Line 178: func TestToolsInterfaceGuardsEmptyIdentity(t *testing.T) {\n\n  Line 185: \t\t\tif link, ok := ToolsInterface(args[0], args[1], args[2]); ok || link != nil {\n",
+            "title": "ToolsInterface|reportStitchMarks|stitchMarkWindow",
+            "metadata": {
+              "matches": 20,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565325258,
+              "end": 1794565325292
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46dc1ef001pN9WtwMjNuwNDp",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46c28a3001vr1NLdqv5hwDqb",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69501,
+            "input": 63925,
+            "output": 55,
+            "reasoning": 5521,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46dc1f9001riiYyI5T8B4p4l",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565325305,
+          "completed": 1794565329023
+        },
+        "parentID": "msg_1d46a1f70001REibDVUjhvUdJT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 70212,
+          "input": 743,
+          "output": 40,
+          "reasoning": 53,
+          "cache": {
+            "read": 69376,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46dcbb70010lxt33SvxAJRQE",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dc1f9001riiYyI5T8B4p4l"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46dcbb9001Id77HsyLY2T7gv",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dc1f9001riiYyI5T8B4p4l",
+          "text": "Now check the events docs and any place that documents interface event actions (delete/create/update/snapshot/stats). Also check `interfaceAttributes` behavior in `emit`'s delete path — the wasted `interfaceAttributes` call. And check the events command documentation.",
+          "time": {
+            "start": 1794565327801,
+            "end": 1794565328734
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46dcf61001DOpsQcMLOfb7xs",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dc1f9001riiYyI5T8B4p4l",
+          "callID": "call_002e2b3e2a5d42f6bc4ea186",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/docs/cmd/events.md"
+            },
+            "output": "<path>/source/head/docs/cmd/events.md</path>\n<type>file</type>\n<content>\n1: # events command\n2: \n3: ## Description\n4: \n5: The `events` command streams lifecycle updates for every Containerlab resource and augments them with interface change notifications collected from the container network namespaces. The output combines the selected runtime's event feed (for example Docker) with the netlink information that powers `containerlab inspect interfaces`, so you can observe container activity and interface state changes in real time without selecting a specific lab.\n6: \n7: ## Usage\n8: \n9: `containerlab [global-flags] events [local-flags]`\n10: \n11: **aliases:** `ev`\n12: \n13: The command respects the global flags such as `--runtime`, `--debug`, or `--log-level`. It adds local options:\n14: \n15: - `--format` controls the output representation (`plain`, `json`).\n16: - `--initial-state` emits a snapshot of currently running containers and their interface states before following live updates.\n17: - `--interface-stats` enables periodic interface counter sampling; leave unset to report only lifecycle and state changes.\n18: - `--interface-stats-interval` customizes how frequently statistics are collected (for example `500ms`, `2s`, `1m`).\n19: \n20: When invoked with no arguments it discovers all running labs and immediately begins streaming events; new labs that start after the command begins are picked up automatically.\n21: \n22: ## Event format\n23: \n24: In the default `plain` format every line mirrors the `docker events` format:\n25: \n26: ```\n27: <timestamp> <type> <action> <actor> (<key>=<value>, ...)\n28: ```\n29: \n30: - **Runtime events** show the short container ID as the actor and include the original attributes supplied by the container runtime (for example `image`, `name`, `containerlab`, `scope`, …). Container events are also enriched with `mgmt_ipv4`, `mgmt_ipv6`, and `ports` (published/exposed ports) when those values are available. When `--initial-state` is enabled the stream starts with `container <state>` snapshots (for example `container running`) that carry an `origin=snapshot` attribute.\n31: - **Interface events** use type `interface` and `origin=netlink` in the attribute list. They also report interface-specific data such as `ifname`, `state`, `mtu`, `mac`, `type`, `alias`, and the lab label. The actor is still the container short ID, and the container name is supplied in the attributes (`name=...`).\n32: - Interface notifications are emitted when a link appears, disappears, or when its relevant properties (operational state, MTU, alias, MAC address, type) change. Initial snapshots use the `snapshot` action when `--initial-state` is requested. When interface statistics are enabled the stream also includes `interface stats` updates with byte/packet counters and rate estimates.\n33: \n34: When `--format json` is used, each event becomes a single JSON object on its own line. The fields match the plain output (`timestamp`, `type`, `action`, `actor_id`, `actor_name`, `actor_full_id`) and include an `attributes` map with the same key/value pairs that the plain formatter prints.\n35: \n36: ## Examples\n37: \n38: ### Watch an existing lab and new deployments\n39: \n40: ```\n41: $ containerlab events\n42: 2024-07-01T11:02:56.123456000Z container start 5d0b5a9ad3f1 (containerlab=frr-lab, image=ghcr.io/srl-labs/frr, name=clab-frr-lab-frr01, ports=0.0.0.0:2222/tcp->22;0.0.0.0:830/tcp->830)\n43: 2024-07-01T11:02:57.004321000Z interface create 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n44: 2024-07-01T11:02:57.104512000Z interface update 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=9000, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n45: 2024-07-01T11:05:12.918273000Z container die 5d0b5a9ad3f1 (containerlab=frr-lab, exitCode=0, image=ghcr.io/srl-labs/frr, name=clab-frr-lab-frr01)\n46: 2024-07-01T11:05:13.018456000Z interface delete 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n47: ```\n48: \n49: The stream contains all currently running labs and stays active to capture subsequent deployments, restarts, or interface adjustments.\n50: \n51: ### Include existing resources in the stream\n52: \n53: ```\n54: $ containerlab events --initial-state\n55: 2024-07-01T11:02:55.912345000Z container running 5d0b5a9ad3f1 (containerlab=frr-lab, image=ghcr.io/srl-labs/frr, name=clab-frr-lab-frr01, origin=snapshot, ports=0.0.0.0:2222/tcp->22;0.0.0.0:830/tcp->830, state=running)\n56: 2024-07-01T11:02:55.912678000Z interface snapshot 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n57: …\n58: ```\n59: \n60: This mode begins with a point-in-time view of every running container and interface before switching to live updates.\n61: \n62: ### Include interface statistics\n63: \n64: ```\n65: containerlab events --interface-stats\n66: ```\n67: \n68: Statistics are disabled by default. Enabling them augments the feed with periodic counter samples in addition to lifecycle and state changes. Use `--interface-stats-interval` to balance fidelity with overhead: values between `1s` and `5s` work well for most labs, while larger deployments may prefer longer intervals (for example `10s`) to avoid excessive sampling load.\n69: \n70: ### Use with alternative runtimes\n71: \n72: Containerlab streams events from the runtime selected via the global `--runtime` flag.\n73: \n74: Currently supported runtimes:\n75: \n76: - `docker`\n77: - `c9s`\n78: \n79: With `--runtime c9s`, events are backed by kubernetes watches for Clabernetes\n80: `Topology` and `Node` resources and labeled Pods. They use the actions and\n81: attributes of the Docker runtime: a node is a container (`create`, `start`,\n82: `kill`, `stop`, `die`, `destroy`, `health_status: …`) described by the same\n83: labels, and the interface events (`snapshot`, `create`, `update`, `delete`,\n84: `stats`) report the node's lab link interfaces, `eth0` and `lo` under the names\n85: a Docker container of the node has. Interface state and statistics are sampled\n86: inside the device containers, not through local host netlink. The stream covers\n87: every namespace by default; `--namespace` (or `CLAB_KUBE_NAMESPACE`) limits it\n88: to one namespace, and `-t`/`--name` to one lab. With Docker and Podman the lab\n89: selection is ignored and every lab is streamed. The\n90: [c9s runtime manual](../manual/clabernetes/runtime.md#events) lists the\n91: attributes and the few Docker attributes c9s has no equivalent for.\n92: \n93: Runtimes that do not implement the `events` API, or are not yet supported by Containerlab, will exit with an explanatory error.\n94: \n95: ## See also\n96: \n97: - [`inspect interfaces`](inspect/interfaces.md) – produces a point-in-time view of the same interface details that `events` reports continuously.\n98: - [Clabernetes containerlab runtime](../manual/clabernetes/runtime.md#events) - describes c9s events and how they map onto Docker events.\n99: - `docker events` – the raw runtime feed that Containerlab builds upon.\n\n(End of file - total 99 lines)\n</content>",
+            "title": "source/head/docs/cmd/events.md",
+            "metadata": {
+              "preview": "# events command\n\n## Description\n\nThe `events` command streams lifecycle updates for every Containerlab resource and augments them with interface change notifications collected from the container network namespaces. The output combines the selected runtime's event feed (for example Docker) with the netlink information that powers `containerlab inspect interfaces`, so you can observe container activity and interface state changes in real time without selecting a specific lab.\n\n## Usage\n\n`containerlab [global-flags] events [local-flags]`\n\n**aliases:** `ev`\n\nThe command respects the global flags such as `--runtime`, `--debug`, or `--log-level`. It adds local options:\n\n- `--format` controls the output representation (`plain`, `json`).\n- `--initial-state` emits a snapshot of currently running containers and their interface states before following live updates.\n- `--interface-stats` enables periodic interface counter sampling; leave unset to report only lifecycle and state changes.\n- `--interface-stats-interval` customizes how frequently statistics are collected (for example `500ms`, `2s`, `1m`).\n\nWhen invoked with no arguments it discovers all running labs and immediately begins streaming events; new labs that start after the command begins are picked up automatically.",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/docs/cmd/events.md",
+                "text": "# events command\n\n## Description\n\nThe `events` command streams lifecycle updates for every Containerlab resource and augments them with interface change notifications collected from the container network namespaces. The output combines the selected runtime's event feed (for example Docker) with the netlink information that powers `containerlab inspect interfaces`, so you can observe container activity and interface state changes in real time without selecting a specific lab.\n\n## Usage\n\n`containerlab [global-flags] events [local-flags]`\n\n**aliases:** `ev`\n\nThe command respects the global flags such as `--runtime`, `--debug`, or `--log-level`. It adds local options:\n\n- `--format` controls the output representation (`plain`, `json`).\n- `--initial-state` emits a snapshot of currently running containers and their interface states before following live updates.\n- `--interface-stats` enables periodic interface counter sampling; leave unset to report only lifecycle and state changes.\n- `--interface-stats-interval` customizes how frequently statistics are collected (for example `500ms`, `2s`, `1m`).\n\nWhen invoked with no arguments it discovers all running labs and immediately begins streaming events; new labs that start after the command begins are picked up automatically.\n\n## Event format\n\nIn the default `plain` format every line mirrors the `docker events` format:\n\n```\n<timestamp> <type> <action> <actor> (<key>=<value>, ...)\n```\n\n- **Runtime events** show the short container ID as the actor and include the original attributes supplied by the container runtime (for example `image`, `name`, `containerlab`, `scope`, …). Container events are also enriched with `mgmt_ipv4`, `mgmt_ipv6`, and `ports` (published/exposed ports) when those values are available. When `--initial-state` is enabled the stream starts with `container <state>` snapshots (for example `container running`) that carry an `origin=snapshot` attribute.\n- **Interface events** use type `interface` and `origin=netlink` in the attribute list. They also report interface-specific data such as `ifname`, `state`, `mtu`, `mac`, `type`, `alias`, and the lab label. The actor is still the container short ID, and the container name is supplied in the attributes (`name=...`).\n- Interface notifications are emitted when a link appears, disappears, or when its relevant properties (operational state, MTU, alias, MAC address, type) change. Initial snapshots use the `snapshot` action when `--initial-state` is requested. When interface statistics are enabled the stream also includes `interface stats` updates with byte/packet counters and rate estimates.\n\nWhen `--format json` is used, each event becomes a single JSON object on its own line. The fields match the plain output (`timestamp`, `type`, `action`, `actor_id`, `actor_name`, `actor_full_id`) and include an `attributes` map with the same key/value pairs that the plain formatter prints.\n\n## Examples\n\n### Watch an existing lab and new deployments\n\n```\n$ containerlab events\n2024-07-01T11:02:56.123456000Z container start 5d0b5a9ad3f1 (containerlab=frr-lab, image=ghcr.io/srl-labs/frr, name=clab-frr-lab-frr01, ports=0.0.0.0:2222/tcp->22;0.0.0.0:830/tcp->830)\n2024-07-01T11:02:57.004321000Z interface create 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n2024-07-01T11:02:57.104512000Z interface update 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=9000, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n2024-07-01T11:05:12.918273000Z container die 5d0b5a9ad3f1 (containerlab=frr-lab, exitCode=0, image=ghcr.io/srl-labs/frr, name=clab-frr-lab-frr01)\n2024-07-01T11:05:13.018456000Z interface delete 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n```\n\nThe stream contains all currently running labs and stays active to capture subsequent deployments, restarts, or interface adjustments.\n\n### Include existing resources in the stream\n\n```\n$ containerlab events --initial-state\n2024-07-01T11:02:55.912345000Z container running 5d0b5a9ad3f1 (containerlab=frr-lab, image=ghcr.io/srl-labs/frr, name=clab-frr-lab-frr01, origin=snapshot, ports=0.0.0.0:2222/tcp->22;0.0.0.0:830/tcp->830, state=running)\n2024-07-01T11:02:55.912678000Z interface snapshot 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n…\n```\n\nThis mode begins with a point-in-time view of every running container and interface before switching to live updates.\n\n### Include interface statistics\n\n```\ncontainerlab events --interface-stats\n```\n\nStatistics are disabled by default. Enabling them augments the feed with periodic counter samples in addition to lifecycle and state changes. Use `--interface-stats-interval` to balance fidelity with overhead: values between `1s` and `5s` work well for most labs, while larger deployments may prefer longer intervals (for example `10s`) to avoid excessive sampling load.\n\n### Use with alternative runtimes\n\nContainerlab streams events from the runtime selected via the global `--runtime` flag.\n\nCurrently supported runtimes:\n\n- `docker`\n- `c9s`\n\nWith `--runtime c9s`, events are backed by kubernetes watches for Clabernetes\n`Topology` and `Node` resources and labeled Pods. They use the actions and\nattributes of the Docker runtime: a node is a container (`create`, `start`,\n`kill`, `stop`, `die`, `destroy`, `health_status: …`) described by the same\nlabels, and the interface events (`snapshot`, `create`, `update`, `delete`,\n`stats`) report the node's lab link interfaces, `eth0` and `lo` under the names\na Docker container of the node has. Interface state and statistics are sampled\ninside the device containers, not through local host netlink. The stream covers\nevery namespace by default; `--namespace` (or `CLAB_KUBE_NAMESPACE`) limits it\nto one namespace, and `-t`/`--name` to one lab. With Docker and Podman the lab\nselection is ignored and every lab is streamed. The\n[c9s runtime manual](../manual/clabernetes/runtime.md#events) lists the\nattributes and the few Docker attributes c9s has no equivalent for.\n\nRuntimes that do not implement the `events` API, or are not yet supported by Containerlab, will exit with an explanatory error.\n\n## See also\n\n- [`inspect interfaces`](inspect/interfaces.md) – produces a point-in-time view of the same interface details that `events` reports continuously.\n- [Clabernetes containerlab runtime](../manual/clabernetes/runtime.md#events) - describes c9s events and how they map onto Docker events.\n- `docker events` – the raw runtime feed that Containerlab builds upon.",
+                "lineStart": 1,
+                "lineEnd": 99,
+                "totalLines": 99,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1794565328742,
+              "end": 1794565328749
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46dd037001iGgsW3UqtRqzbN",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dc1f9001riiYyI5T8B4p4l",
+          "callID": "call_912c5c37b1de4c27a0059440",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs",
+              "pattern": "interface.*event|netlink|ifname"
+            },
+            "output": "Found 26 matches\n/source/head/docs/manual/network.md:\n  Line 460: The default management bridge driver options are configured to allow external network access from the containers through the management interface, including internet. In order to prevent unintentional internet or external network access, ip masquerading needs to be disabled on the management interface bridge:\n\n\n/source/head/docs/manual/clabernetes/runtime.md:\n  Line 800: The c9s runtime streams container, interface state and interface-stat events\n\n  Line 932: the local runtimes' netlink events:\n\n  Line 943:     \"ifname\": \"e1-1\",\n\n  Line 965: - `state` is the operational state in netlink's names: `up`, `down`,\n\n  Line 972: With `--interface-stats`, the same exec also produces `interface stats` events\n\n  Line 979: /// note | Polling, not netlink\n\n  Line 1337: `exec`, `save`, `save --copy`, and the interface events of `events` need pod\n\n\n/source/head/docs/rn/0.74.md:\n  Line 83: - Fixed netlink errors during concurrent deployment of links. #3102\n\n\n/source/head/docs/rn/0.78.md:\n  Line 117: - Improved `veth-stitch` and `vxlan-stitch` deployment reliability by retrying transient netlink errors and ensuring stitch rules are applied after both endpoints are ready. #3319\n\n\n/source/head/docs/rn/0.73.md:\n  Line 41: Building on the real-time events streaming introduced in 0.72, the [`events`](../cmd/events.md) command now also tracks network emulation (netem) impairment changes. When you apply delay, jitter, packet loss, or rate limiting via `containerlab tools netem set`, these changes appear as interface update events in real time -- giving you full observability into link impairment changes alongside container and interface lifecycle events.\n\n\n/source/head/docs/rn/0.72.md:\n  Line 13: The events command combines Docker's event feed with netlink information, allowing you to observe container activity and interface state changes in real time without selecting a specific lab. This is particularly useful for monitoring dynamic topologies, debugging connectivity issues, and understanding the behavior of your network labs as they evolve - everything [Containerlab VS Code extension](../manual/gui/vsc-extension.md) wanted to have ;)\n\n\n/source/head/docs/rn/0.83.md:\n  Line 163: - `containerlab events` no longer misses interfaces created while a watcher starts. Failed netlink subscriptions are retried and re-established, with changes during the outage reconciled instead of silently ending interface reporting. [#3532](https://github.com/srl-labs/containerlab/pull/3532)\n\n\n/source/head/docs/rn/0.80.md:\n  Line 276: - `sonic-vs` marks its wire interfaces (`ethN`) ARP-off and IPv6-off so only the port interface answers, preventing stale ARP entries with the wrong MAC. [#3390](https://github.com/srl-labs/containerlab/pull/3390)\n\n\n/source/head/docs/rn/0.75.md:\n  Line 73: - **Core:** close netns and netlink handles in interface listing; fix a tool-container cleanup loop when `exec` fails; return errors for bad PEM in cert code paths; stricter `PreDeploy` certificate error propagation; safer env var splitting and `CreateFile` error checks; and closing files to avoid leaks. #3161 #3159 #3130 #3138 #3139 #3140 #3132\n\n\n/source/head/docs/cmd/inspect/interfaces.md:\n  Line 8: With the [c9s runtime](../../manual/clabernetes/runtime.md#interface-events), the listing covers the interfaces a Docker container of the node has: the lab link interfaces of each running node (the ones [`capture`](../capture.md) accepts) with the alias the topology used, the management interface `eth0` and the loopback `lo`, with the MAC address, index, MTU and operational state read in the node's device container. The pod's own interfaces are not listed. The node names follow `inspect` (`<lab>-<node>`), and the JSON fields and values (`veth`/`device`, netlink state names) are the same as with Docker. `eth0` and `lo` cannot be captured on c9s.\n\n\n/source/head/docs/cmd/events.md:\n  Line 5: The `events` command streams lifecycle updates for every Containerlab resource and augments them with interface change notifications collected from the container network namespaces. The output combines the selected runtime's event feed (for example Docker) with the netlink information that powers `containerlab inspect interfaces`, so you can observe container activity and interface state changes in real time without selecting a specific lab.\n\n  Line 31: - **Interface events** use type `interface` and `origin=netlink` in the attribute list. They also report interface-specific data such as `ifname`, `state`, `mtu`, `mac`, `type`, `alias`, and the lab label. The actor is still the container short ID, and the container name is supplied in the attributes (`name=...`).\n\n  Line 43: 2024-07-01T11:02:57.004321000Z interface create 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 44: 2024-07-01T11:02:57.104512000Z interface update 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=9000, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 46: 2024-07-01T11:05:13.018456000Z interface delete 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 56: 2024-07-01T11:02:55.912678000Z interface snapshot 5d0b5a9ad3f1 (ifname=eth0, index=22, lab=frr-lab, mac=02:42:ac:14:00:02, mtu=1500, name=clab-frr-lab-frr01, origin=netlink, state=up, type=veth)\n\n  Line 83: labels, and the interface events (`snapshot`, `create`, `update`, `delete`,\n\n  Line 86: inside the device containers, not through local host netlink. The stream covers\n\n  Line 97: - [`inspect interfaces`](inspect/interfaces.md) – produces a point-in-time view of the same interface details that `events` reports continuously.\n\n\n/source/head/docs/macos.md:\n  Line 30: 3. **Linux on macOS?** It is not only Docker that containerlab is based on. We leverage some Linux kernel APIs (like netlink) either directly or via Docker to be available to setup links, namespaces, bind-mounts, etc.  \n",
+            "title": "interface.*event|netlink|ifname",
+            "metadata": {
+              "matches": 26,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565328961,
+              "end": 1794565328983
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46dd077001dVCdy3vw9kOsNh",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dc1f9001riiYyI5T8B4p4l",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 70212,
+            "input": 743,
+            "output": 40,
+            "reasoning": 53,
+            "cache": {
+              "read": 69376,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46dd0850019pu9eWPwYXBzD3",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565329029
+        },
+        "parentID": "msg_1d46a1f70001REibDVUjhvUdJT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "reasoning": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        }
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46ddce2001h64LgQMy81GERg",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46ddce5001am2pgAZMGPkdFn",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3",
+          "text": "",
+          "time": {
+            "start": 1794565332197
           }
         }
       ]
