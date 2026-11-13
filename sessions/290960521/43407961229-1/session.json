@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "1c9b3577d08f7524fd228e5ab4df3dd3fc107f53",
-  "updatedAt": "2026-11-13T10:22:35.476Z",
-  "state": "running",
+  "updatedAt": "2026-11-13T10:24:58.805Z",
+  "state": "completed",
   "info": {
     "id": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 182336,
-      "output": 309,
-      "reasoning": 5716,
+      "input": 224812,
+      "output": 6375,
+      "reasoning": 13627,
       "cache": {
-        "read": 96896,
+        "read": 302976,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1794565085415,
-      "updated": 1794565329034
+      "updated": 1794565498739
     }
   },
   "messages": [
@@ -1110,7 +1110,8 @@
         "id": "msg_1d46dd0850019pu9eWPwYXBzD3",
         "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
         "time": {
-          "created": 1794565329029
+          "created": 1794565329029,
+          "completed": 1794565409701
         },
         "parentID": "msg_1d46a1f70001REibDVUjhvUdJT",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -1123,14 +1124,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 79543,
+          "input": 3797,
+          "output": 73,
+          "reasoning": 5529,
           "cache": {
-            "read": 0,
+            "read": 70144,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -1144,12 +1147,857 @@
           "id": "prt_1d46ddce5001am2pgAZMGPkdFn",
           "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
           "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3",
-          "text": "",
+          "text": "Docs: The events doc says interface notifications are emitted when a link \"appears, disappears, or when its relevant properties change\". The new behavior adds: an interface can be reported under the host-side stitch interface name (ifname=clab-s-xxx) — previously, `overlayToolsInterface` already rewrote ifname for existing events, so events already reported stitch names when the stitch interface existed. The new behavior adds: on rename, delete(old)+create(new) instead of a plain update. And the new polling path means a link may appear first under the node name and then be re-reported as delete+create under the stitch name. Docs don't mention this; but they also never documented the ifname rewrite. This is a user-visible behavior change (event consumers e.g. VS Code extension may see delete+create for the same logical interface). Worth a P3/P4 doc note? The events doc line 32 describes when notifications are emitted. The new delete+create sequence for the same underlying link is a behavior consumers may need to handle. I'd flag a P4 documentation gap: docs/cmd/events.md (and possibly release notes) not updated to mention that an interface reported under its node-side name can be re-reported as delete+create when the host-side stitch interface is marked.\n\nNow check for correctness issues more carefully.\n\nIssue candidate 1: `emit` delete path computes `interfaceAttributes` before checking `w.reported` — when previous exists, computed attributes discarded. interfaceAttributes → overlayToolsInterface → clablinks.ToolsInterface → netlink.LinkByName (root netns syscall). So every delete of a tracked link does a wasted netlink lookup. Also for non-stitched labs, TopoIdentity returns empty → early return, cheap. For stitched labs, an extra syscall per delete event. Minor; P4.\n\nWait actually, is it wasted? `attributes := interfaceAttributes(...)` then `if previous, ok := ...; ok { attributes = previous.attributes }`. Yes, discarded. Could reorder: check reported first, only compute attributes if not known. P4 perf.\n\nIssue candidate 2: `reportStitchMarks` scan cost: for each tick (default 1s), iterates all states; for each veth reported under own name within window, calls interfaceAttributes → LinkByName. Bounded by window (1 min) and number of veths. This is the designed mechanism. Fine — deliberate ceiling; the comment explains it. No ponytail: marker but there's a rationale comment. Per ponytail rule, \"Mark deliberate simplifications that cut a real corner with a known ceiling ... with a ponytail: comment naming the ceiling and upgrade path.\" The window is a deliberate ceiling. Hmm, the comment does name the ceiling (\"how long after a link is first reported its host-side stitch interface is looked for\"). I think that satisfies the spirit. I won't flag.\n\nIssue candidate 3: The `since` never-refresh problem: `since` = first report time of that index; if the lab takes >1 minute between creating the node-side veth and marking the stitch, the rename is missed and the interface remains reported under the node name indefinitely (until the link itself changes or resubscribe). Also `since` is preserved across resubscribes and across link updates — actually since is preserved when known. So e.g. a big Clos lab where a node's interface is created at t=0, marked at t=90s → never reported with stitch name. Then when the node's link later changes (e.g. state up), emit → track → rename detected (if stitch now exists) → delete+create. So the missed window is only permanent if the link never changes again and no resubscribe. For a veth that just sits there, that's plausible: interface reported as `eth1` instead of `clab-s-xxxx` forever.\n\nHmm wait, actually also consider: `reportStitchMarks` runs on netem ticker ticks — the ticker exists regardless of stats being enabled. Default 1s. OK.\n\nBut there's another subtle problem with the window: `since` is when the link was FIRST reported — for links that existed before the watcher started (includeSnapshot=true, snapshot events), since = subscription start. For long-running labs redeploying one link: the existing link was snapshotted at watcher start (t0). Redeploy of that link later: link deleted & recreated? Actually redeploy destroys the container → watcher stopped, new watcher. Hmm.\n\nScenario: container started at t0, watcher reports snapshot. At t0+5min, user creates a veth-stitch link attached to this container's existing interface? Not how it works — links are created during deploy before the node starts, so the stitch mark happens during deploy, right after container start typically. So the 1-minute window covers normal deploy. Slow deploys (large labs, slow image pulls) could exceed it. Is the mark done after container start? Deploy creates veth segments: node end in node netns — requires the netns to exist, i.e., container started. So the mark happens around container start; watcher starts on container start event. Time between watcher seeing the link and the mark is small (same deploy loop). So the window is mostly fine; but if the watcher subscribes late (ns path retries ~1s each, up to...), or system load... Edge case. Also note: the reported map entry survives from the FIRST report — for a link present before the watcher started (restarted container? No—new watcher). Actually when a container restarts, the watcher is stopped and restarted fresh, so reported is fresh; the links exist at subscription → snapshot events → since = subscription time. Stitch marks already exist at that point (from the original deploy) → reportStitchMarks: reported.attributes[\"ifname\"] — wait, at snapshot emit, interfaceAttributes resolves the stitch (it exists already) → ifname = stitch name ≠ snapshot.Name → reportStitchMarks skips. Good.\n\nHmm wait, one more: does `reportStitchMarks` need to run even when the rename already happened? No.\n\nIssue candidate 4: In `reportStitchMarks`, the emitted update triggers track which sends \"delete\" of old name. But what if the old name was never actually reported to clients? The `reported` map is populated by `track` on every emit — including events sent to the channel. So previous.attributes was actually sent. OK consistent.\n\nIssue candidate 5: `w.reported` nil-map handling: `track` lazily creates the map. `reportStitchMarks` reads `w.reported[idx]` on a nil map — reading a nil map is fine (returns zero). OK.\n\nIssue candidate 6: Concurrency — all calls on w.reported happen from the watcher goroutine (run → watch). Verified: emit, emitStats, reportStitchMarks, track all called from within watch/collectAndEmitStats which run in the watcher goroutine. Tests call them directly. No race. Good.\n\nIssue candidate 7: `emitStats` when track returns true (rename) sends \"create\" with metrics.Timestamp then \"stats\". But it does NOT send a \"delete\" of the old name? It does — inside track. OK.\n\nBut notice: in emitStats, the create event uses `maps.Clone(attributes)` and the stats event mutates and sends `attributes`. But the stored `w.reported` clone (from track) — the stats event's attributes map is a different map (the one from interfaceAttributes) than the stored clone. Fine.\n\nIssue candidate 8: Ordering anomaly in `watch`: on the netemTicker tick, `pollNetemChanges` then `reportStitchMarks`. Fine.\n\nIssue candidate 9: `reportStitchMarks` condition uses `interfaceAttributes(w.container, snapshot)[\"ifname\"] != snapshot.Name`. But `interfaceAttributes` includes netem attrs etc. — fine. One subtlety: `overlayToolsInterface` sets ifname from stitch link snapshot.Name. If the stitch link's actual name equals... the stitch far-end name is \"clab-s-XXXXXXXX\" (the host veth name) while the altname is \"clab-stitch-...\". `ToolsInterface` looks up by altname `StitchAltName(...)`, then `snapshotFromLink(tools)` — attrs.Name of a link looked up by altname: netlink.LinkByName with an altname returns the link; what is attrs.Name? The link's primary name (\"clab-s-...\")? Hmm — actually netlink returns the link with its primary ifname; altnames come in the altname list attribute. `netlink.LinkByName` does handle altnames (kernel supports IFLA_ALT_IFNAME lookup; the vishvananda lib sends the name and kernel matches altname too). The returned link's Attrs().Name would be the primary name \"clab-s-0011aabb\". Wait but does the lib parse altnames into Attrs().AltNames? Newer versions do (ILFA_PROP_LIST). Anyway, attrs.Name = primary name. The test uses `\"ifname\": \"clab-s-0011aabb\"` consistent with primary name. So events report ifname=clab-s-0011aabb. And `overlayToolsInterface` sets attributes[\"alias\"] = topoName (the node's iface name/alias). So the event carries alias=eth1, ifname=clab-s-0011aabb. Consistent with pre-existing behavior (`inspect interfaces` matching). OK.\n\nIssue candidate 10: Missing handling — `processExisting` on resubscribe when a link's stitch got marked while unsubscribed: snapshot.equal(previous) → no emit; and `states` unchanged. `reportStitchMarks` will pick it up only if within the window (since first report). If subscription was down long, missed. Same ceiling as candidate 3. Combine into one finding: the 1-minute window measured from first report can miss stitch marks in slow deploys or after subscription outages; suggest refreshing `since` per report or noting the ceiling. Severity: P3? It's a real correctness gap in the heuristic for large labs (deploy of a 50-node lab can exceed 1 minute easily — but the window is per-interface measured from when the watcher first reported THAT interface, which is around the container start, and the mark happens shortly after container start within the same deploy). Hmm, when is the node-end veth created vs when is the mark applied? Deploy creates the veth segment (node end + host far end) — the host far end is created at the same time (a veth has both ends created together!). Wait: buildVEthStitchSegment creates a LinkVEth with nodeEp and farEp (host endpoint). So the veth pair is created in one operation: node end in node netns, far end in root ns. Then markFarEnd adds the altname to the far end. In Deploy: seg.Deploy creates the veth; PostDeploy/stitchSegments marks. Between link creation and altname marking: segA.Deploy, segB.Deploy, then markFarEnd steps. So the gap is milliseconds to seconds. The watcher sees the node-end RTM_NEWLINK (create event) and within ~1s the netem ticker runs reportStitchMarks → finds the mark. So normal flow is fast.\n\nWhen could it exceed 1 min? If the node's interface is created but the stitch's mark is delayed >1min — e.g., deploy of two endpoints in different containers where segB's container is slow to start: segA.Deploy (creates nodeA's veth + far end) at t0; watcher for nodeA reports it; segB container starts at t0+120s; then stitchSegments → markFarEnd at t0+120s → the altname added >1min after nodeA's link was first reported → missed! Then nodeA's interface remains reported as `eth1` instead of `clab-s-xxx` permanently (until the link changes). This is a realistic scenario: large labs where one node takes a long time to pull/start while the other endpoint is already up. Also note `PostDeploy` is where stitching happens when not both deployed in Deploy — i.e., the second node's deploy triggers the stitch. So the window measured from the FIRST endpoint's link creation covers the whole time until the second node is deployed. Slow pulls can exceed a minute easily.\n\nHmm, but wait — when the second node deploys and stitches, does nodeA's interface see any netlink change? markFarEnd only adds an altname to the HOST far end (in root ns), not in nodeA's netns. `stitch` — let me check what stitch does (tc mirror/redirect). It applies tc rules on host-side interfaces. So no nodeA-netns event. So indeed the rename event for nodeA would be missed if >1min gap. And then the reported name stays \"eth1\" — the client (VS Code extension / events consumer) sees the wrong interface name for that link. Impact: incorrect/stale reporting for veth-stitch links in slow deploys; self-corrects only on later node-side link change or resubscribe. That's a genuine P3 (correctness/reliability, bounded impact, heuristic by design).\n\nAlso the `since` is \"when the link was first reported\" — one could refresh `since` on every track (each emit/update), which would widen coverage: after the second endpoint deploys, are there updates on nodeA's interface? Probably not. So refreshing wouldn't help in that scenario either; the real fix would be a longer window or event-based detection (netlink monitor in root ns for altname addition isn't possible — altname changes do generate RTM_NEWLINK notifications in the root namespace! Actually LinkAddAltName triggers a NEWLINK notification in root ns. But the watcher subscribes in the node's netns, not root. Could the registry watch root-ns altname additions? That'd be more code.) The simplest correction: make the window more generous or document the ceiling with a `ponytail:` comment. I'll flag P3 with concrete trigger.\n\nActually, let me reconsider severity: the impact is an events-stream consumer seeing the node-side name for a stitched link (the pre-PR behavior, actually — before this PR, the interface was ALWAYS reported under the node name unless the link changed after marking). So the PR improves things; the window is a residual gap. P3/P4. I'd say P4 optional improvement? It's a correctness limitation of a new heuristic — but the PR is strictly improving reporting. The residual gap: slow deploys. I'd rate P4 (optional improvement, name the ceiling per ponytail). Hmm, but the rule says mark with a ponytail comment. The finding could be: \"Stitch-mark window can miss renames in slow deploys; add ponytail ceiling comment or refresh.\" P4.\n\nIssue candidate 11: Test `TestReportStitchMarksLeavesUnmarkedLinks` — \"reported too long ago, are not reported again\" — good. But no positive test for reportStitchMarks (a link whose stitch exists gets delete+create). The emit rename path is tested. Gap: reportStitchMarks's positive path (the new polling logic) is untested. Also `emitStats` non-rename path (normal stats emission) — was previously covered by other tests? Base had no direct stats test either it seems. Coverage note.\n\nIssue candidate 12: `TestEmitStatsReportsRenamedLinkFirst` mutates `watcher.reported[7].attributes` check — fine.\n\nIssue candidate 13: Docs: `docs/cmd/events.md` line 32 says \"Interface notifications are emitted when a link appears, disappears, or when its relevant properties ... change.\" The new behavior: a link can be re-reported (delete+create) without any property of the node-side link changing — when its host-side stitch interface gets marked. Docs don't mention this. Also the `ifname` may change from the node name to the stitch name mid-stream. P4 doc gap. Actually is it user-visible behavior introduced by this PR? Yes — previously (base), an interface was only reported with the stitch ifname when the link itself changed after marking (overlayToolsInterface applied on each emit). The PR adds proactive rename reporting (delete+create). Consumers following the doc's model (create/update/delete keyed by ifname) will see delete+create pairs for the same interface. A doc note would help. P4.\n\nIssue candidate 14: The delete-then-create naming: when track detects rename, it sends `delete` with `previous.attributes` — which includes the OLD attributes fully (ifname=old, alias, index, mtu...). Good.\n\nIssue candidate 15: Now — a potential real bug: in `emit`, for action \"update\" where track returns false (same name), the event is sent as \"update\". But consider the case where the link was reported under the same ifname but the STITCH now exists with different attributes... can't happen: if stitch exists, ifname differs from node name → rename path.\n\nConsider the reverse: stitch existed (reported as clab-s-x), then the stitch altname is REMOVED (link destroyed) — next emit (e.g., node-side update) resolves ifname back to node name → rename detected → delete(clab-s-x) + create(eth1). Good, handled.\n\nBut: when the whole veth-stitch link is destroyed, both node end and host far end are deleted. Node-ns watcher sees RTM_DELLINK → processUpdate: exists → emit delete with previous.attributes (stitch name). Good — matches TestEmitDeletesLinkAsLastReported.\n\nIssue candidate 16: `reportStitchMarks` — what if `w.container` is nil? Guarded in emit; interfaceAttributes(w.container, snapshot) with nil container → containerLabel(nil) → \"\", firstContainerName(nil) → \"\", overlayToolsInterface(nil) → return early. So attributes[\"ifname\"] == snapshot.Name → no emit. Safe.\n\nIssue candidate 17: `interfaceAttributes` is called twice for the same snapshot in reportStitchMarks → emit path: reportStitchMarks calls interfaceAttributes (1), then emit calls interfaceAttributes again (2). Two LinkByName lookups per marked link. Minor.\n\nIssue candidate 18: A real correctness question about `track` + `emit` action semantics: `processExisting` on resubscribe emits \"update\" for changed links and \"create\" for new. If a link reported before resubscribe under stitch name, and now reported under node name (e.g., stitch altname removed while down) → rename → delete+create. fine.\n\nWhat about `processExisting` first subscription with includeSnapshot=true: emits \"snapshot\". track populates reported. If the snapshot event resolves to stitch name, reported = stitch attrs. fine.\n\nIssue candidate 19: In `emit`, when action is \"create\" and track detects rename (returns true), action stays \"create\" — so sequence delete(old), create(new). Good.\n\nWhen action is \"snapshot\" and track returns true — impossible as discussed (fresh watcher). Except... hmm, is `emit` ever called with \"snapshot\" when reported is non-nil? `initial` is only true on the first watch call; reported is empty then. OK.\n\nIssue candidate 20: A subtle one — `emit`'s delete path when `previous` does NOT exist: attributes freshly computed (with stitch if stitched). Fine.\n\nIssue candidate 21: `interfaceAttributes` in the delete path of emit: if previous exists, the computed attributes are discarded — but wait, there's a cost concern already noted. Also in the delete path, if the link was never reported but the stitch exists, delete event reports ifname = stitch name — client never saw it. Pre-existing-ish (base: delete for a state-tracked but never-reported link — with stitch, ifname rewritten). OK.\n\nIssue candidate 22: Now check `TestEmitReportsRenamedLinkDeleted` expectations: first emit \"update\": track → previous ifname \"clab-s-0011aabb\" ≠ \"e1-1\" → send delete(clab-s-0011aabb), store new, return true → action \"update\"→\"create\" → send create(e1-1). Second emit \"update\": track → same name → return false → send update(e1-1). Want: [delete clab-s, create e1-1, update e1-1]. Matches.\n\nBut note: `registry.sendInterfaceEvent(w.container, \"delete\", previous.attributes, time.Now())` inside track — `previous.attributes` is the stored clone. Sent to channel. Consumers get a reference to... the map is shared with w.reported until deleted — the map is only referenced by w.reported[index].attributes and now the event. After track replaces w.reported[index] with a NEW clone, no aliasing. OK.\n\nIssue candidate 23: Now — check the events flow consumer side: aggregatedEvent attributes map is passed to consumers. Since we send stored clones and interfaceAttributes-fresh maps, no shared mutable state issues.\n\nIssue candidate 24: What about `w.reported` growing unboundedly? Entries are deleted on emit(\"delete\"). Links deleted while subscription down: removeVanishedLinks → emit delete → cleaned. But: a link that was in `states` but never reported (includeSnapshot=false first subscription) then deleted → removeVanishedLinks emits delete with fresh attributes — reported has no entry → nothing to delete; fine. And processUpdate RTM_DELLINK requires exists in states. States and reported can drift: a link in states but not reported (snapshot-suppressed). When that link is later updated → emit \"update\" → track adds to reported. So reported ⊆ states roughly, and delete paths clean both. Bounded by number of interfaces. Fine.\n\nHmm wait, actually there's an asymmetry bug candidate: In `removeVanishedLinks` and `processUpdate` RTM_DELLINK, states entry deleted, emit(delete) → reported entry deleted. But what about the reverse: reported entry exists without states entry? Could happen? track is only called via emit which is called with snapshots that are in states (processExisting/processUpdate/pollNetemChanges all set states before/around emit) — except `reportStitchMarks` iterates states. emitStats is called for state in states. So reported tracks states. When states entry deleted, emit delete cleans reported. Consistent.\n\nHmm — one more: `processUpdate` RTM_NEWLINK for a link not in states but... emits create → track adds. Fine.\n\nIssue candidate 25: Check `emitStats` guard order: `!registry.includeStats` — registry.includeStats is set from the registry's global includeStats; watcher also has includeStats. Pre-existing pattern (emitInterfaceStatsEvent used r.includeStats). Same.\n\nIssue candidate 26: `run()` resubscribe: `states` persists; `reported` persists. Good.\n\nIssue candidate 27: The netem ticker runs `reportStitchMarks` every second even when there are no veth links — iterating states map each tick: O(#interfaces) per second per container, cheap (map iteration). For a container with many interfaces (say 100), 100 map reads/sec — trivial. But `interfaceAttributes` (with LinkByName syscall) only for candidates. OK.\n\nIssue candidate 28: One more possible issue: `reportStitchMarks` calls `interfaceAttributes` which includes `overlayToolsInterface` — this does a `netlink.LinkByName` in the ROOT namespace. But the watcher goroutine — does it need to be in any particular netns for that call? `netlink.LinkByName` without a handle uses the current thread's netns. The watcher... does `watch` change the thread's netns? It uses `netlink.NewHandleAt(nsHandle)` — handle-based calls specify the netns. But `ToolsInterface` calls the package-level `netlink.LinkByName`, which operates on the current process/thread netns (root, since containerlab CLI runs in root ns). Does anything put the watcher goroutine's thread into the container netns? `netns.GetFromPath` just opens an fd. `netlink.LinkSubscribeWithOptions` with Namespace option — internally it does `netns.Set`? Let me check: vishvananda/netlink's subscribe with Namespace: it uses `EnterNetNS`? Actually `LinkSubscribeWithOptions` with `opts.Namespace` calls `ns.Open()`... I recall it does `netns.Set(ns)` on a locked OS thread within the internal socket goroutine, not the caller. Hmm, actually in netlink lib, `LinkSubscribeWithOptions` → `LinkSubscribeAt` with `EnterNetNS`? There's a `socketInNetns` helper: if Namespace is set, it locks the OS thread and sets the netns to create the socket, then restores. The socket goroutine is internal. The caller's thread netns unchanged.\n\nSo `netlink.LinkByName` (root ns) in reportStitchMarks and interfaceAttributes runs against the root namespace — that's intended (the stitch interface lives in root ns). Pre-existing behavior for overlayToolsInterface. OK.\n\nBut wait — a pre-existing subtlety: base's emitInterfaceEvent also called interfaceAttributes (with overlayToolsInterface) from the watcher goroutine. Same. OK.\n\nIssue candidate 29: In `reportStitchMarks`, `snapshot.Name` — states entries may have stale names? states updated on events. Fine.\n\nNow let me double-check the diff hunk in `watch`: `case <-netemTicker.C: w.pollNetemChanges(...); w.reportStitchMarks(states, registry)`. Fine.\n\nLet me also check the release notes — is there a release-note requirement? There's a `.cursor/rules/release-note-review.mdc` file. Let me read it; it may require adding release notes for user-visible changes. The PR adds user-visible behavior (events stream changes). Let me check docs/rn — is there an \"unreleased\" or current-version rn file that should mention this? docs/rn/0.83.md exists. Let me check release-note-review.mdc and whether docs/rn has a dev/unreleased section.",
           "time": {
-            "start": 1794565332197
+            "start": 1794565332197,
+            "end": 1794565409271
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f09fc001xz3ON4QjpiT0vl",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3",
+          "callID": "call_ba561656a480471eb71440da",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/.cursor/rules/release-note-review.mdc"
+            },
+            "output": "<path>/source/head/.cursor/rules/release-note-review.mdc</path>\n<type>file</type>\n<content>\n1: ---\n2: description: Verify release-note mutability when reviewing PR documentation\n3: alwaysApply: true\n4: ---\n5: \n6: # Release-note review\n7: \n8: When reviewing a PR, inspect any changes under `docs/rn/`:\n9: \n10: - Verify the target release is still unreleased before treating the change as valid.\n11: - Treat release notes for published releases as immutable; flag edits or additions there.\n12: - Recommend moving new content to the next unreleased release note or the appropriate evergreen documentation.\n\n(End of file - total 12 lines)\n</content>",
+            "title": "source/head/.cursor/rules/release-note-review.mdc",
+            "metadata": {
+              "preview": "---\ndescription: Verify release-note mutability when reviewing PR documentation\nalwaysApply: true\n---\n\n# Release-note review\n\nWhen reviewing a PR, inspect any changes under `docs/rn/`:\n\n- Verify the target release is still unreleased before treating the change as valid.\n- Treat release notes for published releases as immutable; flag edits or additions there.\n- Recommend moving new content to the next unreleased release note or the appropriate evergreen documentation.",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/.cursor/rules/release-note-review.mdc",
+                "text": "---\ndescription: Verify release-note mutability when reviewing PR documentation\nalwaysApply: true\n---\n\n# Release-note review\n\nWhen reviewing a PR, inspect any changes under `docs/rn/`:\n\n- Verify the target release is still unreleased before treating the change as valid.\n- Treat release notes for published releases as immutable; flag edits or additions there.\n- Recommend moving new content to the next unreleased release note or the appropriate evergreen documentation.",
+                "lineStart": 1,
+                "lineEnd": 12,
+                "totalLines": 12,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1794565409282,
+              "end": 1794565409291
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f0ac10018ScBN00l1itaOQ",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3",
+          "callID": "call_0900ba29df7241978bc1b04a",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/rn",
+              "pattern": "unreleased|dev|next"
+            },
+            "output": "Found 52 matches\n/source/head/docs/rn/0.68.md:\n  Line 13: The docs are available in the github repo and later on we will merge them in to the Containerlab.dev website as well. For now, we wanted to make sure you give it a go if you have a use case for it and provide your feedback with us. There is a [postman-like collection](https://github.com/srl-labs/clab-api-server?tab=readme-ov-file#-flashpost-collection) for you to have a quick look whats possible and how to use the API.\n\n  Line 39: * container health will be shown in the inspect output next to the state #2539\n\n\n/source/head/docs/rn/0.67.md:\n  Line 15: Thanks to @danlindow, Containerlab will now [generate Nornir' Simple Inventory](../manual/inventory.md#nornir) right next to the Ansible inventory. This opens up a door to your reusing your existing automation stacks built with Nornir.\n\n\n/source/head/docs/rn/0.46.md:\n  Line 79: curl -sL srlinux.dev/clab-srl | clab dep -c -t -\n\n  Line 85: curl -sL srlinux.dev/clab-srl | \\\n\n\n/source/head/docs/rn/0.74.md:\n  Line 64: - Disabled TX offload on IOL node management interface, fixing SSH connectivity from other devices on the bridge. Thanks @bendergm #3077\n\n\n/source/head/docs/rn/0.11.0.md:\n  Line 26: The versatility of containerlab is in its ability to run anywhere where linux runs and wire up anything that can be packaged in a docker container. But it is quite hard to package in a container a piece of a real hardware. Still, we need it more often than not to connect devices like traffic generators or physical chassis to containerlab labs.\n\n\n/source/head/docs/rn/0.13.0.md:\n  Line 13: 1. Arista Ma0 MAC address is now having Arista OUI, instead of docker generated local MAC. Additionally, [System MAC address is now generated](https://github.com/srl-labs/containerlab/pull/362) as the next MAC address from Ma0 interface.\n\n\n/source/head/docs/rn/0.77.md:\n  Line 64: The documentation toolchain moved to Zensical while keeping the existing `mkdocs.yml` configuration. Local docs development still starts with `make serve-docs`, and the home page, tags, navigation, and several example pages were refreshed to match the new engine.\n\n\n/source/head/docs/rn/0.64.md:\n  Line 24: │                │ lo        │ N/A     │                   │     1 │ 65536 │ device │ unknown │\n\n  Line 39: The devcontainer has been massaged to allow for [sudo-less](../install.md#sudo-less-operation) lab deployment introduced in 0.63.3.\n\n  Line 41: We have also added the [vscode-containerlab](https://github.com/srl-labs/vscode-containerlab) extension to it, so that you get the most out of your vscode experience when using the devcontainer.\n\n\n/source/head/docs/rn/0.71.md:\n  Line 19: Or `CLAB_TOPO=srlinux.dev/clab-srl clab dep -c` to deploy a lab with the topology passed via environment variable.\n\n\n/source/head/docs/rn/0.57.md:\n  Line 18:     curl -sL https://containerlab.dev/setup | sudo -E bash -s \"setup-bash-prompt\"\n\n  Line 51: - set docker version to 26.1.4 in the devcontainer and quick setup scripts. This removes the drift when new docker version introduce breaking changes #2207\n\n\n/source/head/docs/rn/0.82.md:\n  Line 7: Containerlab can now run MikroTik RouterOS CHR from the [official `mikrotik/chr` image](https://hub.docker.com/r/mikrotik/chr) with the [new `mikrotik_chr` kind](../manual/kinds/mikrotik_chr.md). The image is used as is - no [vrnetlab](../manual/vrnetlab.md) build - and is published for `amd64` and `arm64`, booting with KVM when `/dev/kvm` is available and falling back to QEMU's TCG emulation otherwise:\n\n  Line 38: The model-driven startup template is split by SR OS release. Releases up to 26.3 keep the CCM8 TLS cipher their TLS bootstrap relies on, while SR OS 26.7, later releases and development images - which report version `0.0.0` - use a template without it. The obsolete `system grpc md-cli` and `md-cli-session` lines are emitted only for releases up to 25.10. The classic SR, IXR and SAR templates follow the same CCM8 cutoff.\n\n\n/source/head/docs/rn/0.79.md:\n  Line 79: The new [`flake.nix`](https://github.com/srl-labs/containerlab/blob/main/flake.nix) provides reproducible containerlab packages for `x86_64-linux` and `aarch64-linux`, a NixOS module, and a development shell with Go, `gopls`, and `golangci-lint`.\n\n\n/source/head/docs/rn/0.76.md:\n  Line 9: > While NVIDIA does not distribute the Cumulus VX image anymore through their developer's portal, the sneaky petes always find a way to get their hands on a qcow2.\n\n\n/source/head/docs/rn/0.70.md:\n  Line 7: A big shout-out to @carlmontanari for picking up the fallen flag and working on the Containerlab Go API by decoupling the core logic from the CLI implementation. There is still some work to be done, but already now if you want to leverage Containerlab programmatically as a Go package, you should be able to do so. Check the https://pkg.go.dev/github.com/srl-labs/containerlab for the documentation and see how our CLI uses the options and passes them to the core functions to parametrize and run labs.\n\n\n/source/head/docs/rn/0.48.md:\n  Line 42: * Improvements to the devcontainer documentation #1689\n\n\n/source/head/docs/rn/0.39.md:\n  Line 26:                     next-hop \"192.168.0.1\" {\n\n\n/source/head/docs/rn/0.83.md:\n  Line 59: Persistent node volumes now survive a plain `destroy`, just as a local lab directory does. A subsequent deploy adopts the retained PersistentVolumeClaims and boots from the saved device state. `destroy --cleanup` removes the claims and managed namespace, while `deploy --reconfigure` and `redeploy --cleanup` also start from clean storage.\n\n  Line 75: The new [`logs`](../cmd/logs.md) command displays or follows a node's log with Docker, Podman and c9s. With c9s it reads the log of the node's primary device container:\n\n\n/source/head/docs/rn/0.26.md:\n  Line 23: : Get started: https://learn.srlinux.dev                       :\n\n  Line 24: : Container:   https://go.srlinux.dev/container-image          :\n\n  Line 25: : Docs:        https://doc.srlinux.dev/21-11                   :\n\n  Line 26: : Rel. notes:  https://doc.srlinux.dev/rn21-11-2               :\n\n  Line 27: : YANG:        https://yang.srlinux.dev/v21.11.2               :\n\n  Line 28: : Discord:     https://go.srlinux.dev/discord                  :\n\n  Line 29: : Contact:     https://go.srlinux.dev/contact-sales            :\n\n  Line 69: * next-ui-based graph works better with long image names in tooltips #834\n\n\n/source/head/docs/rn/0.60.md:\n  Line 87: The devcontainer integration is a way to start a lab on a laptop, desktop, server or VM without installing anything on the host besides Docker. If you rememeber how easy it was to start a lab in Codespaces, you will be happy to get the same UX now with your local compute.\n\n  Line 91: * [for macOS](../macos.md#devcontainer)\n\n  Line 92: * [and Windows](../windows.md#devcontainer)\n\n  Line 100: DevPod takes the devcontainer experience and adds better UX on top of it :wink:\n\n  Line 102: An open-source project by Loft Labs, DevPod makes it possible to use the same devcontainer specification and create a \"workspace\" that uses almost any IDE known to men and deploys it on a wide range of providers.\n\n\n/source/head/docs/rn/0.49.md:\n  Line 30: * ixia-c example lab has been updated by @bortok to feature latest developments done for the ixia-c kind #1795\n\n\n/source/head/docs/rn/0.12.0.md:\n  Line 38: We also [added a lab](https://clabs.netdevops.me/security/gnmitls/) that pictures the net positive effect of having those commands when creating TLS certificates for secured gNMI connectivity.\n\n  Line 56: When a new release comes out we let you know next time you deploy a lab, a tiny message will pop up in the log saying that a new one is ready to make your labs even more efficient and easy.\n\n  Line 59: INFO[0001] 🎉 New containerlab version 0.12.0 is available! Release notes: https://containerlab.dev/rn/0.12.0\n\n  Line 60: Run 'containerlab version upgrade' to upgrade or go check other installation options at https://containerlab.dev/install/ \n\n\n/source/head/docs/rn/0.55.md:\n  Line 12: curl -L http://containerlab.dev/setup \\\n\n  Line 29: curl -L http://containerlab.dev/setup \\\n\n  Line 37: curl -L http://containerlab.dev/setup \\\n\n\n/source/head/docs/rn/0.80.md:\n  Line 78: The management (again!) network can join a Tailscale tailnet. In sidecar mode every node gets a tailscale sidecar container and appears as a device in your tailnet, authenticated with a reusable auth-key:\n\n  Line 87: In proxy mode the whole lab appears as a single device in the tailnet, authenticated via SSO. Individual nodes are exposed by forwarding ports with the `/ts` port suffix, e.g. `8022:22/ts` maps port 8022 of the lab device to SSH of that node.\n\n\n/source/head/docs/rn/0.25.md:\n  Line 31: * containerlab site moved to containerlab.dev domain\n\n\n/source/head/docs/rn/0.69.md:\n  Line 117: * fix devcontainer build #2746\n\n\n/source/head/docs/rn/0.53.md:\n  Line 20: This feature is in the \"preview\" status, we will likely change the command structure in the next release.\n\n\n/source/head/docs/rn/0.75.md:\n  Line 20: - Place additional `*.gotmpl` files in a `clab_templates` directory next to the main template; they are loaded and invokable with Go's `{{ template \"name.gotmpl\" . }}` from the top-level file.\n\n  Line 65: Thanks @Rucdev #3167\n",
+            "title": "unreleased|dev|next",
+            "metadata": {
+              "matches": 52,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565409479,
+              "end": 1794565409499
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f0b91001S69bBszjJSfX9H",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3",
+          "callID": "call_84e29c16cb0d4d59b93ce7a6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/docs/rn/0.83.md",
+              "limit": 60,
+              "offset": 140
+            },
+            "output": "<path>/source/head/docs/rn/0.83.md</path>\n<type>file</type>\n<content>\n140: A reboot issued from within an [SR Linux](../manual/kinds/srl.md#reboot) node, such as `tools platform chassis reboot`, now brings the node back with its links, saved configuration and management address intact.\n141: \n142: Each `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n143: \n144: Done in #3567 thanks to @sacckth and @kaelemc\n145: \n146: ## Per-node runtime deprecated\n147: \n148: The node-level `runtime` parameter is deprecated and will be removed in a future release. Mixing runtimes within a lab is not supported because management networking and lab-wide operations use the lab-wide runtime. Setting `runtime` on a node, group, kind or defaults block still works but emits a deprecation notice.\n149: \n150: Use the global `--runtime` flag or `CLAB_RUNTIME` environment variable instead:\n151: \n152: ```bash\n153: containerlab deploy -t mylab.clab.yml --runtime podman\n154: ```\n155: \n156: Done in #3527 thanks to @FloSch62\n157: \n158: ## Miscellaneous\n159: \n160: - `tools snapshot save` now snapshots the deployed nodes of a partially built lab instead of failing on nodes whose containers were not created. [#3537](https://github.com/srl-labs/containerlab/pull/3537)\n161: - Ciena SAOS nodes now stage a topology-supplied license file—provided as a path, URL or embedded blob—into `/config/license` and expose it to the vrnetlab launcher through `SAOS_LICENSE_PATH`. [#3535](https://github.com/srl-labs/containerlab/pull/3535)\n162: - SR-SIM finds its running instance using the full process command line, fixing discovery when FEX emulates SR OS on ARM hosts. [#3538](https://github.com/srl-labs/containerlab/pull/3538)\n163: - `containerlab events` no longer misses interfaces created while a watcher starts. Failed netlink subscriptions are retried and re-established, with changes during the outage reconciled instead of silently ending interface reporting. [#3532](https://github.com/srl-labs/containerlab/pull/3532)\n164: - FRR keeps `vtysh` available throughout installation of the configuration-save wrapper, closing a startup race that could prevent the initial configuration from loading. [#3555](https://github.com/srl-labs/containerlab/pull/3555)\n165: - Cisco IOL now propagates a `mgmt-intf` override to the VM launcher when a non-default management interface is selected. [#3557](https://github.com/srl-labs/containerlab/pull/3557)\n166: - Destroy and reconfigure operations reliably remove `vxlan-stitch` host interfaces by waiting for node deletion before host-link cleanup, including partial labs with no remaining containers. [#3571](https://github.com/srl-labs/containerlab/pull/3571)\n167: - Open vSwitch bridges no longer accumulate stale auto-generated `clab-*` ports across deploy and redeploy operations when endpoint names require sanitized Linux interface names. Destroy also cleans up orphaned generated ports, and `ovs-vsctl` cleanup calls time out instead of hanging when `ovs-vswitchd` is unavailable. [#3573](https://github.com/srl-labs/containerlab/pull/3573)\n168: - Empty node, kind and defaults definitions are handled correctly: nodes without a body inherit kind, group and configuration values, while empty kind or defaults blocks no longer cause panics. [#3518](https://github.com/srl-labs/containerlab/pull/3518)\n169: - Docker and Podman resolve `network-mode: container:` targets correctly when a lab name contains the node name, fixing deployments of SR Linux nodes with their new network-namespace holders. [#3577](https://github.com/srl-labs/containerlab/pull/3577)\n170: - The go-jose dependency was updated to 4.1.8. [#3569](https://github.com/srl-labs/containerlab/pull/3569)\n171: - Documentation was clarified for [OcNOS image requirements](../manual/kinds/ipinfusion-ocnos.md), HwSKU-dependent [Dell SONiC interface names](../manual/kinds/dell_sonic.md), and [SR Linux platform licensing](../manual/kinds/srl.md#license). [#3552](https://github.com/srl-labs/containerlab/pull/3552) [#3553](https://github.com/srl-labs/containerlab/pull/3553) [#3575](https://github.com/srl-labs/containerlab/pull/3575)\n\n(End of file - total 171 lines)\n</content>",
+            "title": "source/head/docs/rn/0.83.md",
+            "metadata": {
+              "preview": "A reboot issued from within an [SR Linux](../manual/kinds/srl.md#reboot) node, such as `tools platform chassis reboot`, now brings the node back with its links, saved configuration and management address intact.\n\nEach `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n\nDone in #3567 thanks to @sacckth and @kaelemc\n\n## Per-node runtime deprecated\n\nThe node-level `runtime` parameter is deprecated and will be removed in a future release. Mixing runtimes within a lab is not supported because management networking and lab-wide operations use the lab-wide runtime. Setting `runtime` on a node, group, kind or defaults block still works but emits a deprecation notice.\n\nUse the global `--runtime` flag or `CLAB_RUNTIME` environment variable instead:\n\n```bash\ncontainerlab deploy -t mylab.clab.yml --runtime podman\n```\n\nDone in #3527 thanks to @FloSch62\n\n## Miscellaneous\n",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/docs/rn/0.83.md",
+                "text": "A reboot issued from within an [SR Linux](../manual/kinds/srl.md#reboot) node, such as `tools platform chassis reboot`, now brings the node back with its links, saved configuration and management address intact.\n\nEach `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n\nDone in #3567 thanks to @sacckth and @kaelemc\n\n## Per-node runtime deprecated\n\nThe node-level `runtime` parameter is deprecated and will be removed in a future release. Mixing runtimes within a lab is not supported because management networking and lab-wide operations use the lab-wide runtime. Setting `runtime` on a node, group, kind or defaults block still works but emits a deprecation notice.\n\nUse the global `--runtime` flag or `CLAB_RUNTIME` environment variable instead:\n\n```bash\ncontainerlab deploy -t mylab.clab.yml --runtime podman\n```\n\nDone in #3527 thanks to @FloSch62\n\n## Miscellaneous\n\n- `tools snapshot save` now snapshots the deployed nodes of a partially built lab instead of failing on nodes whose containers were not created. [#3537](https://github.com/srl-labs/containerlab/pull/3537)\n- Ciena SAOS nodes now stage a topology-supplied license file—provided as a path, URL or embedded blob—into `/config/license` and expose it to the vrnetlab launcher through `SAOS_LICENSE_PATH`. [#3535](https://github.com/srl-labs/containerlab/pull/3535)\n- SR-SIM finds its running instance using the full process command line, fixing discovery when FEX emulates SR OS on ARM hosts. [#3538](https://github.com/srl-labs/containerlab/pull/3538)\n- `containerlab events` no longer misses interfaces created while a watcher starts. Failed netlink subscriptions are retried and re-established, with changes during the outage reconciled instead of silently ending interface reporting. [#3532](https://github.com/srl-labs/containerlab/pull/3532)\n- FRR keeps `vtysh` available throughout installation of the configuration-save wrapper, closing a startup race that could prevent the initial configuration from loading. [#3555](https://github.com/srl-labs/containerlab/pull/3555)\n- Cisco IOL now propagates a `mgmt-intf` override to the VM launcher when a non-default management interface is selected. [#3557](https://github.com/srl-labs/containerlab/pull/3557)\n- Destroy and reconfigure operations reliably remove `vxlan-stitch` host interfaces by waiting for node deletion before host-link cleanup, including partial labs with no remaining containers. [#3571](https://github.com/srl-labs/containerlab/pull/3571)\n- Open vSwitch bridges no longer accumulate stale auto-generated `clab-*` ports across deploy and redeploy operations when endpoint names require sanitized Linux interface names. Destroy also cleans up orphaned generated ports, and `ovs-vsctl` cleanup calls time out instead of hanging when `ovs-vswitchd` is unavailable. [#3573](https://github.com/srl-labs/containerlab/pull/3573)\n- Empty node, kind and defaults definitions are handled correctly: nodes without a body inherit kind, group and configuration values, while empty kind or defaults blocks no longer cause panics. [#3518](https://github.com/srl-labs/containerlab/pull/3518)\n- Docker and Podman resolve `network-mode: container:` targets correctly when a lab name contains the node name, fixing deployments of SR Linux nodes with their new network-namespace holders. [#3577](https://github.com/srl-labs/containerlab/pull/3577)\n- The go-jose dependency was updated to 4.1.8. [#3569](https://github.com/srl-labs/containerlab/pull/3569)\n- Documentation was clarified for [OcNOS image requirements](../manual/kinds/ipinfusion-ocnos.md), HwSKU-dependent [Dell SONiC interface names](../manual/kinds/dell_sonic.md), and [SR Linux platform licensing](../manual/kinds/srl.md#license). [#3552](https://github.com/srl-labs/containerlab/pull/3552) [#3553](https://github.com/srl-labs/containerlab/pull/3553) [#3575](https://github.com/srl-labs/containerlab/pull/3575)",
+                "lineStart": 140,
+                "lineEnd": 171,
+                "totalLines": 171,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1794565409687,
+              "end": 1794565409694
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46f0ba100180W55Pnlp08gok",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46dd0850019pu9eWPwYXBzD3",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 79543,
+            "input": 3797,
+            "output": 73,
+            "reasoning": 5529,
+            "cache": {
+              "read": 70144,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46f0bab001aLmUyzWYdKl1KK",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565409707,
+          "completed": 1794565416168
+        },
+        "parentID": "msg_1d46a1f70001REibDVUjhvUdJT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 83670,
+          "input": 3975,
+          "output": 42,
+          "reasoning": 293,
+          "cache": {
+            "read": 79360,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46f14f7001ze9tfkOyrY2zFn",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f0bab001aLmUyzWYdKl1KK"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46f14f9001G0ZqpZg5Ix7qdH",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f0bab001aLmUyzWYdKl1KK",
+          "text": "The release notes 0.83 is the current release under development. This PR's diff doesn't add a release note entry. The rule says: \"When reviewing a PR, inspect any changes under `docs/rn/`\" — the PR doesn't change docs/rn. The rule doesn't strictly require adding one; it governs how to handle existing changes under docs/rn. The user-visible behavior change (events stream re-reports stitched interfaces as delete+create) could warrant a release-note/evergreen-doc note. But I should be careful not to over-require. The `events` docs describe when notifications are emitted; the new delete+create rename behavior is a notable consumer-visible change. I'll flag a P4 doc gap anchored to `emit`/`track` change, pointing to `docs/cmd/events.md`.\n\nNow let me check whether there's anything else referencing `emitInterfaceStatsEvent` in tests or elsewhere (removed function). Grep showed only sendInterfaceEvent now. Good.\n\nCheck `netlink_test.go` for overlayToolsInterface test — exists.\n\nAlso check `git-mutations.mdc` — not relevant to review content.\n\nLet me double check the events streaming command code that consumes aggregatedEvent, e.g. `cmd/events.go` or wherever `aggregatedEvent` is consumed, to see if the delete+create sequences could break something (e.g., graph). Let me grep aggregatedEvent.",
+          "time": {
+            "start": 1794565412089,
+            "end": 1794565416025
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f245c001jjqK75HxGtfJte",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f0bab001aLmUyzWYdKl1KK",
+          "callID": "call_83884b5e32894214ab2f129c",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "aggregatedEvent",
+              "include": "*.go"
+            },
+            "output": "Found 46 matches\n/source/head/core/events/types.go:\n  Line 5: type aggregatedEvent struct {\n\n\n/source/head/core/events/formatter.go:\n  Line 12: type formatter func(aggregatedEvent) error\n\n  Line 31: \treturn func(ev aggregatedEvent) error {\n\n  Line 81: \treturn func(ev aggregatedEvent) error {\n\n  Line 89: func mergedEventAttributes(ev aggregatedEvent) map[string]string {\n\n\n/source/head/core/events/netlink.go:\n  Line 32: \tevents                 chan<- aggregatedEvent\n\n  Line 40: \tevents chan<- aggregatedEvent,\n\n  Line 940: \tevent := aggregatedEvent{\n\n\n/source/head/core/events/stream.go:\n  Line 45: \teventCh := make(chan aggregatedEvent, 128)\n\n  Line 133: \t\t\tif err := printer(aggregatedEventFromLabRuntimeEvent(clab, ev)); err != nil {\n\n  Line 173: // aggregatedEventFromLabRuntimeEvent reports a lab runtime event with the attributes the\n\n  Line 180: func aggregatedEventFromLabRuntimeEvent(\n\n  Line 183: ) aggregatedEvent {\n\n  Line 195: \t\t\tattributes = aggregatedEventFromContainerSnapshot(&container).Attributes\n\n  Line 214: \treturn aggregatedEvent{\n\n  Line 259: \teventSink chan<- aggregatedEvent,\n\n  Line 292: \t\t\taggregated := aggregatedEventFromContainerEvent(ctx, runtime, ev)\n\n  Line 302: func aggregatedEventFromContainerEvent(\n\n  Line 306: ) aggregatedEvent {\n\n  Line 341: \treturn aggregatedEvent{\n\n  Line 470: \tsink chan<- aggregatedEvent,\n\n  Line 478: \t\tevent := aggregatedEventFromContainerSnapshot(&container)\n\n  Line 491: func aggregatedEventFromContainerSnapshot(\n\n  Line 493: ) aggregatedEvent {\n\n  Line 495: \t\treturn aggregatedEvent{}\n\n  Line 534: \treturn aggregatedEvent{\n\n\n/source/head/core/events/parity_test.go:\n  Line 118: ) aggregatedEvent {\n\n  Line 135: \treturn aggregatedEventFromContainerEvent(context.Background(),\n\n  Line 181: ) aggregatedEvent {\n\n  Line 191: \treturn aggregatedEventFromLabRuntimeEvent(clab, clablabruntime.Event{\n\n  Line 210: func assertAttributeParity(t *testing.T, docker, c9s aggregatedEvent, dockerOnly map[string]bool) {\n\n  Line 340: \t\tdocker := aggregatedEventFromContainerSnapshot(&container)\n\n  Line 404: ) aggregatedEvent {\n\n  Line 410: \treturn aggregatedEvent{\n\n  Line 421: ) aggregatedEvent {\n\n  Line 424: \treturn aggregatedEventFromLabRuntimeEvent(nil, clablabruntime.Event{\n\n  Line 546: \tev := aggregatedEventFromLabRuntimeEvent(nil, clablabruntime.Event{\n\n\n/source/head/core/events/netlink_watch_test.go:\n  Line 28: func collectEvents(ctx context.Context, events <-chan aggregatedEvent) *eventLog {\n\n  Line 162: \tevents := make(chan aggregatedEvent, 1024)\n\n  Line 314: \t\t\tevents := make(chan aggregatedEvent, 8)\n\n  Line 366: \tevents := make(chan aggregatedEvent, 8)\n\n  Line 399: func drainEvents(events chan aggregatedEvent) []reportedEvent {\n\n  Line 428: \tevents := make(chan aggregatedEvent, 8)\n\n  Line 449: \tevents := make(chan aggregatedEvent, 8)\n\n  Line 470: \tevents := make(chan aggregatedEvent, 8)\n\n  Line 512: \tevents := make(chan aggregatedEvent, 8)\n",
+            "title": "aggregatedEvent",
+            "metadata": {
+              "matches": 46,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565416034,
+              "end": 1794565416071
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f24bd00168oen7FbmTYtzA",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f0bab001aLmUyzWYdKl1KK",
+          "callID": "call_a4b75952136b47488e416bc7",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/events/netlink_test.go"
+            },
+            "output": "<path>/source/head/core/events/netlink_test.go</path>\n<type>file</type>\n<content>\n1: package events\n2: \n3: import (\n4: \t\"maps\"\n5: \t\"testing\"\n6: \n7: \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n8: \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n9: )\n10: \n11: func TestOverlayToolsInterfaceLeavesAttributesWhenNotStitched(t *testing.T) {\n12: \tbase := map[string]string{\n13: \t\t\"ifname\": \"eth1\",\n14: \t\t\"alias\":  \"e1-1\",\n15: \t\t\"type\":   \"veth\",\n16: \t}\n17: \n18: \ttests := map[string]*clabruntime.GenericContainer{\n19: \t\t\"no labels\": {},\n20: \t\t\"lab only\":  {Labels: map[string]string{clabconstants.Containerlab: \"lab\"}},\n21: \t\t\"node only\": {Labels: map[string]string{clabconstants.NodeName: \"n1\"}},\n22: \t\t// lab+node set, but no stitch interface exists, so attributes stay put.\n23: \t\t\"no stitch iface\": {Labels: map[string]string{\n24: \t\t\tclabconstants.Containerlab: \"no-such-lab\",\n25: \t\t\tclabconstants.NodeName:     \"no-such-node\",\n26: \t\t}},\n27: \t}\n28: \n29: \tfor name, container := range tests {\n30: \t\tt.Run(name, func(t *testing.T) {\n31: \t\t\tattrs := maps.Clone(base)\n32: \t\t\toverlayToolsInterface(container, attrs)\n33: \n34: \t\t\tif !maps.Equal(attrs, base) {\n35: \t\t\t\tt.Fatalf(\"attributes changed unexpectedly: got %v want %v\", attrs, base)\n36: \t\t\t}\n37: \t\t})\n38: \t}\n39: }\n\n(End of file - total 39 lines)\n</content>",
+            "title": "source/head/core/events/netlink_test.go",
+            "metadata": {
+              "preview": "package events\n\nimport (\n\t\"maps\"\n\t\"testing\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n)\n\nfunc TestOverlayToolsInterfaceLeavesAttributesWhenNotStitched(t *testing.T) {\n\tbase := map[string]string{\n\t\t\"ifname\": \"eth1\",\n\t\t\"alias\":  \"e1-1\",\n\t\t\"type\":   \"veth\",\n\t}\n\n\ttests := map[string]*clabruntime.GenericContainer{\n\t\t\"no labels\": {},\n\t\t\"lab only\":  {Labels: map[string]string{clabconstants.Containerlab: \"lab\"}},",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/events/netlink_test.go",
+                "text": "package events\n\nimport (\n\t\"maps\"\n\t\"testing\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n)\n\nfunc TestOverlayToolsInterfaceLeavesAttributesWhenNotStitched(t *testing.T) {\n\tbase := map[string]string{\n\t\t\"ifname\": \"eth1\",\n\t\t\"alias\":  \"e1-1\",\n\t\t\"type\":   \"veth\",\n\t}\n\n\ttests := map[string]*clabruntime.GenericContainer{\n\t\t\"no labels\": {},\n\t\t\"lab only\":  {Labels: map[string]string{clabconstants.Containerlab: \"lab\"}},\n\t\t\"node only\": {Labels: map[string]string{clabconstants.NodeName: \"n1\"}},\n\t\t// lab+node set, but no stitch interface exists, so attributes stay put.\n\t\t\"no stitch iface\": {Labels: map[string]string{\n\t\t\tclabconstants.Containerlab: \"no-such-lab\",\n\t\t\tclabconstants.NodeName:     \"no-such-node\",\n\t\t}},\n\t}\n\n\tfor name, container := range tests {\n\t\tt.Run(name, func(t *testing.T) {\n\t\t\tattrs := maps.Clone(base)\n\t\t\toverlayToolsInterface(container, attrs)\n\n\t\t\tif !maps.Equal(attrs, base) {\n\t\t\t\tt.Fatalf(\"attributes changed unexpectedly: got %v want %v\", attrs, base)\n\t\t\t}\n\t\t})\n\t}\n}",
+                "lineStart": 1,
+                "lineEnd": 39,
+                "totalLines": 39,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1794565416129,
+              "end": 1794565416134
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46f24e4001Dq8DFqeSyHN0Mr",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f0bab001aLmUyzWYdKl1KK",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 83670,
+            "input": 3975,
+            "output": 42,
+            "reasoning": 293,
+            "cache": {
+              "read": 79360,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1d46f24e90018l7Tw4fHeU6LjX",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565416169
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_1d46f24ea001WVc05ut17j6ufZ",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f24e90018l7Tw4fHeU6LjX",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_1d46dd0850019pu9eWPwYXBzD3"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46f24fd0016TiilkMxPchYE2",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565416189,
+          "completed": 1794565434059
+        },
+        "parentID": "msg_1d46f24e90018l7Tw4fHeU6LjX",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 16376,
+          "input": 14592,
+          "output": 1775,
+          "reasoning": 9,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46f2db5001rGZ33pjFFy700U",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f24fd0016TiilkMxPchYE2"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46f2db7001qaSdp4ahw10cGG",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f24fd0016TiilkMxPchYE2",
+          "text": "Summarize the review task state.",
+          "time": {
+            "start": 1794565418423,
+            "end": 1794565418506
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1d46f2e0c001jWsaKcTcSktN0I",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f24fd0016TiilkMxPchYE2",
+          "text": "## Objective\n- Review a read-only PR snapshot at `/source` (repo: srl-labs/containerlab, head `1c9b3577d08f7524fd228e5ab4df3dd3fc107f53`, base `f57133d88d7f26767e78a9f4c0f81a9ed070fe8b`) against standards.json rules (karpathy-guidelines.mdc, ponytail.mdc), tracking both changed paths and relevant callers/tests/docs/schema, then return a trusted result schema with findings.\n\n## Important Details\n- Changed paths (manifest.json): `core/events/netlink.go` (M) and `core/events/netlink_watch_test.go` (M). Both are modified.\n- Snapshot layout: `/source/head/`, `/source/base/`, `/source/diff.txt`, `/source/manifest.json`, `/source/standards.json`, `/source/standards/*.mdc`.\n- Note: direct `read` on `/source` (directory) is denied by permission rules; must read concrete file paths.\n- PR summary (from diff analysis):\n  - `netlinkWatcher` gains a `reported map[int]reportedInterface` (per-interface last-reported attributes + `since` time).\n  - New `reportedInterface{attributes map[string]string; since time.Time}` type.\n  - New package-level `var stitchMarkWindow = time.Minute` — window during which host-side stitch interfaces are polled for after a link is first reported.\n  - New watcher methods: `emit` (tracks reported state; converts `update`→`create` after emitting a `delete` under the old ifname when rename detected), `emitStats` (emits create-without-counters on rename before stats event), `track` (delete old name + store `maps.Clone(attributes)`), `reportStitchMarks` (called on netem ticker tick; for veth links reported under their own name within `stitchMarkWindow`, resolves host-side stitch via `interfaceAttributes` → `overlayToolsInterface` → `clablinks.ToolsInterface` → `netlink.LinkByName` in root netns; emits update when stitch altname exists).\n  - `sendInterfaceEvent` (registry method) replaced base `emitInterfaceEvent` and lost the base's `container == nil` guard — callers verified as guarded (`emit`/`emitStats` check `w.container == nil`; `track` only reached via those).\n  - `w.reported` is only touched from the watch-loop goroutine (no race); persists across resubscribes.\n- Analysis findings so far (candidate findings, not yet finalized):\n  - P4 candidate: wasted `interfaceAttributes` call (root-netns `LinkByName` syscall) in `emit`'s delete path when `previous` exists — result discarded.\n  - P4 candidate: `since` never refreshes (window measured from FIRST report); slow lab deploys (>1 min between node link creation and stitch mark) miss the rename, though it self-corrects on any later link update or resubscribe. No `ponytail:` comment marking the deliberate ceiling (ponytail rule requires naming ceiling/upgrade path).\n  - Pre-existing (not worsened): with `includeSnapshot=false`, links present at first subscription are in `states` but not `w.reported`; later update/delete events reference never-reported interfaces. Same in base.\n  - Test coverage gap: `reportStitchMarks` rename path (positive case) is untested; only negative case tested (`TestReportStitchMarksLeavesUnmarkedLinks`).\n- Constraints: source-only review, no test execution; must disclose that limitation. Use read offsets for truncated output, group independent tool calls, glob/grep for surrounding code. Must return the trusted result schema at the end.\n\n## Work State\n### Completed\n- Read `standards.json`, both referenced rule files (`standards/karpathy-guidelines.mdc`, `standards/ponytail.mdc`), `diff.txt`, `manifest.json`.\n- Read full head `core/events/netlink.go` (1390 lines) and head `core/events/netlink_watch_test.go` (534 lines).\n- Read base `core/events/netlink.go` (offsets 230–630, 630–1310) to compare behavior.\n- Grepped head for `sendInterfaceEvent|emitInterfaceStatsEvent|emitInterfaceEvent` (all call sites in netlink.go lines 688–934) and for `ToolsInterface|reportStitchMarks|stitchMarkWindow` (callers: `core/netem.go:97`, `core/list.go:176`, `links/link_veth_stitched.go:302`, tests).\n- Read `links/link_veth_stitched.go` (stitch mechanism) and head `docs/cmd/events.md`.\n- Grepped docs for interface event docs (`docs/manual/clabernetes/runtime.md` documents ifname/state/stats events, lines 800–979+).\n- Verified `w.reported` single-goroutine access; verified `track` stores `maps.Clone(attributes)` so post-`track` mutation in `emitStats` is safe; verified test expectations in `TestEmitStatsReportsRenamedLinkFirst` and `TestReportStitchMarksLeavesUnmarkedLinks` are consistent.\n\n### Active\n- Finalizing the review: remaining checks before producing findings and the trusted result schema — re-verify head `netlink.go` `emit`/`track`/`reportStitchMarks` code sections in full detail (base read used offsets; head emit logic seen via grep only at lines ~650–760, 896–934), confirm no `sendInterfaceEvent` callers outside netlink.go, and confirm whether any docs/schema updates are needed for the new delete+create-on-rename event sequence.\n\n### Blocked\n- None. Source-only review limitation (no test execution) must be disclosed in final output rather than being treated as a blocker.\n\n## Next Move\n1. Re-read head `core/events/netlink.go` around the new/changed functions (emit ~lines 650–760, interfaceAttributes/overlayToolsInterface ~860–934) to confirm exact behavior of the delete path and rename conversion before recording findings.\n2. Confirm remaining checks: grep for other `sendInterfaceEvent`/`emit` callers repo-wide, skim `docs/manual/clabernetes/runtime.md` events section for docs impact of rename (delete+create) behavior, then compose findings (wasted interfaceAttributes call P4; stale `since` window / missing `ponytail:` comment P4; untested positive reportStitchMarks path as coverage note; pre-existing unreported-link deletes) and return the trusted result schema with the source-only limitation disclosed.\n\n## Relevant Files\n- `/source/standards.json` — lists the two governing rule files.\n- `/source/standards/karpathy-guidelines.mdc`, `/source/standards/ponytail.mdc` — review standards (simplicity first, surgical changes, ponytail ceiling-comment rule).\n- `/source/diff.txt`, `/source/manifest.json` — the two changed paths and snapshot inventory.\n- `/source/head/core/events/netlink.go` — main change: `reported` map, `reportedInterface`, `stitchMarkWindow`, `emit`/`emitStats`/`track`/`reportStitchMarks`, `sendInterfaceEvent`.\n- `/source/base/core/events/netlink.go` — pre-change version for diff comparison (emitInterfaceEvent/emitInterfaceStatsEvent with nil-container guard).\n- `/source/head/core/events/netlink_watch_test.go` — updated tests (`TestReportStitchMarksLeavesUnmarkedLinks`, `TestEmitReportsRenamedLinkDeleted`, `TestEmitStatsReportsRenamedLinkFirst`).\n- `/source/head/core/events/netlink_test.go` — `TestOverlayToolsInterfaceLeavesAttributesWhenNotStitched`.\n- `/source/head/links/link_veth_stitched.go` — `ToolsInterface` (lines ~299–302) used by `overlayToolsInterface`.\n- `/source/head/core/netem.go` (line 97), `/source/head/core/list.go` (line 176) — other `ToolsInterface` callers.\n- `/source/head/docs/cmd/events.md`, `/source/head/docs/manual/clabernetes/runtime.md` — docs describing interface events; check for needed updates on rename behavior.",
+          "time": {
+            "start": 1794565418508,
+            "end": 1794565434050
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46f6ac6001kVtSwkVNSlEnO0",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f24fd0016TiilkMxPchYE2",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 16376,
+            "input": 14592,
+            "output": 1775,
+            "reasoning": 9,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1d46f6ace001VpF1gWj071crQT",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565434062
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1d46f6acf0018KtdEJ1ZpWO45H",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ace001VpF1gWj071crQT",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1794565434063,
+            "end": 1794565434063
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46f6ad5001AQ0jOgyR8B4o8C",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565434069,
+          "completed": 1794565438183
+        },
+        "parentID": "msg_1d46f6ace001VpF1gWj071crQT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 15928,
+          "input": 15705,
+          "output": 73,
+          "reasoning": 150,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46f72dc001UNH26L21SwUnXS",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ad5001AQ0jOgyR8B4o8C"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46f72de001oSQ6goBuRi3VZ4",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ad5001AQ0jOgyR8B4o8C",
+          "text": "I have completed the investigation. Let me verify a couple of remaining details before finalizing:\n\n1. Re-read the head netlink.go emit/track/reportStitchMarks sections in full to confirm exact behavior (I've seen most of it via grep, but let me do one final read of the key sections to cite exact line numbers).\n2. Then compose the review.\n\nLet me read head netlink.go around lines 600-780 (emit/track) and 860-1000 (interfaceAttributes/overlayToolsInterface/sendInterfaceEvent), plus the diff to get exact line ranges.\n\nActually I've done most of this per the summary. Let me do a final confirmation read of the changed regions so line anchors are exact.",
+          "time": {
+            "start": 1794565436126,
+            "end": 1794565437703
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1d46f7909001W6VtD27VsMeukP",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ad5001AQ0jOgyR8B4o8C",
+          "text": "Let me do the final confirmation reads of the changed regions to anchor findings precisely.",
+          "time": {
+            "start": 1794565437705,
+            "end": 1794565438170
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f7a550014oaAonkMyOmL9q",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ad5001AQ0jOgyR8B4o8C",
+          "callID": "call_2c5c932d0c414f7895bff946",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/events/netlink.go",
+              "limit": 175,
+              "offset": 640
+            },
+            "output": "<path>/source/head/core/events/netlink.go</path>\n<type>file</type>\n<content>\n640: \t\t\tsnapshot.Corruption = 0\n641: \t\t}\n642: \n643: \t\tif !snapshot.equal(previous) {\n644: \t\t\tstates[idx] = snapshot\n645: \t\t\tw.emit(registry, \"update\", snapshot)\n646: \t\t}\n647: \t}\n648: }\n649: \n650: // reportStitchMarks reports the links whose host-side stitch interface got\n651: // marked after their last event. Only veths reported under their own name\n652: // shortly before are looked at: the node's end of a veth-stitch link is a veth\n653: // and is marked while its lab deploys.\n654: func (w *netlinkWatcher) reportStitchMarks(\n655: \tstates map[int]ifaceSnapshot,\n656: \tregistry *netlinkRegistry,\n657: ) {\n658: \tfor idx, snapshot := range states {\n659: \t\treported, ok := w.reported[idx]\n660: \t\tif !ok || snapshot.Type != \"veth\" ||\n661: \t\t\treported.attributes[\"ifname\"] != snapshot.Name ||\n662: \t\t\ttime.Since(reported.since) > stitchMarkWindow {\n663: \t\t\tcontinue\n664: \t\t}\n665: \n666: \t\tif interfaceAttributes(w.container, snapshot)[\"ifname\"] != snapshot.Name {\n667: \t\t\tw.emit(registry, \"update\", snapshot)\n668: \t\t}\n669: \t}\n670: }\n671: \n672: // emit reports an event of a link. A deletion names the link as it was last\n673: // reported. A link reported under another name before, such as the node's own\n674: // interface until its stitch interface got marked, is first reported deleted\n675: // under that name, so that clients do not keep both; it is then new to them.\n676: func (w *netlinkWatcher) emit(registry *netlinkRegistry, action string, snapshot ifaceSnapshot) {\n677: \tif w.container == nil {\n678: \t\treturn\n679: \t}\n680: \n681: \tif action == \"delete\" {\n682: \t\tattributes := interfaceAttributes(w.container, snapshot)\n683: \t\tif previous, ok := w.reported[snapshot.Index]; ok {\n684: \t\t\tattributes = previous.attributes\n685: \t\t}\n686: \n687: \t\tdelete(w.reported, snapshot.Index)\n688: \t\tregistry.sendInterfaceEvent(w.container, action, attributes, time.Now())\n689: \n690: \t\treturn\n691: \t}\n692: \n693: \tattributes := interfaceAttributes(w.container, snapshot)\n694: \tif w.track(registry, snapshot.Index, attributes) && action == \"update\" {\n695: \t\taction = \"create\"\n696: \t}\n697: \n698: \tregistry.sendInterfaceEvent(w.container, action, attributes, time.Now())\n699: }\n700: \n701: // emitStats reports the counters of a link, under the name emit reports it.\n702: func (w *netlinkWatcher) emitStats(\n703: \tregistry *netlinkRegistry,\n704: \tsnapshot ifaceSnapshot,\n705: \tmetrics ifaceStatsMetrics,\n706: ) {\n707: \tif !registry.includeStats || w.container == nil || !snapshot.HasStats {\n708: \t\treturn\n709: \t}\n710: \n711: \tattributes := interfaceAttributes(w.container, snapshot)\n712: \tif w.track(registry, snapshot.Index, attributes) {\n713: \t\tregistry.sendInterfaceEvent(\n714: \t\t\tw.container,\n715: \t\t\t\"create\",\n716: \t\t\tmaps.Clone(attributes),\n717: \t\t\tmetrics.Timestamp,\n718: \t\t)\n719: \t}\n720: \n721: \tinterfaceStatsAttributes(attributes, metrics)\n722: \tregistry.sendInterfaceEvent(w.container, \"stats\", attributes, metrics.Timestamp)\n723: }\n724: \n725: // track records what the link at index is reported as. When it was reported\n726: // under another name before, it reports that name deleted and returns true.\n727: func (w *netlinkWatcher) track(\n728: \tregistry *netlinkRegistry,\n729: \tindex int,\n730: \tattributes map[string]string,\n731: ) bool {\n732: \tif w.reported == nil {\n733: \t\tw.reported = make(map[int]reportedInterface)\n734: \t}\n735: \n736: \tprevious, known := w.reported[index]\n737: \n738: \tsince := time.Now()\n739: \tif known {\n740: \t\tsince = previous.since\n741: \t}\n742: \n743: \tw.reported[index] = reportedInterface{attributes: maps.Clone(attributes), since: since}\n744: \n745: \tif !known || previous.attributes[\"ifname\"] == attributes[\"ifname\"] {\n746: \t\treturn false\n747: \t}\n748: \n749: \tregistry.sendInterfaceEvent(w.container, \"delete\", previous.attributes, time.Now())\n750: \n751: \treturn true\n752: }\n753: \n754: func firstContainerName(container *clabruntime.GenericContainer) string {\n755: \tif container == nil || len(container.Names) == 0 {\n756: \t\treturn \"\"\n757: \t}\n758: \n759: \treturn container.Names[0]\n760: }\n761: \n762: func containerLabel(container *clabruntime.GenericContainer) string {\n763: \tif container == nil || container.Labels == nil {\n764: \t\treturn \"\"\n765: \t}\n766: \n767: \treturn container.Labels[clabconstants.Containerlab]\n768: }\n769: \n770: // interfaceSnapshotAttributes are the attributes every interface event reports for the\n771: // interface itself.\n772: func interfaceSnapshotAttributes(snapshot ifaceSnapshot) map[string]string {\n773: \tattributes := map[string]string{\n774: \t\t\"ifname\": snapshot.Name,\n775: \t\t\"index\":  strconv.Itoa(snapshot.Index),\n776: \t\t\"mtu\":    strconv.Itoa(snapshot.MTU),\n777: \t\t\"state\":  snapshot.OperState,\n778: \t\t\"type\":   snapshot.Type,\n779: \t}\n780: \n781: \tif snapshot.Alias != \"\" {\n782: \t\tattributes[\"alias\"] = snapshot.Alias\n783: \t}\n784: \n785: \tif snapshot.MAC != \"\" {\n786: \t\tattributes[\"mac\"] = snapshot.MAC\n787: \t}\n788: \n789: \treturn attributes\n790: }\n791: \n792: // interfaceStatsAttributes adds the counters and rates of a stats event.\n793: func interfaceStatsAttributes(attributes map[string]string, metrics ifaceStatsMetrics) {\n794: \tattributes[\"rx_bytes\"] = strconv.FormatUint(metrics.RxBytes, 10)\n795: \tattributes[\"tx_bytes\"] = strconv.FormatUint(metrics.TxBytes, 10)\n796: \tattributes[\"rx_packets\"] = strconv.FormatUint(metrics.RxPackets, 10)\n797: \tattributes[\"tx_packets\"] = strconv.FormatUint(metrics.TxPackets, 10)\n798: \tattributes[\"rx_bps\"] = strconv.FormatFloat(metrics.RxBps, 'f', -1, 64)\n799: \tattributes[\"tx_bps\"] = strconv.FormatFloat(metrics.TxBps, 'f', -1, 64)\n800: \tattributes[\"rx_pps\"] = strconv.FormatFloat(metrics.RxPps, 'f', -1, 64)\n801: \tattributes[\"tx_pps\"] = strconv.FormatFloat(metrics.TxPps, 'f', -1, 64)\n802: \tattributes[\"interval_seconds\"] = strconv.FormatFloat(metrics.Interval.Seconds(), 'f', -1, 64)\n803: }\n804: \n805: // labRuntimeInterfaceAttributes are the attributes of a lab runtime's interface event: those\n806: // of the netlink interface events, for the node the runtime runs. Values the runtime could not\n807: // read (no index or MTU without a shell in the node) are left out rather than reported as 0.\n808: func labRuntimeInterfaceAttributes(\n809: \tlab, name string,\n810: \tiface *clablabruntime.InterfaceEventData,\n811: ) map[string]string {\n812: \tattributes := interfaceSnapshotAttributes(ifaceSnapshot{\n813: \t\tIndex:     iface.Index,\n814: \t\tName:      iface.Name,\n\n(Showing lines 640-814 of 1390. Use offset=815 to continue.)\n</content>",
+            "title": "source/head/core/events/netlink.go",
+            "metadata": {
+              "preview": "\t\t\tsnapshot.Corruption = 0\n\t\t}\n\n\t\tif !snapshot.equal(previous) {\n\t\t\tstates[idx] = snapshot\n\t\t\tw.emit(registry, \"update\", snapshot)\n\t\t}\n\t}\n}\n\n// reportStitchMarks reports the links whose host-side stitch interface got\n// marked after their last event. Only veths reported under their own name\n// shortly before are looked at: the node's end of a veth-stitch link is a veth\n// and is marked while its lab deploys.\nfunc (w *netlinkWatcher) reportStitchMarks(\n\tstates map[int]ifaceSnapshot,\n\tregistry *netlinkRegistry,\n) {\n\tfor idx, snapshot := range states {\n\t\treported, ok := w.reported[idx]",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/events/netlink.go",
+                "text": "\t\t\tsnapshot.Corruption = 0\n\t\t}\n\n\t\tif !snapshot.equal(previous) {\n\t\t\tstates[idx] = snapshot\n\t\t\tw.emit(registry, \"update\", snapshot)\n\t\t}\n\t}\n}\n\n// reportStitchMarks reports the links whose host-side stitch interface got\n// marked after their last event. Only veths reported under their own name\n// shortly before are looked at: the node's end of a veth-stitch link is a veth\n// and is marked while its lab deploys.\nfunc (w *netlinkWatcher) reportStitchMarks(\n\tstates map[int]ifaceSnapshot,\n\tregistry *netlinkRegistry,\n) {\n\tfor idx, snapshot := range states {\n\t\treported, ok := w.reported[idx]\n\t\tif !ok || snapshot.Type != \"veth\" ||\n\t\t\treported.attributes[\"ifname\"] != snapshot.Name ||\n\t\t\ttime.Since(reported.since) > stitchMarkWindow {\n\t\t\tcontinue\n\t\t}\n\n\t\tif interfaceAttributes(w.container, snapshot)[\"ifname\"] != snapshot.Name {\n\t\t\tw.emit(registry, \"update\", snapshot)\n\t\t}\n\t}\n}\n\n// emit reports an event of a link. A deletion names the link as it was last\n// reported. A link reported under another name before, such as the node's own\n// interface until its stitch interface got marked, is first reported deleted\n// under that name, so that clients do not keep both; it is then new to them.\nfunc (w *netlinkWatcher) emit(registry *netlinkRegistry, action string, snapshot ifaceSnapshot) {\n\tif w.container == nil {\n\t\treturn\n\t}\n\n\tif action == \"delete\" {\n\t\tattributes := interfaceAttributes(w.container, snapshot)\n\t\tif previous, ok := w.reported[snapshot.Index]; ok {\n\t\t\tattributes = previous.attributes\n\t\t}\n\n\t\tdelete(w.reported, snapshot.Index)\n\t\tregistry.sendInterfaceEvent(w.container, action, attributes, time.Now())\n\n\t\treturn\n\t}\n\n\tattributes := interfaceAttributes(w.container, snapshot)\n\tif w.track(registry, snapshot.Index, attributes) && action == \"update\" {\n\t\taction = \"create\"\n\t}\n\n\tregistry.sendInterfaceEvent(w.container, action, attributes, time.Now())\n}\n\n// emitStats reports the counters of a link, under the name emit reports it.\nfunc (w *netlinkWatcher) emitStats(\n\tregistry *netlinkRegistry,\n\tsnapshot ifaceSnapshot,\n\tmetrics ifaceStatsMetrics,\n) {\n\tif !registry.includeStats || w.container == nil || !snapshot.HasStats {\n\t\treturn\n\t}\n\n\tattributes := interfaceAttributes(w.container, snapshot)\n\tif w.track(registry, snapshot.Index, attributes) {\n\t\tregistry.sendInterfaceEvent(\n\t\t\tw.container,\n\t\t\t\"create\",\n\t\t\tmaps.Clone(attributes),\n\t\t\tmetrics.Timestamp,\n\t\t)\n\t}\n\n\tinterfaceStatsAttributes(attributes, metrics)\n\tregistry.sendInterfaceEvent(w.container, \"stats\", attributes, metrics.Timestamp)\n}\n\n// track records what the link at index is reported as. When it was reported\n// under another name before, it reports that name deleted and returns true.\nfunc (w *netlinkWatcher) track(\n\tregistry *netlinkRegistry,\n\tindex int,\n\tattributes map[string]string,\n) bool {\n\tif w.reported == nil {\n\t\tw.reported = make(map[int]reportedInterface)\n\t}\n\n\tprevious, known := w.reported[index]\n\n\tsince := time.Now()\n\tif known {\n\t\tsince = previous.since\n\t}\n\n\tw.reported[index] = reportedInterface{attributes: maps.Clone(attributes), since: since}\n\n\tif !known || previous.attributes[\"ifname\"] == attributes[\"ifname\"] {\n\t\treturn false\n\t}\n\n\tregistry.sendInterfaceEvent(w.container, \"delete\", previous.attributes, time.Now())\n\n\treturn true\n}\n\nfunc firstContainerName(container *clabruntime.GenericContainer) string {\n\tif container == nil || len(container.Names) == 0 {\n\t\treturn \"\"\n\t}\n\n\treturn container.Names[0]\n}\n\nfunc containerLabel(container *clabruntime.GenericContainer) string {\n\tif container == nil || container.Labels == nil {\n\t\treturn \"\"\n\t}\n\n\treturn container.Labels[clabconstants.Containerlab]\n}\n\n// interfaceSnapshotAttributes are the attributes every interface event reports for the\n// interface itself.\nfunc interfaceSnapshotAttributes(snapshot ifaceSnapshot) map[string]string {\n\tattributes := map[string]string{\n\t\t\"ifname\": snapshot.Name,\n\t\t\"index\":  strconv.Itoa(snapshot.Index),\n\t\t\"mtu\":    strconv.Itoa(snapshot.MTU),\n\t\t\"state\":  snapshot.OperState,\n\t\t\"type\":   snapshot.Type,\n\t}\n\n\tif snapshot.Alias != \"\" {\n\t\tattributes[\"alias\"] = snapshot.Alias\n\t}\n\n\tif snapshot.MAC != \"\" {\n\t\tattributes[\"mac\"] = snapshot.MAC\n\t}\n\n\treturn attributes\n}\n\n// interfaceStatsAttributes adds the counters and rates of a stats event.\nfunc interfaceStatsAttributes(attributes map[string]string, metrics ifaceStatsMetrics) {\n\tattributes[\"rx_bytes\"] = strconv.FormatUint(metrics.RxBytes, 10)\n\tattributes[\"tx_bytes\"] = strconv.FormatUint(metrics.TxBytes, 10)\n\tattributes[\"rx_packets\"] = strconv.FormatUint(metrics.RxPackets, 10)\n\tattributes[\"tx_packets\"] = strconv.FormatUint(metrics.TxPackets, 10)\n\tattributes[\"rx_bps\"] = strconv.FormatFloat(metrics.RxBps, 'f', -1, 64)\n\tattributes[\"tx_bps\"] = strconv.FormatFloat(metrics.TxBps, 'f', -1, 64)\n\tattributes[\"rx_pps\"] = strconv.FormatFloat(metrics.RxPps, 'f', -1, 64)\n\tattributes[\"tx_pps\"] = strconv.FormatFloat(metrics.TxPps, 'f', -1, 64)\n\tattributes[\"interval_seconds\"] = strconv.FormatFloat(metrics.Interval.Seconds(), 'f', -1, 64)\n}\n\n// labRuntimeInterfaceAttributes are the attributes of a lab runtime's interface event: those\n// of the netlink interface events, for the node the runtime runs. Values the runtime could not\n// read (no index or MTU without a shell in the node) are left out rather than reported as 0.\nfunc labRuntimeInterfaceAttributes(\n\tlab, name string,\n\tiface *clablabruntime.InterfaceEventData,\n) map[string]string {\n\tattributes := interfaceSnapshotAttributes(ifaceSnapshot{\n\t\tIndex:     iface.Index,\n\t\tName:      iface.Name,",
+                "lineStart": 640,
+                "lineEnd": 814,
+                "totalLines": 1390,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794565438043,
+              "end": 1794565438059
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f7ad1001IPLZBsTSjhMGt8",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ad5001AQ0jOgyR8B4o8C",
+          "callID": "call_de709ce3a1ec482283d5c49f",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/events/netlink.go",
+              "limit": 130,
+              "offset": 880
+            },
+            "output": "<path>/source/head/core/events/netlink.go</path>\n<type>file</type>\n<content>\n880: \t\tif snapshot.Rate != 0 {\n881: \t\t\tattributes[\"netem_rate\"] = strconv.Itoa(snapshot.Rate) + \"kbit\"\n882: \t\t}\n883: \t\tif snapshot.Corruption != 0 {\n884: \t\t\tattributes[\"netem_corruption\"] = strconv.FormatFloat(\n885: \t\t\t\tsnapshot.Corruption,\n886: \t\t\t\t'f',\n887: \t\t\t\t2,\n888: \t\t\t\t64,\n889: \t\t\t) + \"%\"\n890: \t\t}\n891: \t}\n892: \n893: \treturn attributes\n894: }\n895: \n896: // overlayToolsInterface rewrites attributes to the host-side stitch interface\n897: // when one exists, matching `inspect interfaces`.\n898: func overlayToolsInterface(\n899: \tcontainer *clabruntime.GenericContainer,\n900: \tattributes map[string]string,\n901: ) {\n902: \tif container == nil {\n903: \t\treturn\n904: \t}\n905: \n906: \tlab, node := clabcore.TopoIdentity(container.Labels)\n907: \tif lab == \"\" || node == \"\" {\n908: \t\treturn\n909: \t}\n910: \n911: \ttopoName := attributes[\"alias\"]\n912: \tif topoName == \"\" {\n913: \t\ttopoName = attributes[\"ifname\"]\n914: \t}\n915: \n916: \ttools, ok := clablinks.ToolsInterface(lab, node, topoName)\n917: \tif !ok {\n918: \t\treturn\n919: \t}\n920: \n921: \tsnapshot := snapshotFromLink(tools)\n922: \tattributes[\"ifname\"] = snapshot.Name\n923: \tattributes[\"alias\"] = topoName\n924: \tattributes[\"index\"] = strconv.Itoa(snapshot.Index)\n925: \tattributes[\"mtu\"] = strconv.Itoa(snapshot.MTU)\n926: \tattributes[\"state\"] = snapshot.OperState\n927: \tattributes[\"type\"] = snapshot.Type\n928: \n929: \tif snapshot.MAC != \"\" {\n930: \t\tattributes[\"mac\"] = snapshot.MAC\n931: \t}\n932: }\n933: \n934: func (r *netlinkRegistry) sendInterfaceEvent(\n935: \tcontainer *clabruntime.GenericContainer,\n936: \taction string,\n937: \tattributes map[string]string,\n938: \ttimestamp time.Time,\n939: ) {\n940: \tevent := aggregatedEvent{\n941: \t\tTimestamp:   timestamp,\n942: \t\tType:        \"interface\",\n943: \t\tAction:      action,\n944: \t\tActorID:     container.ShortID,\n945: \t\tActorName:   firstContainerName(container),\n946: \t\tActorFullID: container.ID,\n947: \t\tAttributes:  attributes,\n948: \t}\n949: \n950: \tselect {\n951: \tcase r.events <- event:\n952: \tcase <-r.ctx.Done():\n953: \t}\n954: }\n955: \n956: func waitForNamespacePath(\n957: \tctx context.Context,\n958: \truntime clabruntime.ContainerRuntime,\n959: \tcontainerID string,\n960: ) (string, error) {\n961: \tconst (\n962: \t\tattempts   = 5\n963: \t\tretryDelay = 200 * time.Millisecond\n964: \t)\n965: \n966: \tvar lastErr error\n967: \n968: \tfor i := 0; i < attempts; i++ {\n969: \t\tnsPath, err := runtime.GetNSPath(ctx, containerID)\n970: \t\tif err == nil && nsPath != \"\" {\n971: \t\t\treturn nsPath, nil\n972: \t\t}\n973: \n974: \t\tif err != nil {\n975: \t\t\tlastErr = err\n976: \t\t}\n977: \n978: \t\tselect {\n979: \t\tcase <-time.After(retryDelay):\n980: \t\tcase <-ctx.Done():\n981: \t\t\treturn \"\", ctx.Err()\n982: \t\t}\n983: \t}\n984: \n985: \tif lastErr != nil {\n986: \t\treturn \"\", lastErr\n987: \t}\n988: \n989: \treturn \"\", fmt.Errorf(\"namespace path not ready for container %s\", containerID)\n990: }\n991: \n992: func snapshotInterfaces(netHandle *netlink.Handle) (map[int]ifaceSnapshot, error) {\n993: \tif netHandle == nil {\n994: \t\treturn nil, fmt.Errorf(\"netlink handle is nil\")\n995: \t}\n996: \n997: \tlinks, err := netHandle.LinkList()\n998: \tif err != nil {\n999: \t\treturn nil, fmt.Errorf(\"unable to list links: %w\", err)\n1000: \t}\n1001: \n1002: \tstates := make(map[int]ifaceSnapshot, len(links))\n1003: \tfor _, link := range links {\n1004: \t\tsnapshot := snapshotFromLink(link)\n1005: \t\tstates[snapshot.Index] = snapshot\n1006: \t}\n1007: \n1008: \treturn states, nil\n1009: }\n\n(Showing lines 880-1009 of 1390. Use offset=1010 to continue.)\n</content>",
+            "title": "source/head/core/events/netlink.go",
+            "metadata": {
+              "preview": "\t\tif snapshot.Rate != 0 {\n\t\t\tattributes[\"netem_rate\"] = strconv.Itoa(snapshot.Rate) + \"kbit\"\n\t\t}\n\t\tif snapshot.Corruption != 0 {\n\t\t\tattributes[\"netem_corruption\"] = strconv.FormatFloat(\n\t\t\t\tsnapshot.Corruption,\n\t\t\t\t'f',\n\t\t\t\t2,\n\t\t\t\t64,\n\t\t\t) + \"%\"\n\t\t}\n\t}\n\n\treturn attributes\n}\n\n// overlayToolsInterface rewrites attributes to the host-side stitch interface\n// when one exists, matching `inspect interfaces`.\nfunc overlayToolsInterface(\n\tcontainer *clabruntime.GenericContainer,",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/events/netlink.go",
+                "text": "\t\tif snapshot.Rate != 0 {\n\t\t\tattributes[\"netem_rate\"] = strconv.Itoa(snapshot.Rate) + \"kbit\"\n\t\t}\n\t\tif snapshot.Corruption != 0 {\n\t\t\tattributes[\"netem_corruption\"] = strconv.FormatFloat(\n\t\t\t\tsnapshot.Corruption,\n\t\t\t\t'f',\n\t\t\t\t2,\n\t\t\t\t64,\n\t\t\t) + \"%\"\n\t\t}\n\t}\n\n\treturn attributes\n}\n\n// overlayToolsInterface rewrites attributes to the host-side stitch interface\n// when one exists, matching `inspect interfaces`.\nfunc overlayToolsInterface(\n\tcontainer *clabruntime.GenericContainer,\n\tattributes map[string]string,\n) {\n\tif container == nil {\n\t\treturn\n\t}\n\n\tlab, node := clabcore.TopoIdentity(container.Labels)\n\tif lab == \"\" || node == \"\" {\n\t\treturn\n\t}\n\n\ttopoName := attributes[\"alias\"]\n\tif topoName == \"\" {\n\t\ttopoName = attributes[\"ifname\"]\n\t}\n\n\ttools, ok := clablinks.ToolsInterface(lab, node, topoName)\n\tif !ok {\n\t\treturn\n\t}\n\n\tsnapshot := snapshotFromLink(tools)\n\tattributes[\"ifname\"] = snapshot.Name\n\tattributes[\"alias\"] = topoName\n\tattributes[\"index\"] = strconv.Itoa(snapshot.Index)\n\tattributes[\"mtu\"] = strconv.Itoa(snapshot.MTU)\n\tattributes[\"state\"] = snapshot.OperState\n\tattributes[\"type\"] = snapshot.Type\n\n\tif snapshot.MAC != \"\" {\n\t\tattributes[\"mac\"] = snapshot.MAC\n\t}\n}\n\nfunc (r *netlinkRegistry) sendInterfaceEvent(\n\tcontainer *clabruntime.GenericContainer,\n\taction string,\n\tattributes map[string]string,\n\ttimestamp time.Time,\n) {\n\tevent := aggregatedEvent{\n\t\tTimestamp:   timestamp,\n\t\tType:        \"interface\",\n\t\tAction:      action,\n\t\tActorID:     container.ShortID,\n\t\tActorName:   firstContainerName(container),\n\t\tActorFullID: container.ID,\n\t\tAttributes:  attributes,\n\t}\n\n\tselect {\n\tcase r.events <- event:\n\tcase <-r.ctx.Done():\n\t}\n}\n\nfunc waitForNamespacePath(\n\tctx context.Context,\n\truntime clabruntime.ContainerRuntime,\n\tcontainerID string,\n) (string, error) {\n\tconst (\n\t\tattempts   = 5\n\t\tretryDelay = 200 * time.Millisecond\n\t)\n\n\tvar lastErr error\n\n\tfor i := 0; i < attempts; i++ {\n\t\tnsPath, err := runtime.GetNSPath(ctx, containerID)\n\t\tif err == nil && nsPath != \"\" {\n\t\t\treturn nsPath, nil\n\t\t}\n\n\t\tif err != nil {\n\t\t\tlastErr = err\n\t\t}\n\n\t\tselect {\n\t\tcase <-time.After(retryDelay):\n\t\tcase <-ctx.Done():\n\t\t\treturn \"\", ctx.Err()\n\t\t}\n\t}\n\n\tif lastErr != nil {\n\t\treturn \"\", lastErr\n\t}\n\n\treturn \"\", fmt.Errorf(\"namespace path not ready for container %s\", containerID)\n}\n\nfunc snapshotInterfaces(netHandle *netlink.Handle) (map[int]ifaceSnapshot, error) {\n\tif netHandle == nil {\n\t\treturn nil, fmt.Errorf(\"netlink handle is nil\")\n\t}\n\n\tlinks, err := netHandle.LinkList()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"unable to list links: %w\", err)\n\t}\n\n\tstates := make(map[int]ifaceSnapshot, len(links))\n\tfor _, link := range links {\n\t\tsnapshot := snapshotFromLink(link)\n\t\tstates[snapshot.Index] = snapshot\n\t}\n\n\treturn states, nil\n}",
+                "lineStart": 880,
+                "lineEnd": 1009,
+                "totalLines": 1390,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794565438167,
+              "end": 1794565438177
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46f7ae3001kfUqw9BZTgh0xs",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f6ad5001AQ0jOgyR8B4o8C",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 15928,
+            "input": 15705,
+            "output": 73,
+            "reasoning": 150,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46f7aec001SI9ScXtnFhM8mW",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565438188,
+          "completed": 1794565440772
+        },
+        "parentID": "msg_1d46f6ace001VpF1gWj071crQT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 19266,
+          "input": 3312,
+          "output": 29,
+          "reasoning": 53,
+          "cache": {
+            "read": 15872,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46f82640017j2ZXpg07T2pkm",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f7aec001SI9ScXtnFhM8mW"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46f8266001ZAJ09XdPmw0kxs",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f7aec001SI9ScXtnFhM8mW",
+          "text": "One more check: the `interfaceAttributes` function definition (where it calls snapshotAttributes + overlayToolsInterface) to confirm the wasted call in emit's delete path and double-call in reportStitchMarks. Let me read lines ~815-880.",
+          "time": {
+            "start": 1794565440102,
+            "end": 1794565440734
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46f84e0001NZxqGXVsf1bn6l",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f7aec001SI9ScXtnFhM8mW",
+          "callID": "call_32716fd9386244f7a8112585",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/events/netlink.go",
+              "limit": 45,
+              "offset": 830
+            },
+            "output": "<path>/source/head/core/events/netlink.go</path>\n<type>file</type>\n<content>\n830: \t}\n831: \tif name != \"\" {\n832: \t\tattributes[\"name\"] = name\n833: \t}\n834: \n835: \tif stats := iface.Stats; stats != nil {\n836: \t\tinterfaceStatsAttributes(attributes, ifaceStatsMetrics{\n837: \t\t\tRxBytes:   stats.RxBytes,\n838: \t\t\tTxBytes:   stats.TxBytes,\n839: \t\t\tRxPackets: stats.RxPackets,\n840: \t\t\tTxPackets: stats.TxPackets,\n841: \t\t\tRxBps:     stats.RxBps,\n842: \t\t\tTxBps:     stats.TxBps,\n843: \t\t\tRxPps:     stats.RxPps,\n844: \t\t\tTxPps:     stats.TxPps,\n845: \t\t\tInterval:  stats.Interval,\n846: \t\t})\n847: \t}\n848: \n849: \treturn attributes\n850: }\n851: \n852: func interfaceAttributes(\n853: \tcontainer *clabruntime.GenericContainer,\n854: \tsnapshot ifaceSnapshot,\n855: ) map[string]string {\n856: \tattributes := interfaceSnapshotAttributes(snapshot)\n857: \tattributes[\"origin\"] = \"netlink\"\n858: \n859: \tif lab := containerLabel(container); lab != \"\" {\n860: \t\tattributes[\"lab\"] = lab\n861: \t}\n862: \n863: \tif name := firstContainerName(container); name != \"\" {\n864: \t\tattributes[\"name\"] = name\n865: \t}\n866: \n867: \toverlayToolsInterface(container, attributes)\n868: \n869: \t// Add netem attributes if present\n870: \tif snapshot.HasNetem {\n871: \t\tif snapshot.Delay != \"\" {\n872: \t\t\tattributes[\"netem_delay\"] = snapshot.Delay\n873: \t\t}\n874: \t\tif snapshot.Jitter != \"\" {\n\n(Showing lines 830-874 of 1390. Use offset=875 to continue.)\n</content>",
+            "title": "source/head/core/events/netlink.go",
+            "metadata": {
+              "preview": "\t}\n\tif name != \"\" {\n\t\tattributes[\"name\"] = name\n\t}\n\n\tif stats := iface.Stats; stats != nil {\n\t\tinterfaceStatsAttributes(attributes, ifaceStatsMetrics{\n\t\t\tRxBytes:   stats.RxBytes,\n\t\t\tTxBytes:   stats.TxBytes,\n\t\t\tRxPackets: stats.RxPackets,\n\t\t\tTxPackets: stats.TxPackets,\n\t\t\tRxBps:     stats.RxBps,\n\t\t\tTxBps:     stats.TxBps,\n\t\t\tRxPps:     stats.RxPps,\n\t\t\tTxPps:     stats.TxPps,\n\t\t\tInterval:  stats.Interval,\n\t\t})\n\t}\n\n\treturn attributes",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/events/netlink.go",
+                "text": "\t}\n\tif name != \"\" {\n\t\tattributes[\"name\"] = name\n\t}\n\n\tif stats := iface.Stats; stats != nil {\n\t\tinterfaceStatsAttributes(attributes, ifaceStatsMetrics{\n\t\t\tRxBytes:   stats.RxBytes,\n\t\t\tTxBytes:   stats.TxBytes,\n\t\t\tRxPackets: stats.RxPackets,\n\t\t\tTxPackets: stats.TxPackets,\n\t\t\tRxBps:     stats.RxBps,\n\t\t\tTxBps:     stats.TxBps,\n\t\t\tRxPps:     stats.RxPps,\n\t\t\tTxPps:     stats.TxPps,\n\t\t\tInterval:  stats.Interval,\n\t\t})\n\t}\n\n\treturn attributes\n}\n\nfunc interfaceAttributes(\n\tcontainer *clabruntime.GenericContainer,\n\tsnapshot ifaceSnapshot,\n) map[string]string {\n\tattributes := interfaceSnapshotAttributes(snapshot)\n\tattributes[\"origin\"] = \"netlink\"\n\n\tif lab := containerLabel(container); lab != \"\" {\n\t\tattributes[\"lab\"] = lab\n\t}\n\n\tif name := firstContainerName(container); name != \"\" {\n\t\tattributes[\"name\"] = name\n\t}\n\n\toverlayToolsInterface(container, attributes)\n\n\t// Add netem attributes if present\n\tif snapshot.HasNetem {\n\t\tif snapshot.Delay != \"\" {\n\t\t\tattributes[\"netem_delay\"] = snapshot.Delay\n\t\t}\n\t\tif snapshot.Jitter != \"\" {",
+                "lineStart": 830,
+                "lineEnd": 874,
+                "totalLines": 1390,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794565440742,
+              "end": 1794565440763
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46f84ff001SaOih0KBIS6psN",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f7aec001SI9ScXtnFhM8mW",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 19266,
+            "input": 3312,
+            "output": 29,
+            "reasoning": 53,
+            "cache": {
+              "read": 15872,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46f850c0010YqzrLDvEm4ked",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565440780,
+          "completed": 1794565462346
+        },
+        "parentID": "msg_1d46f6ace001VpF1gWj071crQT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 21527,
+          "input": 561,
+          "output": 47,
+          "reasoning": 1719,
+          "cache": {
+            "read": 19200,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46f8c6e001jDRUMUSdvNzKom",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f850c0010YqzrLDvEm4ked"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46f8c71001CQoNrMCi4R0bRS",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f850c0010YqzrLDvEm4ked",
+          "text": "All confirmed. Now let me also quickly check the `diff.txt` line ranges to anchor findings to head lines — I have the head file lines directly, which is what I'll anchor to.\n\nFindings finalized:\n\n1. **P4** — `emit` delete path computes `interfaceAttributes` before checking `w.reported`, discarding the result when a previous report exists (`netlink.go:682-685`). `interfaceAttributes` runs `overlayToolsInterface` → `clablinks.ToolsInterface` → `netlink.LinkByName` in the root netns. Every delete event of a tracked interface performs a wasted netlink lookup. Reorder to check `w.reported` first and only compute attributes when unknown.\n\n2. **P3/P4** — `track` preserves the original `since` forever, and `reportStitchMarks` measures the stitch-mark window from the FIRST report of the link. Trigger: a veth-stitch link whose far-end altname is applied more than `stitchMarkWindow` (1 minute) after the node end was first reported — realistic when the opposite endpoint's container is slow to start (image pull) so stitching happens in `PostDeploy` long after the first node's interface was reported; also after a subscription outage longer than the window. Impact: the interface stays reported under the node-side name (`eth1`) instead of the stitch name; self-corrects only on a later node-side change or resubscribe. Also per ponytail rule, deliberate ceilings should carry a `ponytail:` comment naming the ceiling/upgrade path — the comment explains the mechanism but not the tradeoff. Suggest: either refresh `since` on each `track` call, document the ceiling with a `ponytail:` comment, or note the tradeoff. Actually, would refreshing `since` help the slow-deploy scenario? No — no events fire on the node side between deploy and mark. So the only correction is a wider window or documenting. I'll frame it as: window is measured from the first report; slow stitching (opposite endpoint deployed minutes later) is missed and never retried; recommend documenting the ceiling with a `ponytail:` comment and/or refreshing the window when the interface is polled (reportStitchMarks could bump since for links whose stitch doesn't exist yet... that changes semantics though — actually bumping `since` while polling would keep the window \"hot\" until the mark appears or a minute after the last poll; but the ticker polls every second so since would always be fresh → window becomes meaningless/infinite scanning. Hmm. Actually since is only bumped for links that pass the candidate filter — reported under own name. If we refresh on poll, all veth links stay candidates forever → every tick calls interfaceAttributes for every veth → expensive. So the one-minute window is a deliberate cost bound. So the honest suggestion is: keep the window but mark the ceiling with a `ponytail:` comment (per ponytail rule), and optionally note the residual gap. Severity: P4 (optional improvement; the PR strictly improves on base behavior).\n\nHmm wait — actually, is it P3? The prior behavior was: stitched links were reported under the stitch name only if the link changed after marking. The PR improves this. The residual miss in slow deploys means some stitched links still report under node names — same as base behavior, not a regression. So P4 is right.\n\n3. **P4** — Docs: `docs/cmd/events.md` states interface notifications are emitted when a link \"appears, disappears, or when its relevant properties change.\" The PR introduces re-reporting: a stitched link is now also re-reported (delete under the old name + create under the stitch name) without any property of the node-side link changing, when its host-side stitch interface gets marked. Consumers keyed on `ifname` will see delete+create pairs for the same logical interface. A short note in `docs/cmd/events.md` (and a `docs/rn/0.83.md` Miscellaneous bullet, since 0.83 is the unreleased release) would document it.\n\n4. Coverage note: `reportStitchMarks`'s positive path (a link whose stitch got marked is re-reported) has no direct test; only the negative path is tested (`TestReportStitchMarksLeavesUnmarkedLinks`). The rename mechanism itself is covered indirectly through `emit`/`track` tests. Smallest check: a unit test with a fake stitch mark (as the other tests do) asserting delete+create is emitted for a within-window link.\n\nAlso verify: are there any other callers of removed `sendInterfaceEvent` (base) — I grepped earlier, all call sites are within netlink.go and guarded. Fine.\n\nSeverity table: two P4s and one P3? Let me reconsider finding 1 — wasted syscall per delete event. Every interface delete triggers one extra LinkByName (root ns) even when the link was previously reported. Cost: single netlink RTM_GETLINK roundtrip per delete event; trivial in absolute terms but avoidable and trivially fixable. P4.\n\nFinding 2: P4 as reasoned.\n\nFinding 3: P4 doc.\n\nNo P0-P3 findings. Coverage: complete = true? I've reviewed all changed paths, base comparison, callers, tests, docs. Source-only (no test execution) — disclose. I'd say coverage.complete = true with notes disclosing the source-only limitation and the untested positive reportStitchMarks path (that's a finding-adjacent coverage note — actually the test gap: should it be a finding? Review guidance item 6 says recommend smallest useful check for a concrete gap. The positive reportStitchMarks path is the core new logic and it's untested. I'd make it a P4 finding? Or coverage note. The instruction: \"Verification: inspect whether relevant tests or runnable checks cover changed behavior... Recommend the smallest useful check for a concrete gap.\" The gap is concrete: the new `reportStitchMarks` positive path (emitting delete+create for a marked stitch) is not covered by any test; the mechanism is only tested through `emit`/`track` and the negative reportStitchMarks case. Since `reportStitchMarks` has nontrivial filtering logic (window, ifname comparison), an untested positive path is a real gap. I'll make it a P4 finding rather than just a coverage note, since it's actionable.\n\nAlso the harness in netlink_watch_test.go seems to support faked stitches (TestReportStitchMarksLeavesUnmarkedLinks exists), so adding a positive case is cheap.\n\nLet me now check: does `TestReportStitchMarksLeavesUnmarkedLinks` use a fake stitch? Earlier summary says yes (\"reported too long ago, are not reported again\"). Fine.\n\nOne more consideration — the events doc line: let me confirm the exact wording in docs/cmd/events.md around line 32. From earlier read: \"Interface notifications are emitted when a link appears, disappears, or when its relevant properties (such as its state or netem parameters) change.\" I'll anchor to docs/cmd/events.md L32.\n\nAlso should I check `docs/rn/0.83.md` Miscellaneous — the PR doesn't add an entry. The release-note-review rule only applies to changes under docs/rn/ (none). But recommending an rn entry for user-visible behavior is reasonable as part of the docs finding. I'll mention it briefly within the docs finding's suggestion, not as a separate finding.\n\nNow write the final review. Locations (head):\n- netlink.go L682-687 (wasted interfaceAttributes in delete path).\n- netlink.go L650-670 + L736-743 (stitch window from first report).\n- docs/cmd/events.md L32 (doc gap).\n- netlink_watch_test.go L449-486 area (TestReportStitchMarksLeavesUnmarkedLinks — positive path missing). Actually the test starts at line ~449? From grep: line 449 `events := make(chan aggregatedEvent, 8)` within tests; TestReportStitchMarksLeavesUnmarkedLinks — I don't know its exact start line. Let me grep for it to get the line number.",
+          "time": {
+            "start": 1794565442673,
+            "end": 1794565462216
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46fd8cc001egUmFklUgCkf3P",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f850c0010YqzrLDvEm4ked",
+          "callID": "call_fe4e50bf26cc4c73a232df19",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core/events/netlink_watch_test.go",
+              "pattern": "^func Test"
+            },
+            "output": "Found 18 matches\n/source/head/core/events/labruntime_test.go:\n  Line 10: func TestLabRuntimeEventStreamRequestScope(t *testing.T) {\n\n\n/source/head/core/events/netlink_test.go:\n  Line 11: func TestOverlayToolsInterfaceLeavesAttributesWhenNotStitched(t *testing.T) {\n\n\n/source/head/core/events/parity_test.go:\n  Line 231: func TestContainerEventParity(t *testing.T) {\n\n  Line 334: func TestContainerSnapshotParity(t *testing.T) {\n\n  Line 359: func TestContainerStateUsesDockerVocabulary(t *testing.T) {\n\n  Line 437: func TestInterfaceEventParity(t *testing.T) {\n\n  Line 523: func TestInterfaceEventOmitsUnknownValues(t *testing.T) {\n\n  Line 543: func TestLabRuntimeTopologyEventsKeepTheirAttributes(t *testing.T) {\n\n\n/source/head/core/events/netlink_watch_test.go:\n  Line 177: func TestNetlinkWatcherReportsExistingAndNewLinks(t *testing.T) {\n\n  Line 208: func TestNetlinkWatcherReportsLinksAddedWhileStarting(t *testing.T) {\n\n  Line 236: func TestNetlinkWatcherRetriesNamespaceLookup(t *testing.T) {\n\n  Line 267: func TestNetlinkWatcherStopsAfterRetries(t *testing.T) {\n\n  Line 288: func TestProcessExistingAfterResubscribe(t *testing.T) {\n\n  Line 361: func TestProcessUpdateDeleteOnlyTrackedLinks(t *testing.T) {\n\n  Line 427: func TestEmitReportsRenamedLinkDeleted(t *testing.T) {\n\n  Line 448: func TestEmitDeletesLinkAsLastReported(t *testing.T) {\n\n  Line 469: func TestEmitStatsReportsRenamedLinkFirst(t *testing.T) {\n\n  Line 511: func TestReportStitchMarksLeavesUnmarkedLinks(t *testing.T) {\n",
+            "title": "^func Test",
+            "metadata": {
+              "matches": 18,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565462226,
+              "end": 1794565462248
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1d46fd92f0012NgxlJLjb2TtSL",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f850c0010YqzrLDvEm4ked",
+          "callID": "call_7a007c8b41c2448f97d2a3fe",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/cmd/events.md",
+              "pattern": "Interface notifications"
+            },
+            "output": "Found 1 matches\n/source/head/docs/cmd/events.md:\n  Line 32: - Interface notifications are emitted when a link appears, disappears, or when its relevant properties (operational state, MTU, alias, MAC address, type) change. Initial snapshots use the `snapshot` action when `--initial-state` is requested. When interface statistics are enabled the stream also includes `interface stats` updates with byte/packet counters and rate estimates.\n",
+            "title": "Interface notifications",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1794565462324,
+              "end": 1794565462337
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d46fd945001dALD5zZ3xoEwMv",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46f850c0010YqzrLDvEm4ked",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 21527,
+            "input": 561,
+            "output": 47,
+            "reasoning": 1719,
+            "cache": {
+              "read": 19200,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1d46fd9510016WBZEih108ioOd",
+        "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+        "time": {
+          "created": 1794565462353,
+          "completed": 1794565498726
+        },
+        "parentID": "msg_1d46f6ace001VpF1gWj071crQT",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Gbrdqe",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 26223,
+          "input": 534,
+          "output": 4027,
+          "reasoning": 158,
+          "cache": {
+            "read": 21504,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1d46fe0c6001C9HNRzmX6tfQZj",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46fd9510016WBZEih108ioOd"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1d46fe0c8001cQMtiBBhv3fRFs",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46fd9510016WBZEih108ioOd",
+          "text": "I have everything. Write the final review.\n\nFindings:\n1. P4 — Wasted `interfaceAttributes` call in `emit` delete path (netlink.go:682-687).\n2. P4 — Stitch-mark window measured from first report; slow stitching missed and unmarked by a ponytail ceiling comment (netlink.go:650-670, 736-743).\n3. P4 — Docs don't mention the new delete+create re-report on stitch marking (docs/cmd/events.md:32; netlink.go:672-699).\n4. P4 — `reportStitchMarks` positive path untested (netlink_watch_test.go:511).\n\nCoverage: complete, source-only review, no test execution.",
+          "time": {
+            "start": 1794565464264,
+            "end": 1794565465654
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1d46fe639001OpEn28jjgWXSGW",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46fd9510016WBZEih108ioOd",
+          "text": "All checks are complete. Here is the full review.\n\n# Review: stitched-interface rename reporting in the netlink watcher\n\n## Summary\n\nThis PR improves how `clab events` reports veth-stitch links: a per-interface record of the last-reported attributes (`w.reported`) lets the watcher detect that a link is now known under its host-side stitch interface name, emit a `delete` under the old name, and re-`create` it under the stitch name — both on live link updates and proactively, via a one-second netem-ticker poll (`reportStitchMarks`) within a one-minute window after the link was first reported. The overall design is lean, the rename handling is consistent across `emit`, `emitStats`, and `track`, and the tests cover the rename mechanics well. I found no correctness defects; the findings below are minor efficiency, documentation, and test-coverage improvements.\n\n| Priority | Count | Summary |\n|---|---|---|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 4 | Wasted root-netns lookup on delete; undocumented event-stream behavior change; stitch-window ceiling unmarked/untested positive path |\n\n## Findings\n\n### 1. `emit` computes attributes before consulting `w.reported`, wasting a root-netns lookup on every delete (P4)\n\n**Location:** [core/events/netlink.go:681-687](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink.go#L681-L687) (head)\n\n**Problem:** In the `delete` branch, `attributes := interfaceAttributes(w.container, snapshot)` is computed first, and only then overwritten with `previous.attributes` when the index is known. `interfaceAttributes` ends in `overlayToolsInterface` → `clablinks.ToolsInterface` → `netlink.LinkByName`, a root-netns `RTM_GETLINK` round trip ([core/events/netlink.go:852-867](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink.go#L852-L867), [core/events/netlink.go:898-919](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink.go#L898-L919)).\n\n**Trigger:** Every interface `delete` event for a previously reported interface — i.e., the common case for link teardown during `destroy` or `redeploy`.\n\n**Impact:** One wasted netlink lookup per delete event. Small in absolute terms, but free to avoid.\n\n**Correction:** Check `w.reported[snapshot.Index]` first and only call `interfaceAttributes` when no previous report exists:\n\n```go\nif action == \"delete\" {\n    previous, ok := w.reported[snapshot.Index]\n    attributes := previous.attributes\n    if !ok {\n        attributes = interfaceAttributes(w.container, snapshot)\n    }\n    delete(w.reported, snapshot.Index)\n    ...\n}\n```\n\n### 2. The stitch-mark window is measured from the first report, so slow stitching is silently missed; the ceiling is not marked per the ponytail rule (P4)\n\n**Location:** [core/events/netlink.go:650-670](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink.go#L650-L670) and [core/events/netlink.go:736-743](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink.go#L736-L743) (head)\n\n**Problem:** `track` preserves the original `since` timestamp (`since = previous.since`) forever, and `reportStitchMarks` skips any link where `time.Since(reported.since) > stitchMarkWindow` (one minute). The window therefore measures from the *first* time the watcher reported the link, not from the most recent poll. In a veth-stitch deploy where the opposite endpoint's container starts slowly (image pull, slow node startup), stitching happens in `PostDeploy` after the first node's interface was already reported — potentially more than a minute later. The rename is then never reported: the interface stays under the node-side name (`eth1`) until the node-side link itself changes or the watcher resubscribes. Note that refreshing `since` on every poll is not the right fix either — it would keep every veth a polling candidate forever and turn the window into an unbounded scan; the one-minute bound is a deliberate cost ceiling.\n\n**Trigger:** Slow deploys where the gap between a node-end veth being created and its host-side altname being applied exceeds one minute; also subscription outages longer than the window.\n\n**Impact:** For those links, events report `ifname: eth1` instead of the stitch name — the same limitation the base code had, so this is a residual gap in an improvement, not a regression. But the repository's ponytail rule asks that deliberate ceilings carry a `ponytail:` comment naming the ceiling and the upgrade path; the comment on `reportStitchMarks` explains the mechanism but not this tradeoff.\n\n**Correction:** Add a `ponytail:` comment at `stitchMarkWindow` stating the ceiling (e.g., \"links stitched more than one minute after first report are not renamed in the stream until the link changes or the watcher resubscribes; a root-namespace monitor for altname additions would close this\"). Optionally extend the window if deploy observations show it is tight.\n\n### 3. The new delete+create re-report of stitched links is undocumented (P4)\n\n**Location:** [docs/cmd/events.md:32](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/docs/cmd/events.md#L32) (head), introduced by [core/events/netlink.go:672-699](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink.go#L672-L699)\n\n**Problem:** The events documentation states that interface notifications are emitted \"when a link appears, disappears, or when its relevant properties … change.\" This PR adds a new class of emission: a link whose properties did not change can be re-reported as a `delete` under its node-side name followed by a `create` under the host-side stitch interface name, both live (via `track`) and proactively (via `reportStitchMarks`). Consumers that key records on `ifname` — the documented contract — will see teardown+creation pairs for the same logical interface whenever a stitch is marked.\n\n**Trigger:** Any consumer of `clab events` watching a lab with veth-stitch links, during deploy or link reconfiguration.\n\n**Impact:** The documented event model does not match the observable stream, which can surprise integrators (e.g., the VS Code extension) into treating the rename as a link removal and re-add.\n\n**Correction:** Add one or two sentences to `docs/cmd/events.md` explaining that a stitched interface may be reported as `delete` under its node-side name and `create` under the stitch interface name when the host-side stitch is marked, and that `alias` carries the topology name throughout. Since release 0.83 is the current unreleased release, a short Miscellaneous bullet in `docs/rn/0.83.md` would also fit; the `release-note-review` rule itself is not violated because this PR touches no files under `docs/rn/`.\n\n### 4. The positive path of `reportStitchMarks` is untested (P4)\n\n**Location:** [core/events/netlink_watch_test.go:511](https://github.com/srl-labs/containerlab/blob/<HEAD_SHA>/core/events/netlink_watch_test.go#L511) (head)\n\n**Problem:** `TestReportStitchMarksLeavesUnmarkedLinks` covers only the negative filtering cases (stitch already reflected, expired window, never reported). The core new behavior — a within-window link reported under its own name whose host-side stitch gets marked, producing a `delete` of the old name and a `create` under the stitch name — has no direct test. The rename mechanics are covered indirectly through `TestEmitReportsRenamedLinkDeleted` and `TestEmitStatsReportsRenamedLinkFirst`, but the polling function's candidate filter (`snapshot.Type == \"veth\"`, name comparison, window check) and its interaction with `emit` are not exercised end to end.\n\n**Trigger:** A future refactor of `reportStitchMarks` (e.g., reordering the window check or the type check) would not be caught by the suite.\n\n**Impact:** Low, but this is the headline behavior of the PR, and the existing test harness already fakes stitch marks, so the missing case is cheap to add.\n\n**Correction:** Add one test in `netlink_watch_test.go` modeled on `TestReportStitchMarksLeavesUnmarkedLinks`: pre-seed `watcher.reported` with a veth reported under its own name with a fresh `since`, fake a stitch mark in the harness, call `reportStitchMarks`, and assert the expected `delete` + `create` sequence in the collected events.\n\n## Coverage notes\n\n- This was a source-only review: I inspected the head and base snapshots, the full diff, both changed files, callers of the changed functions, the events documentation, release notes, and the repository's review rules. I did not execute the test suite, run `make format`, or exercise the code; statements about tests reflect source inspection only.\n- All changed paths (`core/events/netlink.go`, `core/events/netlink_watch_test.go`) and their relevant surrounding code were reviewed. The base-vs-head comparison confirmed the old `container == nil` guard on interface events is preserved by the guards inside `emit` and `emitStats`; all call sites of the new `sendInterfaceEvent` are within these guarded paths.\n- The pre-existing behavior that links present at the first subscription are recorded in `states` but not in `w.reported` (with `includeSnapshot=false`) was checked and is not worsened by this PR; it only matters for later `delete`/`update` events, which already fall back to freshly computed attributes.\n- `w.reported` is accessed only from the watcher goroutine (`emit`, `emitStats`, `track`, `reportStitchMarks` are all invoked from `watch`/`collectAndEmitStats`), and `track` stores `maps.Clone(attributes)`, so the later mutation of the freshly built attributes map in `emitStats` cannot corrupt stored state. I found no race or aliasing issue.\n- The ponytail ceiling-comment rule was applied to the `stitchMarkWindow` heuristic (finding 2); no other deliberate simplification in this PR appeared to warrant a ceiling marker.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`emit` computes `interfaceAttributes` before checking `w.reported`, wasting a root-netns lookup on every delete\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/events/netlink.go\",\n        \"start\": 681,\n        \"end\": 687\n      },\n      \"problem\": \"In the `delete` branch of `emit`, `attributes := interfaceAttributes(w.container, snapshot)` is computed before the code checks `w.reported`, and the freshly computed attributes are then discarded whenever a previous report exists. `interfaceAttributes` ends in `overlayToolsInterface` -> `clablinks.ToolsInterface` -> `netlink.LinkByName`, a root-netns `RTM_GETLINK` round trip.\",\n      \"trigger\": \"Every interface `delete` event for a previously reported interface, which is the common case for link teardown during `destroy` or `redeploy`.\",\n      \"impact\": \"One wasted netlink lookup per delete event. Small in absolute terms, but free to avoid.\",\n      \"suggestion\": \"Look up `w.reported[snapshot.Index]` first and only call `interfaceAttributes` when no previous report exists, for example: `previous, ok := w.reported[snapshot.Index]; attributes := previous.attributes; if !ok { attributes = interfaceAttributes(w.container, snapshot) }`.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Stitch-mark window is measured from the first report and the ceiling is not marked per the ponytail rule\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/events/netlink.go\",\n        \"start\": 650,\n        \"end\": 670\n      },\n      \"problem\": \"`track` preserves the original `since` timestamp forever (`since = previous.since`), and `reportStitchMarks` skips any link where `time.Since(reported.since) > stitchMarkWindow`. The window therefore measures from the first time the watcher reported the link, not from the most recent poll. Refreshing `since` on every poll would instead keep every veth a polling candidate forever, so the one-minute bound is a deliberate cost ceiling.\",\n      \"trigger\": \"A veth-stitch link whose host-side altname is applied more than one minute after the node end was first reported, which happens when the opposite endpoint's container starts slowly (image pull) so stitching occurs in `PostDeploy` long after the first node's interface was reported, or after a subscription outage longer than the window.\",\n      \"impact\": \"Those interfaces remain reported under the node-side name (`eth1`) instead of the stitch name until the node-side link changes or the watcher resubscribes. This matches the base behavior, so it is a residual gap in an improvement rather than a regression, but the repository's ponytail rule asks that deliberate ceilings carry a `ponytail:` comment naming the ceiling and upgrade path, and the comment on `reportStitchMarks` explains only the mechanism.\",\n      \"suggestion\": \"Add a `ponytail:` comment at `stitchMarkWindow` stating the ceiling, for example that links stitched more than one minute after first report are not renamed in the stream until the link changes or the watcher resubscribes, with a root-namespace altname monitor as the upgrade path. Optionally widen the window if deploy observations show it is tight.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"New delete+create re-report of stitched interfaces is undocumented in `docs/cmd/events.md`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"docs/cmd/events.md\",\n        \"start\": 32,\n        \"end\": 32\n      },\n      \"problem\": \"The events documentation states that interface notifications are emitted when a link appears, disappears, or when its relevant properties change. This PR adds a new class of emission: a link whose node-side properties did not change can be re-reported as a `delete` under its node-side name followed by a `create` under the host-side stitch interface name, both live via `track` and proactively via `reportStitchMarks` (introduced in `core/events/netlink.go` lines 672-699).\",\n      \"trigger\": \"Any consumer of `clab events` watching a lab with veth-stitch links, during deploy or link reconfiguration.\",\n      \"impact\": \"Consumers that key records on `ifname`, the documented contract, will observe teardown-plus-creation pairs for the same logical interface whenever a stitch is marked, which can surprise integrators into treating the rename as a link removal and re-add.\",\n      \"suggestion\": \"Add one or two sentences to `docs/cmd/events.md` explaining that a stitched interface may be reported as `delete` under its node-side name and `create` under the stitch interface name when the host-side stitch is marked, and that `alias` carries the topology name throughout. Since release 0.83 is the current unreleased release, a short Miscellaneous bullet in `docs/rn/0.83.md` would also fit.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Positive path of `reportStitchMarks` is untested\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/events/netlink_watch_test.go\",\n        \"start\": 511,\n        \"end\": 511\n      },\n      \"problem\": \"`TestReportStitchMarksLeavesUnmarkedLinks` covers only the negative filtering cases (stitch already reflected, expired window, never reported). The core new behavior, a within-window link reported under its own name whose host-side stitch gets marked and which produces a `delete` of the old name and a `create` under the stitch name, has no direct test. The rename mechanics are covered indirectly by `TestEmitReportsRenamedLinkDeleted` and `TestEmitStatsReportsRenamedLinkFirst`, but the polling function's candidate filter and its interaction with `emit` are not exercised end to end.\",\n      \"trigger\": \"A future refactor of `reportStitchMarks`, such as reordering the window or type check, would not be caught by the test suite.\",\n      \"impact\": \"Low, but this polling logic is the headline behavior of the PR and the existing test harness already fakes stitch marks, so the missing case is cheap to add.\",\n      \"suggestion\": \"Add one test in `core/events/netlink_watch_test.go` modeled on `TestReportStitchMarksLeavesUnmarkedLinks`: pre-seed `watcher.reported` with a veth reported under its own name with a fresh `since`, fake a stitch mark in the harness, call `reportStitchMarks`, and assert the expected `delete` plus `create` sequence in the collected events.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: head and base snapshots, the full diff, both changed files, callers of the changed functions, the events documentation, release notes, and the repository review rules were inspected. Tests and formatters were not executed.\",\n      \"All changed paths (`core/events/netlink.go`, `core/events/netlink_watch_test.go`) and their surrounding code were reviewed; the base comparison confirmed the removed `container == nil` guard is preserved by guards inside `emit` and `emitStats`, and all `sendInterfaceEvent` call sites are within guarded paths.\",\n      \"`w.reported` is accessed only from the watcher goroutine, and `track` stores `maps.Clone(attributes)`, so no race or aliasing issue was found in the new state tracking.\",\n      \"Pre-existing behavior where links present at the first subscription are recorded in `states` but not `w.reported` with `includeSnapshot=false` was checked and is not worsened by this PR; it is noted as pre-existing rather than a finding.\",\n      \"The ponytail ceiling-comment rule was applied to the `stitchMarkWindow` heuristic in finding 2; no other deliberate simplification in this PR appeared to warrant a ceiling marker.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1794565465657,
+            "end": 1794565498715
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1d470676000181CnY4jBpPMXBg",
+          "sessionID": "ses_e2b95e719ffeoD7jkbBhYGJfgm",
+          "messageID": "msg_1d46fd9510016WBZEih108ioOd",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 26223,
+            "input": 534,
+            "output": 4027,
+            "reasoning": 158,
+            "cache": {
+              "read": 21504,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - `emit` computes `interfaceAttributes` before checking `w.reported`, wasting a root-netns lookup on every `delete`** | [core/events/netlink.go:681-687](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink.go#L681-L687) |\n| **P4 - Stitch-mark window is measured from the first report and the ceiling is not marked per the ponytail rule** | [core/events/netlink.go:650-670](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink.go#L650-L670) |\n| **P4 - New `delete`+`create` re-report of stitched interfaces is undocumented in [`docs/cmd/events.md`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/docs/cmd/events.md#L1-L1)** | [docs/cmd/events.md:32-32](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/docs/cmd/events.md#L32-L32) |\n| **P4 - Positive path of `reportStitchMarks` is untested** | [core/events/netlink&#95;watch&#95;test.go:511-511](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink_watch_test.go#L511-L511) |\n\n## P4 - `emit` computes `interfaceAttributes` before checking `w.reported`, wasting a root-netns lookup on every `delete`\n\n**Location:** [core/events/netlink.go:681-687](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink.go#L681-L687)\n\n**Problem:** In the `delete` branch of `emit`, `attributes := interfaceAttributes(w.container, snapshot)` is computed before the code checks `w.reported`, and the freshly computed attributes are then discarded whenever a previous report exists. `interfaceAttributes` ends in `overlayToolsInterface` -&#62; `clablinks.ToolsInterface` -&#62; `netlink.LinkByName`, a root-netns `RTM_GETLINK` round trip.\n\n**Trigger:** Every interface `delete` event for a previously reported interface, which is the common case for link teardown during `destroy` or `redeploy`.\n\n**Impact:** One wasted netlink lookup per `delete` event. Small in absolute terms, but free to avoid.\n\n**Suggested correction:** Look up `w.reported[snapshot.Index]` first and only call `interfaceAttributes` when no previous report exists, for example&#58; `previous, ok := w.reported[snapshot.Index]; attributes := previous.attributes; if !ok { attributes = interfaceAttributes(w.container, snapshot) }`.\n\n\n## P4 - Stitch-mark window is measured from the first report and the ceiling is not marked per the ponytail rule\n\n**Location:** [core/events/netlink.go:650-670](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink.go#L650-L670)\n\n**Problem:** `track` preserves the original `since` timestamp forever &#40;`since = previous.since`&#41;, and `reportStitchMarks` skips any link where `time.Since(reported.since) > stitchMarkWindow`. The window therefore measures from the first time the watcher reported the link, not from the most recent poll. Refreshing `since` on every poll would instead keep every veth a polling candidate forever, so the one-minute bound is a deliberate cost ceiling.\n\n**Trigger:** A veth-stitch link whose host-side altname is applied more than one minute after the node end was first reported, which happens when the opposite endpoint&#39;s container starts slowly &#40;image pull&#41; so stitching occurs in `PostDeploy` long after the first node&#39;s interface was reported, or after a subscription outage longer than the window.\n\n**Impact:** Those interfaces remain reported under the node-side name &#40;`eth1`&#41; instead of the stitch name until the node-side link changes or the watcher resubscribes. This matches the base behavior, so it is a residual gap in an improvement rather than a regression, but the repository&#39;s ponytail rule asks that deliberate ceilings carry a `ponytail:` comment naming the ceiling and upgrade path, and the comment on `reportStitchMarks` explains only the mechanism.\n\n**Suggested correction:** Add a `ponytail:` comment at `stitchMarkWindow` stating the ceiling, for example that links stitched more than one minute after first report are not renamed in the stream until the link changes or the watcher resubscribes, with a root-namespace altname monitor as the upgrade path. Optionally widen the window if deploy observations show it is tight.\n\n\n## P4 - New `delete`+`create` re-report of stitched interfaces is undocumented in [`docs/cmd/events.md`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/docs/cmd/events.md#L1-L1)\n\n**Location:** [docs/cmd/events.md:32-32](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/docs/cmd/events.md#L32-L32)\n\n**Problem:** The events documentation `states` that interface notifications are emitted when a link appears, disappears, or when its relevant properties change. This PR adds a new class of emission&#58; a link whose node-side properties did not change can be re-reported as a `delete` under its node-side name followed by a `create` under the host-side stitch interface name, both live via `track` and proactively via `reportStitchMarks` &#40;introduced in [`core/events/netlink.go`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink.go#L1-L1) lines 672-699&#41;.\n\n**Trigger:** Any consumer of `clab events` watching a lab with veth-stitch links, during deploy or link reconfiguration.\n\n**Impact:** Consumers that key records on `ifname`, the documented contract, will observe teardown-plus-creation pairs for the same logical interface whenever a stitch is marked, which can surprise integrators into treating the rename as a link removal and re-add.\n\n**Suggested correction:** Add one or two sentences to [`docs/cmd/events.md`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/docs/cmd/events.md#L1-L1) explaining that a stitched interface may be reported as `delete` under its node-side name and `create` under the stitch interface name when the host-side stitch is marked, and that `alias` carries the topology name throughout. Since release 0.83 is the current unreleased release, a short Miscellaneous bullet in [`docs/rn/0.83.md`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/docs/rn/0.83.md#L1-L1) would also fit.\n\n\n## P4 - Positive path of `reportStitchMarks` is untested\n\n**Location:** [core/events/netlink&#95;watch&#95;test.go:511-511](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink_watch_test.go#L511-L511)\n\n**Problem:** `TestReportStitchMarksLeavesUnmarkedLinks` covers only the negative filtering cases &#40;stitch already reflected, expired window, never reported&#41;. The core new behavior, a within-window link reported under its own name whose host-side stitch gets marked and which produces a `delete` of the old name and a `create` under the stitch name, has no direct test. The rename mechanics are covered indirectly by `TestEmitReportsRenamedLinkDeleted` and `TestEmitStatsReportsRenamedLinkFirst`, but the polling function&#39;s candidate filter and its interaction with `emit` are not exercised end to end.\n\n**Trigger:** A future refactor of `reportStitchMarks`, such as reordering the window or type check, would not be caught by the test suite.\n\n**Impact:** Low, but this polling logic is the headline behavior of the PR and the existing test harness already fakes stitch marks, so the missing case is cheap to add.\n\n**Suggested correction:** Add one test in [`core/events/netlink_watch_test.go`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink_watch_test.go#L1-L1) modeled on `TestReportStitchMarksLeavesUnmarkedLinks`&#58; pre-seed `watcher.reported` with a veth reported under its own name with a fresh `since`, fake a stitch mark in the harness, call `reportStitchMarks`, and assert the expected `delete` plus `create` sequence in the collected events.\n\n\n## Coverage\n\n- Source-only review&#58; head and base snapshots, the full diff, both changed files, callers of the changed functions, the events documentation, release notes, and the repository review rules were inspected. Tests and formatters were not executed.\n- All changed paths &#40;[`core/events/netlink.go`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink.go#L1-L1), [`core/events/netlink_watch_test.go`](https://github.com/srl-labs/containerlab/blob/1c9b3577d08f7524fd228e5ab4df3dd3fc107f53/core/events/netlink_watch_test.go#L1-L1)&#41; and their surrounding code were reviewed; the base comparison confirmed the removed `container == nil` guard is preserved by guards inside `emit` and `emitStats`, and all `sendInterfaceEvent` call sites are within guarded paths.\n- `w.reported` is accessed only from the watcher goroutine, and `track` stores `maps.Clone(attributes)`, so no race or aliasing issue was found in the new state tracking.\n- Pre-existing behavior where links present at the first subscription are recorded in `states` but not `w.reported` with `includeSnapshot=false` was checked and is not worsened by this PR; it is noted as pre-existing rather than a finding.\n- The ponytail ceiling-comment rule was applied to the `stitchMarkWindow` heuristic in finding 2; no other deliberate simplification in this PR appeared to warrant a ceiling marker.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`emit` computes `interfaceAttributes` before checking `w.reported`, wasting a root-netns lookup on every `delete`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/events/netlink.go\",\n        \"start\": 681,\n        \"end\": 687\n      },\n      \"problem\": \"In the `delete` branch of `emit`, `attributes := interfaceAttributes(w.container, snapshot)` is computed before the code checks `w.reported`, and the freshly computed attributes are then discarded whenever a previous report exists. `interfaceAttributes` ends in `overlayToolsInterface` -> `clablinks.ToolsInterface` -> `netlink.LinkByName`, a root-netns `RTM_GETLINK` round trip.\",\n      \"trigger\": \"Every interface `delete` event for a previously reported interface, which is the common case for link teardown during `destroy` or `redeploy`.\",\n      \"impact\": \"One wasted netlink lookup per `delete` event. Small in absolute terms, but free to avoid.\",\n      \"suggestion\": \"Look up `w.reported[snapshot.Index]` first and only call `interfaceAttributes` when no previous report exists, for example: `previous, ok := w.reported[snapshot.Index]; attributes := previous.attributes; if !ok { attributes = interfaceAttributes(w.container, snapshot) }`.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Stitch-mark window is measured from the first report and the ceiling is not marked per the ponytail rule\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/events/netlink.go\",\n        \"start\": 650,\n        \"end\": 670\n      },\n      \"problem\": \"`track` preserves the original `since` timestamp forever (`since = previous.since`), and `reportStitchMarks` skips any link where `time.Since(reported.since) > stitchMarkWindow`. The window therefore measures from the first time the watcher reported the link, not from the most recent poll. Refreshing `since` on every poll would instead keep every veth a polling candidate forever, so the one-minute bound is a deliberate cost ceiling.\",\n      \"trigger\": \"A veth-stitch link whose host-side altname is applied more than one minute after the node end was first reported, which happens when the opposite endpoint's container starts slowly (image pull) so stitching occurs in `PostDeploy` long after the first node's interface was reported, or after a subscription outage longer than the window.\",\n      \"impact\": \"Those interfaces remain reported under the node-side name (`eth1`) instead of the stitch name until the node-side link changes or the watcher resubscribes. This matches the base behavior, so it is a residual gap in an improvement rather than a regression, but the repository's ponytail rule asks that deliberate ceilings carry a `ponytail:` comment naming the ceiling and upgrade path, and the comment on `reportStitchMarks` explains only the mechanism.\",\n      \"suggestion\": \"Add a `ponytail:` comment at `stitchMarkWindow` stating the ceiling, for example that links stitched more than one minute after first report are not renamed in the stream until the link changes or the watcher resubscribes, with a root-namespace altname monitor as the upgrade path. Optionally widen the window if deploy observations show it is tight.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"New `delete`+`create` re-report of stitched interfaces is undocumented in `docs/cmd/events.md`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"docs/cmd/events.md\",\n        \"start\": 32,\n        \"end\": 32\n      },\n      \"problem\": \"The events documentation `states` that interface notifications are emitted when a link appears, disappears, or when its relevant properties change. This PR adds a new class of emission: a link whose node-side properties did not change can be re-reported as a `delete` under its node-side name followed by a `create` under the host-side stitch interface name, both live via `track` and proactively via `reportStitchMarks` (introduced in `core/events/netlink.go` lines 672-699).\",\n      \"trigger\": \"Any consumer of `clab events` watching a lab with veth-stitch links, during deploy or link reconfiguration.\",\n      \"impact\": \"Consumers that key records on `ifname`, the documented contract, will observe teardown-plus-creation pairs for the same logical interface whenever a stitch is marked, which can surprise integrators into treating the rename as a link removal and re-add.\",\n      \"suggestion\": \"Add one or two sentences to `docs/cmd/events.md` explaining that a stitched interface may be reported as `delete` under its node-side name and `create` under the stitch interface name when the host-side stitch is marked, and that `alias` carries the topology name throughout. Since release 0.83 is the current unreleased release, a short Miscellaneous bullet in `docs/rn/0.83.md` would also fit.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Positive path of `reportStitchMarks` is untested\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/events/netlink_watch_test.go\",\n        \"start\": 511,\n        \"end\": 511\n      },\n      \"problem\": \"`TestReportStitchMarksLeavesUnmarkedLinks` covers only the negative filtering cases (stitch already reflected, expired window, never reported). The core new behavior, a within-window link reported under its own name whose host-side stitch gets marked and which produces a `delete` of the old name and a `create` under the stitch name, has no direct test. The rename mechanics are covered indirectly by `TestEmitReportsRenamedLinkDeleted` and `TestEmitStatsReportsRenamedLinkFirst`, but the polling function's candidate filter and its interaction with `emit` are not exercised end to end.\",\n      \"trigger\": \"A future refactor of `reportStitchMarks`, such as reordering the window or type check, would not be caught by the test suite.\",\n      \"impact\": \"Low, but this polling logic is the headline behavior of the PR and the existing test harness already fakes stitch marks, so the missing case is cheap to add.\",\n      \"suggestion\": \"Add one test in `core/events/netlink_watch_test.go` modeled on `TestReportStitchMarksLeavesUnmarkedLinks`: pre-seed `watcher.reported` with a veth reported under its own name with a fresh `since`, fake a stitch mark in the harness, call `reportStitchMarks`, and assert the expected `delete` plus `create` sequence in the collected events.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: head and base snapshots, the full diff, both changed files, callers of the changed functions, the events documentation, release notes, and the repository review rules were inspected. Tests and formatters were not executed.\",\n      \"All changed paths (`core/events/netlink.go`, `core/events/netlink_watch_test.go`) and their surrounding code were reviewed; the base comparison confirmed the removed `container == nil` guard is preserved by guards inside `emit` and `emitStats`, and all `sendInterfaceEvent` call sites are within guarded paths.\",\n      \"`w.reported` is accessed only from the watcher goroutine, and `track` stores `maps.Clone(attributes)`, so no race or aliasing issue was found in the new state tracking.\",\n      \"Pre-existing behavior where links present at the first subscription are recorded in `states` but not `w.reported` with `includeSnapshot=false` was checked and is not worsened by this PR; it is noted as pre-existing rather than a finding.\",\n      \"The ponytail ceiling-comment rule was applied to the `stitchMarkWindow` heuristic in finding 2; no other deliberate simplification in this PR appeared to warrant a ceiling marker.\"\n    ]\n  }\n}\n```"
 }
