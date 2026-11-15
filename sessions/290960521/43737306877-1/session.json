@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "dfe60303f4b864b41040cb167d382755aab25189",
-  "updatedAt": "2026-11-15T17:01:34.969Z",
-  "state": "running",
+  "updatedAt": "2026-11-15T17:02:57.813Z",
+  "state": "completed",
   "info": {
     "id": "ses_e1fe24e0bffevYoq2SK01tj05C",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 499416,
-      "output": 8128,
-      "reasoning": 48266,
+      "input": 574519,
+      "output": 20206,
+      "reasoning": 52096,
       "cache": {
-        "read": 3248256,
+        "read": 3389568,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1794761404916,
-      "updated": 1794762060086
+      "updated": 1794762177719
     }
   },
   "messages": [
@@ -8872,7 +8872,8 @@
         "id": "msg_1e027b12f001Htg76PVOsPvr67",
         "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
         "time": {
-          "created": 1794762060079
+          "created": 1794762060079,
+          "completed": 1794762119982
         },
         "parentID": "msg_1e02303d5001IrNjeu8w9lkNrr",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -8885,14 +8886,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 87234,
+          "input": 976,
+          "output": 4147,
+          "reasoning": 3263,
           "cache": {
-            "read": 0,
+            "read": 78848,
             "write": 0
           }
-        }
+        },
+        "finish": "stop"
       },
       "parts": [
         {
@@ -8906,12 +8909,666 @@
           "id": "prt_1e027ba23001uWdAjPIw9t7KQZ",
           "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
           "messageID": "msg_1e027b12f001Htg76PVOsPvr67",
-          "text": "",
+          "text": "Confirmed: `compilePrimitiveResources` runs for BOTH paths (CR and no-CR) client-side, fail-closed. So the corrupted host link fails the client-side compile with an error before anything is created. Deploy fails hard. This strengthens Finding 1: pre-PR worked, post-PR fails deploy for any c9s topology with a host link.\n\nActually hold on — I want to be extra careful about the exact yaml emitted for a host link, because my whole finding rests on it. `MarshalYAML` case LinkTypeHost:\n\n```go\nx := struct {\n    LinkHostRaw `yaml:\",inline\"`\n    Type        string `yaml:\"type\"`\n}{...}\n```\n\nyaml.v2 marshal of embedded struct with `,inline` tag: yaml.v2 does support inline structs on marshal (it promotes embedded struct fields). The output keys: from LinkHostRaw: `mtu` (if set — brief parse materialized 9500), `labels`, `ipv4`, `ipv6`, `vars` (LinkCommonParams, all omitempty), `host-interface`, `endpoint`. Then `type: veth`.\n\nRe-parse with `LinkDefinition.UnmarshalYAML` (non-strict inner unmarshal — wait, is the inner unmarshal strict? The `unmarshal` function passed to UnmarshalYAML when the outer unmarshal is `yaml.Unmarshal` (non-strict) is non-strict. In c9s files.go:124, `yaml.Unmarshal` — non-strict. So `host-interface`/`endpoint` silently ignored in the LinkVEthRaw unmarshal. Endpoints nil.\n\nThen `clabernetesBriefLinks` → `ToLinkBriefRaw` → `Endpoints: []` → CR link empty. Then `compilePrimitiveResources` → the compiler parses `spec.topology` → brief link with empty endpoints → fail-closed compile error → deploy fails.\n\nAlternatively for the direct definition parse: the corrupted form means the host link becomes a zero-endpoint veth. Confirmed.\n\nHmm — one more thought: could the compiler's parse of the definition be STRICT? The compiler package is `github.com/clabernetes/clabernetes/compiler` — it might parse with its own schema validation. `UnsupportedFieldPolicyError` strongly suggests strict-ish handling of unsupported fields → error on `host-interface` under veth. Either way, failure.\n\nAlso, for completeness — mgmt-net brief links: `mgmtNetLinkFromBrief` → LinkMgmtNetRaw{HostInterface, Endpoint, Network}. MarshalYAML → `type: mgmt-net` + `host-interface` + `endpoint` — correct round-trip. macvlan → `type: macvlan` — correct. Only HOST is wrong.\n\nNow — how confident am I that `MarshalYAML` case LinkTypeHost's `Type: string(LinkTypeVEth)` is a bug rather than intentional? The comment on MarshalYAML says \"it falls back to converting the LinkConfig into a RawVEthLink\" — for the generate command, maybe they intentionally serialize host links as veth so that the generated topology uses veth + host endpoints? But a veth link with `host-interface`/`endpoint` keys is not a valid veth link. And the `LinkHostRaw` fields don't belong to veth. And round-tripping breaks. Also `LinkHostRaw.ToLinkBriefRaw` produces `host:if` endpoints. I'm confident it's a copy-paste bug.\n\nLet me also check git: is there a test for `clab generate` output correctness? Not needed.\n\nOne more possible finding — **the `clab generate` path also emits the broken host yaml** (pre-existing, out of scope but same root cause; I'll mention in the finding's suggestion that the one-line fix also repairs `generate`).\n\nNow finalize findings:\n\n1. **P1 — Host links break on lab runtimes: the new re-marshal serializes `type: host` links as `type: veth` with orphan `host-interface`/`endpoint` keys** (root cause: `links/link.go` MarshalYAML host case; exposed by `core/labruntime_topology.go:56`).\n2. **P3 — `type: vxlan-stitch` links now fail the lab-runtime render with the generic `unable to marshall` error** (root cause: missing MarshalYAML case; exposed by the new re-marshal).\n3. **P4 — The re-marshal runs unconditionally even when the definition contains no magic variables** — rewriting every definition (comments/anchors lost, brief links → full form) for deployments that need no expansion; a `strings.Contains` guard would keep verbatim bytes for the common case and limit the blast radius of finding 1.\n\nWait — should finding 3 be P4 or is it a legit P3? The re-marshal loses comments in the stored CR (`spec.topology`) — cosmetic. Performance: 3 parses + 1 marshal of a small file — negligible. The main value of the guard: avoiding representation changes when not needed. P4.\n\nHmm — actually, wait. Let me reconsider whether the materialization (defaults/kinds/groups cleared + per-node materialization) is INTENTIONALLY needed even without magic vars. Looking at the c9s side: `GetNodeStartupConfig` etc. merge on the c9s side anyway. So materialization without magic vars is semantically neutral. So a guard is safe IF the guard condition covers all expandable vars. The magic vars are `__clabDir__`, `__clabLabName__`, `__clabNodeName__`, `__clabNodeDir__` (+ git vars already replaced earlier). A `strings.Contains` for `__clab` would... but what if a string contains `__clab` that's NOT a magic var (e.g., `__clabSomething__`)? Then it would skip expansion but such strings aren't expanded anyway. Safe. OK P4 suggestion.\n\nActually — hmm, one more consideration on finding 3: is it worth reporting at all? It's a behavior-preserving rewrite with real (if small) costs: comments lost in the stored CR, brief links reformatted. And it's the vehicle for the P1 bug. I'll report it as P4 with the note that the guard also limits finding 1's exposure to magic-var users only (fixing the MarshalYAML bug remains the root correction).\n\nAlso should I double check there's no OTHER lab runtime affected? `c.LabRuntime != nil` — only c9s sets LabRuntime. Fine.\n\nLet me also verify the exact line numbers for citations:\n- `core/labruntime_topology.go:56` (yaml.Marshal), 45-54 (MapSlice replacement), 14-62 (function).\n- `links/link.go:293-301` (host case with `Type: string(LinkTypeVEth)` at line 299).\n- `links/link.go:362` (`unable to marshall`).\n- `labruntime/clabernetes/files.go:124` (definition parse), 302-305 (brief link conversions).\n- `links/link_brief.go:20-25` (2-endpoint requirement).\n- `labruntime/clabernetes/primitives.go:59-68` (fail-closed compile).\n- Test: `core/labruntime_test.go:52-144` — no links.\n\nPermalinks: head root `https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/`. For `core/labruntime_topology.go` — `#L56-L61` etc. Files: `core/labruntime_topology.go`, `core/clab.go` `#L193-L197`, `links/link.go` `#L291-L301` and `#L340-L363`, `core/labruntime_test.go` `#L52-L144`.\n\nPath encoding: no special chars needed.\n\nNow the coverage notes:\n- Source-only review; tests not executed (go test not runnable in this environment).\n- Verified: fresh-slice semantics (no cross-node contamination), strict-parse implications, mgmt/prefix preservation via MapSlice, kind-specific config merge semantics preserved, license/env-files consistently not expanded, c9s staging order vs node sanitization, magic-var idempotency, schema (`volumes`, `stages` already defined; empty stage objects validate).\n- The exact behavior of the external `clabernetescompiler` package for the corrupted host link (fail vs drop) could not be verified in-source; both outcomes are regressions.\n- The new test covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages, and kind-specific config, but no test exercises links through the new re-marshal.\n\nAlso — one more possible finding I should consider: **`GetNodeBinds` error path**: \"failed to resolve binds\" — `GetNodeBinds` can error when? It merges group binds; error case is when a node has no group? Let me not chase; error handling is present.\n\nAnd — **what about `node.Volumes` field existing on NodeDefinition**: the test asserts `node.Volumes` — so it exists. Fine.\n\nOne more potential issue: **`expandLabRuntimeNodeMagicVars` sets `node.Exec = source.GetNodeExec(nodeName)` then `processNodeExecs` mutates `nodeConfig.Exec` which IS `node.Exec` (same slice backing array) — fine, it's a fresh slice from the getter.\n\nWait, actually — one REAL edge: `GetNodeExec` returns a fresh slice built by `mergeStringSliceFields`... for a node with NO exec anywhere, returns nil? Then `nodeConfig.Exec` nil, `processNodeExecs` loops nil — fine.\n\nAnd `GetStages` — when `labRuntimeNodeHasStages` true but all stages empty → merged stages with all five StageBase structs — `InitDefaults` sets Phase/Target? The serialization then emits all five stages with `exec` omitted when empty (omitempty on Execs and WaitFor). So each node gets `stages: {create: {}, create-links: {}, ...}` — hmm, does `StageBase` marshal empty maps? `yaml.Marshal` of `Stages` — `Create StageBase yaml:\"create,omitempty\"`? If `StageBase` is a struct (non-pointer), omitempty doesn't apply to structs in yaml.v2 → stages with all five keys, each `{}`... The test asserts `node.Stages.Configure.Execs` — present. Whatever — semantics preserved. Not a finding.\n\nNow — am I confident about the P1 severity? Let me think about the review-standard language: \"P1 high-impact merge blocker\". A regression that breaks all c9s deploys of host-link topologies is high-impact and should block merge. Yes, P1.\n\nLet me also double-check the brief→veth endpoint serialization once more — is it possible yaml.v2 marshals `EndpointRaw` via a custom stringer? No MarshalYAML on EndpointRaw (grep confirmed only 3 MarshalYAML in repo: MgmtNetworks, NodeDefinition, LinkDefinition). So `EndpointRaw` marshals as mapping with `node`, `interface` keys. Confirmed.\n\nOne more sanity check on the corrupted host link re-parse: `LinkVEthRaw` also has `LinkCommonParams` inline → `mtu`, `labels`, `ipv4`, `ipv6`, `vars` are recognized keys — `mtu: 9500` preserved. `host-interface`, `endpoint` ignored. Yes.\n\nAlso — hmm, one more thought about finding 1's suggested fix: `Type: string(LinkTypeHost)` — then re-parse gives `type: host` → LinkHostRaw with `host-interface` + `endpoint` — correct round-trip. Also fixes `clab generate` output for host links. And a round-trip test should cover brief host + mgmt-net + macvlan + plain veth.\n\nNow — also consider: should I flag that the new code doesn't expand magic vars in `wait-for` node references? Local path: `processNodeExecs` doesn't touch WaitFor either. Consistent. Skip.\n\nAlso `getHealthcheck`/`boot`? Not relevant.\n\nI think the findings list is final: 1×P1, 1×P3, 1×P4.\n\nLet me now write the Markdown review and the JSON. Locations:\n\nFinding 1: path `links/link.go`, start 291, end 301 — revision head (the bug is pre-existing but the exposure is via `core/labruntime_topology.go`). The finding location should anchor where the problem is most useful — I'll anchor to `core/labruntime_topology.go:45-61` (the re-marshal introduced by this PR) and reference the root cause in the problem text with its permalink. Actually the schema has one location; I'll use the PR-introduced code as the anchor and cite `links/link.go` in the problem/suggestion. Hmm — or anchor to `links/link.go:291-301`? The instruction: \"For missing docs/schema entries, anchor the finding to the introducing change\". For this finding, the root cause is in `links/link.go` (unchanged file) but the PR introduces the failing path. I'll anchor at `core/labruntime_topology.go` lines 45-61 (the re-marshal step) since that's what makes it manifest, and name the `MarshalYAML` host case in the problem text.\n\nFinding 2: anchor `core/labruntime_topology.go:56-59` too? Both same root locus. Better: anchor finding 2 to `links/link.go:340-363` (the switch default) with revision head. Since both findings are about `MarshalYAML` gaps exposed by the same new code, one finding per root cause: they ARE distinct root causes (wrong type constant vs missing case). Fine.\n\nFinding 3: anchor `core/labruntime_topology.go:14-62`.\n\nNow write it all up. Also mention the docs check: magic-var docs already generic, no stale claims — no doc finding.\n\nMarkdown structure: summary table, findings details with permalinks, coverage notes, then final JSON.\n\nPermalinks:\n- head: https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/\n- links: `core/labruntime_topology.go#L45-L61`, `core/labruntime_topology.go#L14-L32`, `core/clab.go#L188-L199`, `links/link.go#L291-L301`, `links/link.go#L340-L363`, `links/link_brief.go#L18-L26`, `labruntime/clabernetes/files.go#L119-L134`, `labruntime/clabernetes/files.go#L271-L293`, `labruntime/clabernetes/primitives.go#L59-L68`, `core/labruntime_test.go#L52-L144`, `labruntime/clabernetes/files.go#L355-L378` (stageStartupConfig inline handling — for the parity note in coverage).\n\nBase permalink for pre-PR behavior — I don't have base file contents (only head snapshot), so cite head for everything; describe base behavior from diff knowledge. Actually I can't link base lines (no base snapshot). Use head links only.\n\nWrite the review now.",
           "time": {
-            "start": 1794762062371
+            "start": 1794762062371,
+            "end": 1794762095133
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1e0283a20001o4y3dEqg5YXX6E",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e027b12f001Htg76PVOsPvr67",
+          "text": "# Code Review: magic variable expansion for lab-runtime topologies\n\n## Summary\n\nThe PR makes `prepareLabRuntimeTopology` (called when a lab runtime such as `c9s` is selected) expand per-node magic variables (`__clabNodeName__`, `__clabLabName__`, `__clabDir__`, `__clabNodeDir__`) and materialize inherited `defaults`/`kinds`/`groups` values onto every node definition, storing the result in `c.renderedTopology` for the runtime deploy request. The implementation is careful: source/expanded configs are parsed separately so no shared slices are mutated, the top-level `mgmt`/`prefix` keys survive via the `yaml.MapSlice` round-trip, kind-specific config merge semantics are preserved, and the new test covers defaults, kinds, groups, binds, volumes, exec, stages, and kind-specific config.\n\nThe significant problem I found: the expansion path re-marshals the whole `topology` section through `clabtypes.Topology`, which runs `links.LinkDefinition.MarshalYAML` — and that pre-existing marshaler is wrong for host links (`Type: string(LinkTypeVEth)` instead of `LinkTypeHost`). Before this PR the runtime definition was the verbatim topology file, so host links survived; after it, every c9s deploy of a topology with a host link re-encodes the link as a `type: veth` link whose `host-interface`/`endpoint` keys are silently dropped by the next parse, breaking the deploy (the c9s compiler is fail-closed). A closely related but lower-impact gap: `type: vxlan-stitch` links hit the marshaler's generic `unable to marshall` error.\n\n## Findings\n\n| Priority | Count | Summary |\n|---|---|---|\n| P1 | 1 | Host links corrupted by the new definition re-marshal |\n| P3 | 1 | `vxlan-stitch` links fail the new render with a cryptic `unable to marshall` error |\n| P4 | 1 | Re-marshal runs unconditionally even when no magic variables are present |\n\n### P1 — Host links break on lab runtimes: new re-marshal emits `type: veth` for host links\n\n**Location:** [`core/labruntime_topology.go#L45-L61`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L45-L61) (introduced by this PR), exposing the pre-existing bug in [`links/link.go#L293-L301`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L293-L301).\n\n**Problem:** `labRuntimeTopologyWithExpandedMagicVars` unconditionally unmarshals `c.renderedTopology` into `clabtypes.Topology` and re-marshals it (lines 45–61). Every link therefore passes through `links.LinkDefinition.MarshalYAML`, whose `LinkTypeHost` case builds the output struct with `Type: string(LinkTypeVEth)` while keeping the `LinkHostRaw` fields inline. The serialized link is:\n\n```yaml\nmtu: 9500\nhost-interface: eth1\nendpoint:\n  node: r1\n  interface: eth1\ntype: veth\n```\n\nWhen that definition is parsed again — by `stageTopologyLocalFiles` at [`labruntime/clabernetes/files.go#L119-L134`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/files.go#L119-L134) and by the c9s compiler — `type: veth` selects `LinkVEthRaw`, and `host-interface`/`endpoint` are not fields of `LinkVEthRaw`, so the non-strict parse silently ignores them and produces a veth link with zero endpoints. `clabernetesBriefLinks` then converts it to a brief link with an empty endpoint list (`files.go#L271-L293`), which the compiler cannot turn into a two-endpoint link (`links/link_brief.go#L18-L26`).\n\n**Trigger:** any lab-runtime deploy (`--runtime c9s`) of a topology containing a host link — in either the brief notation (`endpoints: [r1:eth1, host:eth1]`) or the full `type: host` form. The re-marshal runs for every lab-runtime deploy, not only for topologies that use magic variables.\n\n**Impact:** a regression on a documented, supported combination (the c9s runtime explicitly supports host links, see the `*clablinks.LinkHostRaw` case in `clabernetesBriefLink`). Before this PR the definition bytes passed through verbatim and host links deployed correctly; after it, `compilePrimitiveResources` fails the deploy client-side with a fail-closed compile error ([`labruntime/clabernetes/primitives.go#L59-L68`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/primitives.go#L59-L68)), or the host link is dropped depending on how the external compiler treats the orphan keys. Either outcome breaks a lab that deploys correctly today. The PR's test contains no links, so this is not covered.\n\n**Correction:** fix the root cause in `links/link.go`: the host case should emit `Type: string(LinkTypeHost)` (a one-line fix that also repairs `clab generate` output for host links). Add a round-trip test in `core/labruntime_test.go` that runs a topology with brief veth, host, and mgmt-net links through `labRuntimeTopologyWithExpandedMagicVars` and asserts the re-parsed definition preserves the endpoint semantics — that test would have caught this.\n\n### P3 — `type: vxlan-stitch` links fail the new render with a generic `unable to marshall` error\n\n**Location:** [`links/link.go#L340-L363`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L340-L363), reached via the re-marshal in [`core/labruntime_topology.go#L56-L59`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L56-L59).\n\n**Problem:** `LinkDefinition.UnmarshalYAML` accepts `type: vxlan-stitch` (`LinkTypeVxlanStitch`), but `MarshalYAML` has no case for it, so `yaml.Marshal` fails with the bare `unable to marshall` error, wrapped by the PR as `failed to render topology with expanded magic variables: unable to marshall`. Before this PR, the definition passed through verbatim and the same topology failed later, in `clabernetesBriefLink`, with the clearer message `failed to render clabernetes-compatible brief link for vxlan-stitch link`. The deploy outcome is the same (c9s does not support these links), so this is a diagnostics regression, not a functional one.\n\n**Trigger:** a c9s deploy of a topology with a full-form `type: vxlan-stitch` link.\n\n**Impact:** the user gets an error that looks like a containerlab bug rather than an unsupported link type, and it surfaces before any c9s-specific context.\n\n**Correction:** add a `LinkTypeVxlanStitch` case to `MarshalYAML` that emits `Type: string(LinkTypeVxlanStitch)` with the `LinkVxlanRaw` fields inline (mirroring the `LinkTypeVxlan` case); the type round-trips, so the definition then fails later at the existing, well-worded `clabernetesBriefLink` check.\n\n### P4 — Re-marshal runs even when the definition contains no magic variables\n\n**Location:** [`core/labruntime_topology.go#L14-L32`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L14-L32).\n\n**Problem:** the function always parses, mutates, and re-marshals the definition, even for topologies with no magic variables at all. The rewrite is semantically neutral for those topologies (the c9s side performs the same merges itself), but it changes the stored representation: comments and YAML anchors in the file are lost from the `Topology` CR's `spec.topology`, brief links are rewritten in full form, and the materialized inherited values and default MTUs appear on every node. It also widens the blast radius of the P1 bug from magic-variable users to all lab-runtime users.\n\n**Trigger:** every lab-runtime deploy.\n\n**Impact:** cosmetic representation churn and a small, avoidable parse/marshal cost; no functional difference for topology definitions without magic variables.\n\n**Correction:** optionally short-circuit when `strings.Contains(c.renderedTopology, \"__clab\")` is false (the git variables are already substituted earlier in `prepareLabRuntimeTopology`), leaving the verbatim definition in place for the common case. This is a proportionate guard, not a rewrite; the P1 correction above remains the real fix.\n\n## Coverage notes\n\n- This is a source-only review: no tests were executed, no builds run. All conclusions come from reading the snapshot at head `dfe60303f4b864b41040cb167d382755aab25189`.\n- Verified safe: `GetStages`/`mergeStringSliceFields`/`MergeStringSlices` return fresh slices and `processNodeExecs` copies exec structs, so `source` definitions are not mutated across nodes; the `yaml.MapSlice` round-trip preserves top-level `mgmt`/`prefix`/`settings` raw values; strict parsing of the original file means unknown keys cannot be silently dropped by the re-marshal; kind-specific config merge precedence (node > group > kind > defaults, first block wins) is preserved by the materialization; license and `env-files` are consistently *not* expanded (matching the local path, with c9s staging expanding them); magic-var expansion is idempotent for the c9s staging step; `sanitizeLabRuntimeNames` runs before `SetLabDirByPrefix` and the expansion, so `__clabDir__`/`__clabLabName__` resolve against the sanitized lab name; empty stage objects and `volumes`/`stages` are valid per `schemas/clab.schema.json`, so no schema change is needed; docs (`docs/manual/topo-def-file.md`) describe magic variables generically with no lab-runtime limitation that this PR would invalidate.\n- The new test `TestLabRuntimeDeployRequestExpandsMagicVars` covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages exec, and kind-specific config, but exercises no links — the P1 bug lives exactly there.\n- Unresolved uncertainty: the exact behavior of the external `github.com/clabernetes/clabernetes/compiler` package when parsing the corrupted host-link form (hard error versus dropped link) could not be inspected from this snapshot; both outcomes are regressions, so the finding stands.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P1\",\n      \"title\": \"Host links break on lab runtimes: new re-marshal emits `type: veth` for host links\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/labruntime_topology.go\",\n        \"start\": 45,\n        \"end\": 61\n      },\n      \"problem\": \"`labRuntimeTopologyWithExpandedMagicVars` unconditionally re-marshals the `topology` section through `clabtypes.Topology`, which runs `links.LinkDefinition.MarshalYAML` for every link. The `LinkTypeHost` case in that pre-existing marshaler (links/link.go:293-301) builds its output struct with `Type: string(LinkTypeVEth)` while keeping the `LinkHostRaw` fields inline, so a host link serializes as `type: veth` with orphan `host-interface` and `endpoint` keys. When the definition is parsed again by `stageTopologyLocalFiles` (labruntime/clabernetes/files.go:124) or by the c9s compiler, `type: veth` selects `LinkVEthRaw`, the orphan keys are silently ignored by the non-strict parse, and the link loses both endpoints.\",\n      \"trigger\": \"Any lab-runtime deploy (`--runtime c9s`) of a topology containing a host link, in either the brief notation (`endpoints: [r1:eth1, host:eth1]`) or the full `type: host` form. The re-marshal runs for every lab-runtime deploy, not only for topologies that use magic variables.\",\n      \"impact\": \"Before this PR the definition bytes passed through verbatim and host links deployed correctly on c9s; after it, `clabernetesBriefLinks` produces a brief link with an empty endpoint list and the fail-closed c9s compile (`compilePrimitiveResources`, labruntime/clabernetes/primitives.go:59-68) fails the deploy with a compile error, or the host link is dropped from the deployed lab. Either outcome is a regression on a documented, supported feature combination, and the PR's test contains no links.\",\n      \"suggestion\": \"Fix the root cause in `links/link.go`: the `LinkTypeHost` case of `LinkDefinition.MarshalYAML` should emit `Type: string(LinkTypeHost)` (this also repairs `clab generate` output for host links). Add a round-trip test in `core/labruntime_test.go` that runs a topology with brief veth, host, and mgmt-net links through `labRuntimeTopologyWithExpandedMagicVars` and asserts the re-parsed definition preserves the endpoint semantics.\"\n    },\n    {\n      \"priority\": \"P3\",\n      \"title\": \"`type: vxlan-stitch` links fail the new lab-runtime render with a generic `unable to marshall` error\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"links/link.go\",\n        \"start\": 340,\n        \"end\": 363\n      },\n      \"problem\": \"`LinkDefinition.UnmarshalYAML` accepts `type: vxlan-stitch` (`LinkTypeVxlanStitch`), but `LinkDefinition.MarshalYAML` has no case for it, so `yaml.Marshal` in the new `labRuntimeTopologyWithExpandedMagicVars` fails with the bare `unable to marshall` error, wrapped as `failed to render topology with expanded magic variables: unable to marshall`. Before this PR the definition passed through verbatim and the same topology failed later in `clabernetesBriefLink` with the clearer message `failed to render clabernetes-compatible brief link for vxlan-stitch link`.\",\n      \"trigger\": \"A c9s deploy of a topology with a full-form `type: vxlan-stitch` link.\",\n      \"impact\": \"The deploy outcome is unchanged (c9s rejects these links either way), so this is a diagnostics regression: the error looks like a containerlab bug rather than an unsupported link type, and it surfaces before any c9s-specific context.\",\n      \"suggestion\": \"Add a `LinkTypeVxlanStitch` case to `LinkDefinition.MarshalYAML` that emits `Type: string(LinkTypeVxlanStitch)` with the `LinkVxlanRaw` fields inline, mirroring the `LinkTypeVxlan` case. The type round-trips, so the definition then fails later at the existing, well-worded `clabernetesBriefLink` check.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Definition re-marshal runs unconditionally even when no magic variables are present\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/labruntime_topology.go\",\n        \"start\": 14,\n        \"end\": 32\n      },\n      \"problem\": \"The function always parses, mutates, and re-marshals the definition, even for topologies with no magic variables. For those topologies the rewrite is semantically neutral (the c9s side performs the same merges itself), but it changes the stored representation: comments and YAML anchors are lost from the `Topology` CR's `spec.topology`, brief links are rewritten in full form, and materialized inherited values plus default link MTUs appear on every node. It also widens the blast radius of the P1 host-link bug to all lab-runtime users.\",\n      \"trigger\": \"Every lab-runtime deploy.\",\n      \"impact\": \"Cosmetic representation churn and a small, avoidable parse/marshal cost; no functional difference for definitions without magic variables.\",\n      \"suggestion\": \"Optionally short-circuit when `strings.Contains(c.renderedTopology, \\\"__clab\\\")` is false (the git variables are already substituted earlier in `prepareLabRuntimeTopology`), leaving the verbatim definition in place for the common case. This is a proportionate guard, not a rewrite; the P1 correction remains the real fix.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no tests or builds were executed; all conclusions come from reading the snapshot at head dfe60303f4b864b41040cb167d382755aab25189.\",\n      \"Verified safe: GetStages/mergeStringSliceFields/MergeStringSlices return fresh slices and processNodeExecs copies exec structs, so source definitions are not mutated across nodes; the yaml.MapSlice round-trip preserves top-level mgmt/prefix/settings raw values; strict parsing of the original file means unknown keys cannot be silently dropped by the re-marshal; kind-specific config merge precedence (node > group > kind > defaults, first block wins) is preserved by the materialization.\",\n      \"Verified consistent: license and env-files are not magic-var-expanded (matching the local path, with c9s staging expanding them); magic-var expansion is idempotent for the c9s staging step; sanitizeLabRuntimeNames runs before SetLabDirByPrefix and the expansion, so __clabDir__/__clabLabName__ resolve against the sanitized lab name; empty stage objects and volumes/stages are valid per schemas/clab.schema.json; docs/manual/topo-def-file.md describes magic variables generically with no lab-runtime limitation this PR would invalidate.\",\n      \"The new test covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages exec, and kind-specific config, but exercises no links, which is exactly where the P1 bug lives.\",\n      \"Unresolved: the exact behavior of the external github.com/clabernetes/clabernetes/compiler package when parsing the corrupted host-link form (hard error versus dropped link) could not be inspected from this snapshot; both outcomes are regressions, so the P1 finding stands.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1794762095136,
+            "end": 1794762119972
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1e0289b2a001NmLviq67maFGBq",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e027b12f001Htg76PVOsPvr67",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 87234,
+            "input": 976,
+            "output": 4147,
+            "reasoning": 3263,
+            "cache": {
+              "read": 78848,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1e0289b3000174GZcFAS2qpHGS",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762119984
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_1e0289b31001hwQNCMN4HBz5FO",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0289b3000174GZcFAS2qpHGS",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_1e0271412001F1Bjhg3938RkCu"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1e0289b60001DpE4ijs2JCvVSh",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762120032,
+          "completed": 1794762145234
+        },
+        "parentID": "msg_1e0289b3000174GZcFAS2qpHGS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-JC4Lbi",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 52753,
+          "input": 49724,
+          "output": 3013,
+          "reasoning": 16,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1e028ad6f001CPVLjIAQ8H20gc",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0289b60001DpE4ijs2JCvVSh"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1e028ad71001w6qo9Gh9ksXE8x",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0289b60001DpE4ijs2JCvVSh",
+          "text": "Let me combine everything, updating state with the new findings from the conversation.",
+          "time": {
+            "start": 1794762124657,
+            "end": 1794762124829
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1e028ae1e001nXP4aN2J2lAJJk",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0289b60001DpE4ijs2JCvVSh",
+          "text": "## Objective\n- Perform a source-only read-only code review of the PR snapshot at `/source` (containerlab repo), covering all 3 changed paths from `diff.txt`, applying standards from `standards.json` (karpathy-guidelines.mdc, ponytail.mdc), and returning a trusted result schema. Tests cannot be executed (must disclose this limitation).\n\n## Important Details\n- Head: `dfe60303f4b864b41040cb167d382755aab25189`; base: `3b9f5e62e49a4223cd72a4ac2b9c77b90e91aedb`. Permalinks: head=`https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/`, base=`https://github.com/srl-labs/containerlab/blob/3b9f5e62e49a4223cd72a4ac2b9c77b90e91aedb/`.\n- Snapshot complete (manifest at `/source/manifest.json`); changed paths: `core/clab.go` (M), `core/labruntime_test.go` (M), `core/labruntime_topology.go` (A). Read tool requires `/source/...` paths.\n- PR purpose: `prepareLabRuntimeTopology` (core/clab.go:161) now calls `labRuntimeTopologyWithExpandedMagicVars()` after prefix defaulting (clab.go:193) and stores result in `c.renderedTopology`, expanding per-node magic vars and materializing inherited fields (defaults/kinds/groups) onto each node before the definition is sent to lab runtimes (c9s).\n- CONFIRMED ordering in `prepareLabRuntimeTopology`: `topologyEnv` check → git var name replacement (168-178) → `sanitizeLabRuntimeNames` (180) → `SetLabDirByPrefix(c.Config.Name)` (184) → prefix default (188) → expansion (193). So `__clabDir__`/`__clabLabName__` expand against the SANITIZED lab name; test expects `filepath.Join(topologyDir, \"clab-lab1\")` — consistent.\n- CONFIRMED — inline startup-config content: local path applies `r.Replace` to the ENTIRE startup-config value BEFORE embedded check (`processStartupConfig` at config.go:509), and `ProcessDownloadableAndEmbeddedFile` (utils/file.go:862-912) materializes embedded content verbatim after that replacement — so the new code expanding inline content matches local semantics exactly (and fixes c9s pre-PR behavior).\n- RESOLVED — round-trip fidelity: strict unmarshal in `LoadTopologyFromFile` prevents unknown keys; `types.Topology` fields all round-trip; MapSlice preserves `mgmt` (since `Config.Mgmt` is `yaml:\"-\"`), `prefix`, `settings` raw. Only cosmetic losses: comments/anchors/map ordering.\n- RESOLVED — link round-trip (the big analysis): brief links always convert on unmarshal via `LinkBriefRaw.ToTypeSpecificRawLink()` (links/link_brief.go:18) to typed raw links: veth (fromBrief=true), host, mgmt-net, macvlan. `LinkDefinition.MarshalYAML` (links/link.go:291-362) has cases for host, veth, veth-stitch, mgmt-net, macvlan, vxlan, dummy, brief; **the host case emits `Type: string(LinkTypeVEth)` (link.go:299) — a pre-existing copy-paste bug**. Missing case: `LinkTypeVxlanStitch` (falls to `unable to marshall` error, link.go ~362). Brief unmarshal materializes `MTU = clabconstants.DefaultLinkMTU` (9500) — semantic no-op on re-marshal.\n- c9s flow confirmed: definition parsed non-strict at `labruntime/clabernetes/files.go:124` into `clabRuntimeConfig` (`Topology *clabtypes.Topology`); `clabernetesBriefLinks` (files.go:271) converts any LinkDefinition to brief; `compilePrimitiveResources` (primitives.go:47) runs fail-closed compiler (`clabernetescompiler`, `UnsupportedFieldPolicyError`) both for `--no-topology-cr` primitives and CR path; CR stores verbatim definition unless `definitionChanged` (files.go:216-226), then `renderClabernetesTopologyDefinition` emits brief links.\n- `processNodeExecs` (config.go:995-1021) copies exec structs before mutating — no source contamination; `expandKindSpecificConfigMagicVars` (core/kind_specific_config.go:39) deep-copies strings/maps/slices (shared `[]string` values are benign — never mutated).\n- `GetNodeKindSpecificConfig` (types/topology.go:1195) merges node > group > kind > defaults, first block wins whole value, sorted by key; materialization onto nodes preserves merge semantics exactly; `validateKindSpecificConfigKeys` only runs in `parseTopology` (local path) — unchanged.\n- Docs: no doc claims magic vars unsupported with lab runtimes; magic vars documented generically in `docs/manual/topo-def-file.md` (~805-812). Schema: `volumes` and `stages` both present in `schemas/clab.schema.json` (354, 504) — no schema change needed.\n- `TestSanitizeLabRuntimeNames` comment (labruntime_test.go:246) confirms design intent: local rendering keeps raw node names.\n- `magicVarReplacer` (config.go:1024): `__clabDir__`→`TopologyLabDir()`, `__clabLabName__`→basename, `__clabNodeDir__`→`TopoPaths.NodeDir(nodeName)`, `__clabNodeName__`→nodeName (node vars only when nodeName != \"\").\n- `LinkCommonParams` (links/link.go:43-50) marshals cleanly (`DeploymentState` omitempty, always 0).\n- `NodeDefinition` has matching UnmarshalYAML/MarshalYAML with inline KindSpecificConfig; legacy `username`/`password` remap to Credentials; `extras` key errors on unmarshal (surfaces earlier/clearer post-PR — fine).\n- Tests were not executed (source-only review) — must disclose.\n\n## Work State\n### Completed\n- All three changed paths fully analyzed; standards read; `diff.txt` read (clab.go insertion + `TestLabRuntimeDeployRequestExpandsMagicVars` test at labruntime_test.go:89 which asserts no `__clab` remains and expanded per-node startup-config/exec/binds/volumes/stages).\n- Verified no cross-node contamination (`GetStages`, `mergeStringSliceFields`, `MergeStringSlices`, `processNodeExecs` copying, kind-specific config deep-copy).\n- Verified inline startup-config magic-var expansion matches local-path semantics.\n- Verified sanitize→SetLabDirByPrefix→expansion ordering; magic-var path parity with local `magicVarReplacer`.\n- Deep-dived link round-trip: brief→typed conversions, `MarshalYAML` per-type cases, `EndpointRaw` yaml tags (node/interface/mac/ipv4/ipv6/vars), `LinkCommonParams` tags, c9s parse/brief/compile pipeline.\n- Checked docs (no stale claims re magic vars + lab runtimes) and schema (`volumes`, `stages` present).\n- Finalized findings (see Active/Next Move).\n\n### Active\n- Finalizing findings for the trusted result schema:\n  - **P2 Finding 1**: New lab-runtime re-marshal corrupts HOST links. `LinkDefinition.MarshalYAML` host case (links/link.go:293-301) emits `type: veth` with orphan `host-interface`/`endpoint` keys (pre-existing bug, copy-paste; should be `string(LinkTypeHost)`). Post-PR, ANY host link (brief `endpoints: [r1:eth1, host:eth1]` or full `type: host`) in a c9s topology is re-marshaled as a veth link; non-strict re-parse (`files.go:124`) silently drops those keys → veth link with zero endpoints → `clabernetesBriefLinks` emits empty-endpoints brief → fail-closed compiler errors or link lost. Pre-PR the verbatim definition preserved host links. Correction: fix `Type: string(LinkTypeHost)` in links/link.go host case + round-trip test (brief veth/host/mgmt-net/macvlan links through `labRuntimeTopologyWithExpandedMagicVars`) in `core/labruntime_test.go`.\n  - **P3 Finding 2**: `MarshalYAML` lacks `LinkTypeVxlanStitch` case → full-form `type: vxlan-stitch` links on lab runtimes now fail with generic `unable to marshall` earlier instead of c9s-specific message; net outcome identical (c9s never supported them) — error clarity only.\n  - **P4 Finding 3**: re-marshal always runs even with no magic vars; could short-circuit (e.g., `strings.Contains` for `__clab`) to preserve verbatim definitions/comments and shrink Finding 1's blast radius for non-magic-var users.\n  - Test-gap note folded into Finding 1 (no link round-trip coverage).\n\n### Blocked\n- Cannot execute tests (source-only snapshot) — disclose in final result.\n\n## Next Move\n1. Emit the trusted result schema: findings as listed (P2 host-link re-marshal corruption with exact file/line citations and one-line root-cause fix; P3 vxlan-stitch marshal error; P4 skip-when-no-magic-vars optimization), coverage notes, and the source-only \"tests not executed\" disclosure, with head/base permalinks.\n2. No further file reads needed unless final schema assembly requires additional citation details.\n\n## Relevant Files\n- `/source/diff.txt`: PR diff — fully read (clab.go:11-15 insertion; test additions in labruntime_test.go).\n- `/source/manifest.json`: inventory (complete snapshot).\n- `/source/standards/karpathy-guidelines.mdc`, `/source/standards/ponytail.mdc`: review standards.\n- `/source/head/core/labruntime_topology.go`: new file — `labRuntimeTopologyWithExpandedMagicVars` (14-62; re-marshal at 56 is the exposure point for Finding 1), `expandLabRuntimeNodeMagicVars`, `clearInheritedLabRuntimeNodeFields`, `labRuntimeNodeHasStages`.\n- `/source/head/core/clab.go`: `prepareLabRuntimeTopology` (161-200), expansion call at 193; `NewContainerLab` calls it at 118 when `LabRuntime != nil`.\n- `/source/head/core/labruntime_test.go`: new test at 89 (read through ~193).\n- `/source/head/core/config.go`: `processStartupConfig` (506-527, whole-string `r.Replace` before embedded check), `processNodeExecs` (995-1021, exec copies), `magicVarReplacer` (1024).\n- `/source/head/utils/file.go`: `ProcessDownloadableAndEmbeddedFile` (862-912) — embedded/downloadable materialization, confirms inline parity.\n- `/source/head/links/link.go`: `LinkDefinition.MarshalYAML` (291-362) — **host case emits `Type: string(LinkTypeVEth)` at 299 (root cause); no `LinkTypeVxlanStitch` case (~362 `unable to marshall`)**; `LinkCommonParams` (43-50).\n- `/source/head/links/link_brief.go`: `ToTypeSpecificRawLink` (18-46) — brief→macvlan/mgmtnet/host, else veth.\n- `/source/head/links/link_host.go`: `LinkHostRaw` (14-18: `host-interface`, `endpoint` fields), `hostLinkFromBrief` (33-50, sets default MTU).\n- `/source/head/links/link_veth.go`: `LinkVEthRaw` (16-20, `fromBrief` unexported), default MTU materialization (~101-103).\n- `/source/head/links/endpoint_raw.go`: `EndpointRaw` yaml tags (14-21).\n- `/source/head/links/link_test.go`: unmarshal tests (no MarshalYAML host test — gap).\n- `/source/head/labruntime/clabernetes/files.go`: `clabRuntimeConfig` parse at 124 (non-strict), `definitionChanged`/CR storage (216-226), `renderClabernetesTopologyDefinition` (234+), `clabernetesBriefLinks` (271-293).\n- `/source/head/labruntime/clabernetes/primitives.go`: `compilePrimitiveResources` (47) — fail-closed compiler used for both CR and no-CR paths.\n- `/source/head/labruntime/clabernetes/plan.go`: `planPrimitiveResources` (321), `noTopologyCR` handling (289-319).\n- `/source/head/types/topology.go`: `Topology` struct (202-208), `GetNodeKindSpecificConfig` (1195-1239), `GetStages` (~964).\n- `/source/head/types/node_definition.go`: custom UnmarshalYAML/MarshalYAML (155-199+) — round-trips correctly.\n- `/source/head/core/kind_specific_config.go`: `expandKindSpecificConfigMagicVars` (39-67+) — deep-copies values.\n- `/source/head/core/topology_reconcile.go`: reconcile path (740-785) — local-only, unaffected.\n- `/source/head/schemas/clab.schema.json`: `volumes` (354) and `stages` (504) present — no schema change needed.\n- `/source/head/docs/manual/topo-def-file.md`: magic vars table (~805-812) — no stale doc claims.",
+          "time": {
+            "start": 1794762124830,
+            "end": 1794762145224
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1e028fdcd001TsYWEjvevSWaeH",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0289b60001DpE4ijs2JCvVSh",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 52753,
+            "input": 49724,
+            "output": 3013,
+            "reasoning": 16,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1e028fdd5001KCQjKBfrvlv3W3",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762145237
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1e028fdd60019XCBgBo6GrYTqh",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e028fdd5001KCQjKBfrvlv3W3",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1794762145238,
+            "end": 1794762145238
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1e028fde2001PqaaTdNrarxUcg",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762145250,
+          "completed": 1794762151558
+        },
+        "parentID": "msg_1e028fdd5001KCQjKBfrvlv3W3",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-JC4Lbi",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 19819,
+          "input": 19310,
+          "output": 383,
+          "reasoning": 126,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1e029056a001oM6pT7HfnyMM8c",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e028fde2001PqaaTdNrarxUcg"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1e029056c0016uFvXY4Q24fW50",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e028fde2001PqaaTdNrarxUcg",
+          "text": "The task was already completed: the review was finalized and the trusted result schema was emitted in the previous turn. My work state says \"Next Move: emit the trusted result schema... No further file reads needed.\" That was done. The user says \"Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.\"\n\nSince the review and final JSON were already emitted, there are no further steps — I should stop and confirm completion. I shouldn't re-emit the JSON. I'll briefly state the review is complete and summarize what was delivered, and ask if they need anything else.",
+          "time": {
+            "start": 1794762147180,
+            "end": 1794762148650
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1e0290b2c001ooSDEa8cL7KQwD",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e028fde2001PqaaTdNrarxUcg",
+          "text": "The review is complete — no next steps remain. To recap what was delivered in my previous message:\n\n- **Full Markdown review** covering all three changed paths (`core/clab.go`, `core/labruntime_test.go`, `core/labruntime_topology.go`), with a severity summary table and three findings:\n  - **P1**: The new definition re-marshal serializes `type: host` links as `type: veth` with orphan `host-interface`/`endpoint` keys (exposing a pre-existing bug in `links/link.go` `MarshalYAML`), breaking c9s deploys of host-link topologies; root fix is a one-line `Type: string(LinkTypeHost)` correction plus a link round-trip test.\n  - **P3**: `type: vxlan-stitch` links now fail the render with the generic `unable to marshall` error instead of the clearer c9s brief-link message; fix by adding a `MarshalYAML` case.\n  - **P4**: The re-marshal runs unconditionally; a `strings.Contains(\"__clab\")` short-circuit would preserve verbatim definitions for magic-var-free topologies and shrink the P1 blast radius.\n- **Coverage notes** stating honestly that tests were not executed (source-only review), what was verified safe (no cross-node contamination, `mgmt`/`prefix` preservation, kind-specific merge semantics, schema and docs checks), and the one unresolved uncertainty (exact external compiler behavior for the corrupted host-link form).\n- **The trusted result schema** in the final fenced JSON block, matching the Markdown findings exactly.\n\nIf you'd like, I can revisit any finding with more evidence (for example, digging further into the c9s brief-link or compiler paths), or adjust severities — but as it stands, the review is finalized and nothing is pending.",
+          "time": {
+            "start": 1794762148652,
+            "end": 1794762151550
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1e0291681001t1G7OGIVVDAwDM",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e028fde2001PqaaTdNrarxUcg",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 19819,
+            "input": 19310,
+            "output": 383,
+            "reasoning": 126,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1e0291b0e001Xz6szdoGX1PVzO",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762152718
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_1e0291b0f0014ImzgzybfBjwqT",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b0e001Xz6szdoGX1PVzO",
+          "text": "Your previous output was invalid. Use your existing investigation, recheck any invalid locations, and return the complete Markdown review followed by a final fenced JSON result matching the system schema. Do not restart the review."
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1e0291b240018Txmqq3zAhWKmc",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762152740,
+          "completed": 1794762155462
+        },
+        "parentID": "msg_1e0291b0e001Xz6szdoGX1PVzO",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-JC4Lbi",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 20042,
+          "input": 150,
+          "output": 61,
+          "reasoning": 119,
+          "cache": {
+            "read": 19712,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1e0292053001SghA3CYmIyG7bz",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b240018Txmqq3zAhWKmc"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1e0292055001vqlIfpHSrg3OFV",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b240018Txmqq3zAhWKmc",
+          "text": "The previous output was supposedly invalid. I need to recheck locations and re-emit the complete Markdown review followed by the final fenced JSON. Let me verify the exact line numbers of the citations so the anchors are precise. Let me re-read the key files to confirm line numbers: `core/labruntime_topology.go` (function + marshal), `links/link.go` (MarshalYAML host case and default case), `core/clab.go` (expansion call), `core/labruntime_test.go` (test). Also files.go lines and primitives.go lines. Let me verify quickly.",
+          "time": {
+            "start": 1794762154069,
+            "end": 1794762155021
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1e0292410001WnN0nmz83yVzSY",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b240018Txmqq3zAhWKmc",
+          "text": "Let me recheck the exact line anchors before re-emitting, so every citation is precise.",
+          "time": {
+            "start": 1794762155024,
+            "end": 1794762155445
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1e029250b001flK5cBEDlj2L3N",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b240018Txmqq3zAhWKmc",
+          "callID": "call_1f0702109c8a4d1db808115c",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/labruntime_topology.go"
+            },
+            "output": "<path>/source/head/core/labruntime_topology.go</path>\n<type>file</type>\n<content>\n1: package core\n2: \n3: import (\n4: \t\"fmt\"\n5: \t\"strings\"\n6: \n7: \tclabtypes \"github.com/srl-labs/containerlab/types\"\n8: \t\"gopkg.in/yaml.v2\"\n9: )\n10: \n11: // labRuntimeTopologyWithExpandedMagicVars renders the per-node values that local runtimes\n12: // normally resolve while initializing nodes. Inherited fields are materialized on each node so\n13: // that defaults, kinds, and groups can contain node-scoped variables too.\n14: func (c *CLab) labRuntimeTopologyWithExpandedMagicVars() ([]byte, error) {\n15: \tsource := &Config{}\n16: \tif err := yaml.Unmarshal(c.renderedTopology, source); err != nil {\n17: \t\treturn nil, fmt.Errorf(\n18: \t\t\t\"failed to parse rendered topology for magic variable expansion: %w\",\n19: \t\t\terr,\n20: \t\t)\n21: \t}\n22: \tif source.Topology == nil {\n23: \t\treturn c.renderedTopology, nil\n24: \t}\n25: \n26: \texpanded := &Config{}\n27: \tif err := yaml.Unmarshal(c.renderedTopology, expanded); err != nil {\n28: \t\treturn nil, fmt.Errorf(\n29: \t\t\t\"failed to copy rendered topology for magic variable expansion: %w\",\n30: \t\t\terr,\n31: \t\t)\n32: \t}\n33: \n34: \tfor nodeName := range source.Topology.Nodes {\n35: \t\tif err := c.expandLabRuntimeNodeMagicVars(\n36: \t\t\tsource.Topology,\n37: \t\t\texpanded.Topology,\n38: \t\t\tnodeName,\n39: \t\t); err != nil {\n40: \t\t\treturn nil, err\n41: \t\t}\n42: \t}\n43: \tclearInheritedLabRuntimeNodeFields(expanded.Topology)\n44: \n45: \tvar document yaml.MapSlice\n46: \tif err := yaml.Unmarshal(c.renderedTopology, &document); err != nil {\n47: \t\treturn nil, fmt.Errorf(\"failed to parse rendered topology document: %w\", err)\n48: \t}\n49: \tfor i := range document {\n50: \t\tif document[i].Key == \"topology\" {\n51: \t\t\tdocument[i].Value = expanded.Topology\n52: \t\t\tbreak\n53: \t\t}\n54: \t}\n55: \n56: \tresult, err := yaml.Marshal(document)\n57: \tif err != nil {\n58: \t\treturn nil, fmt.Errorf(\"failed to render topology with expanded magic variables: %w\", err)\n59: \t}\n60: \n61: \treturn result, nil\n62: }\n63: \n64: func (c *CLab) expandLabRuntimeNodeMagicVars(\n65: \tsource, expanded *clabtypes.Topology,\n66: \tnodeName string,\n67: ) error {\n68: \tnode := expanded.Nodes[nodeName]\n69: \tif node == nil {\n70: \t\tnode = &clabtypes.NodeDefinition{}\n71: \t\texpanded.Nodes[nodeName] = node\n72: \t}\n73: \n74: \tr := c.magicVarReplacer(nodeName)\n75: \tnode.StartupConfig = r.Replace(source.GetNodeStartupConfig(nodeName))\n76: \n77: \tvar err error\n78: \tnode.Binds, err = source.GetNodeBinds(nodeName)\n79: \tif err != nil {\n80: \t\treturn fmt.Errorf(\n81: \t\t\t\"failed to resolve binds for node %q during magic variable expansion: %w\",\n82: \t\t\tnodeName,\n83: \t\t\terr,\n84: \t\t)\n85: \t}\n86: \tfor i := range node.Binds {\n87: \t\tparts := strings.Split(node.Binds[i], \":\")\n88: \t\tparts[0] = r.Replace(parts[0])\n89: \t\tnode.Binds[i] = strings.Join(parts, \":\")\n90: \t}\n91: \n92: \tnode.Volumes, err = source.GetNodeVolumes(nodeName)\n93: \tif err != nil {\n94: \t\treturn fmt.Errorf(\n95: \t\t\t\"failed to resolve volumes for node %q during magic variable expansion: %w\",\n96: \t\t\tnodeName,\n97: \t\t\terr,\n98: \t\t)\n99: \t}\n100: \tfor i := range node.Volumes {\n101: \t\tparts := strings.Split(node.Volumes[i], \":\")\n102: \t\tif len(parts) == 1 {\n103: \t\t\tcontinue\n104: \t\t}\n105: \t\tparts[0] = r.Replace(parts[0])\n106: \t\tnode.Volumes[i] = strings.Join(parts, \":\")\n107: \t}\n108: \n109: \tnode.Exec = source.GetNodeExec(nodeName)\n110: \tif labRuntimeNodeHasStages(source, nodeName) {\n111: \t\tnode.Stages, err = source.GetStages(nodeName)\n112: \t\tif err != nil {\n113: \t\t\treturn fmt.Errorf(\n114: \t\t\t\t\"failed to resolve stages for node %q during magic variable expansion: %w\",\n115: \t\t\t\tnodeName,\n116: \t\t\t\terr,\n117: \t\t\t)\n118: \t\t}\n119: \t}\n120: \tnodeConfig := &clabtypes.NodeConfig{\n121: \t\tShortName: nodeName,\n122: \t\tExec:      node.Exec,\n123: \t\tStages:    node.Stages,\n124: \t}\n125: \tc.processNodeExecs(nodeConfig)\n126: \tnode.Exec = nodeConfig.Exec\n127: \tnode.Stages = nodeConfig.Stages\n128: \n129: \tentries := c.expandKindSpecificConfigMagicVars(\n130: \t\tsource.GetNodeKindSpecificConfig(nodeName), nodeName,\n131: \t)\n132: \tif len(entries) != 0 {\n133: \t\tnode.KindSpecificConfig = make(map[string]any, len(entries))\n134: \t\tfor _, entry := range entries {\n135: \t\t\tnode.KindSpecificConfig[entry.Key] = entry.Value\n136: \t\t}\n137: \t}\n138: \n139: \treturn nil\n140: }\n141: \n142: func labRuntimeNodeHasStages(topology *clabtypes.Topology, nodeName string) bool {\n143: \tdefinitions := []*clabtypes.NodeDefinition{\n144: \t\ttopology.Defaults,\n145: \t\ttopology.GetKind(topology.GetNodeKind(nodeName)),\n146: \t\ttopology.GetGroup(topology.GetNodeGroup(nodeName)),\n147: \t\ttopology.Nodes[nodeName],\n148: \t}\n149: \tfor _, definition := range definitions {\n150: \t\tif definition != nil && definition.Stages != nil {\n151: \t\t\treturn true\n152: \t\t}\n153: \t}\n154: \n155: \treturn false\n156: }\n157: \n158: // clearInheritedLabRuntimeNodeFields prevents the inherited values from being merged a second\n159: // time after their effective, expanded copies have been placed on every node.\n160: func clearInheritedLabRuntimeNodeFields(topology *clabtypes.Topology) {\n161: \tdefinitions := []*clabtypes.NodeDefinition{topology.Defaults}\n162: \tfor _, definition := range topology.Kinds {\n163: \t\tdefinitions = append(definitions, definition)\n164: \t}\n165: \tfor _, definition := range topology.Groups {\n166: \t\tdefinitions = append(definitions, definition)\n167: \t}\n168: \n169: \tfor _, definition := range definitions {\n170: \t\tif definition == nil {\n171: \t\t\tcontinue\n172: \t\t}\n173: \t\tdefinition.StartupConfig = \"\"\n174: \t\tdefinition.Binds = nil\n175: \t\tdefinition.Volumes = nil\n176: \t\tdefinition.Exec = nil\n177: \t\tdefinition.Stages = nil\n178: \t\tdefinition.KindSpecificConfig = nil\n179: \t}\n180: }\n\n(End of file - total 180 lines)\n</content>",
+            "title": "source/head/core/labruntime_topology.go",
+            "metadata": {
+              "preview": "package core\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\t\"gopkg.in/yaml.v2\"\n)\n\n// labRuntimeTopologyWithExpandedMagicVars renders the per-node values that local runtimes\n// normally resolve while initializing nodes. Inherited fields are materialized on each node so\n// that defaults, kinds, and groups can contain node-scoped variables too.\nfunc (c *CLab) labRuntimeTopologyWithExpandedMagicVars() ([]byte, error) {\n\tsource := &Config{}\n\tif err := yaml.Unmarshal(c.renderedTopology, source); err != nil {\n\t\treturn nil, fmt.Errorf(\n\t\t\t\"failed to parse rendered topology for magic variable expansion: %w\",\n\t\t\terr,\n\t\t)",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/labruntime_topology.go",
+                "text": "package core\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\t\"gopkg.in/yaml.v2\"\n)\n\n// labRuntimeTopologyWithExpandedMagicVars renders the per-node values that local runtimes\n// normally resolve while initializing nodes. Inherited fields are materialized on each node so\n// that defaults, kinds, and groups can contain node-scoped variables too.\nfunc (c *CLab) labRuntimeTopologyWithExpandedMagicVars() ([]byte, error) {\n\tsource := &Config{}\n\tif err := yaml.Unmarshal(c.renderedTopology, source); err != nil {\n\t\treturn nil, fmt.Errorf(\n\t\t\t\"failed to parse rendered topology for magic variable expansion: %w\",\n\t\t\terr,\n\t\t)\n\t}\n\tif source.Topology == nil {\n\t\treturn c.renderedTopology, nil\n\t}\n\n\texpanded := &Config{}\n\tif err := yaml.Unmarshal(c.renderedTopology, expanded); err != nil {\n\t\treturn nil, fmt.Errorf(\n\t\t\t\"failed to copy rendered topology for magic variable expansion: %w\",\n\t\t\terr,\n\t\t)\n\t}\n\n\tfor nodeName := range source.Topology.Nodes {\n\t\tif err := c.expandLabRuntimeNodeMagicVars(\n\t\t\tsource.Topology,\n\t\t\texpanded.Topology,\n\t\t\tnodeName,\n\t\t); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t}\n\tclearInheritedLabRuntimeNodeFields(expanded.Topology)\n\n\tvar document yaml.MapSlice\n\tif err := yaml.Unmarshal(c.renderedTopology, &document); err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to parse rendered topology document: %w\", err)\n\t}\n\tfor i := range document {\n\t\tif document[i].Key == \"topology\" {\n\t\t\tdocument[i].Value = expanded.Topology\n\t\t\tbreak\n\t\t}\n\t}\n\n\tresult, err := yaml.Marshal(document)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to render topology with expanded magic variables: %w\", err)\n\t}\n\n\treturn result, nil\n}\n\nfunc (c *CLab) expandLabRuntimeNodeMagicVars(\n\tsource, expanded *clabtypes.Topology,\n\tnodeName string,\n) error {\n\tnode := expanded.Nodes[nodeName]\n\tif node == nil {\n\t\tnode = &clabtypes.NodeDefinition{}\n\t\texpanded.Nodes[nodeName] = node\n\t}\n\n\tr := c.magicVarReplacer(nodeName)\n\tnode.StartupConfig = r.Replace(source.GetNodeStartupConfig(nodeName))\n\n\tvar err error\n\tnode.Binds, err = source.GetNodeBinds(nodeName)\n\tif err != nil {\n\t\treturn fmt.Errorf(\n\t\t\t\"failed to resolve binds for node %q during magic variable expansion: %w\",\n\t\t\tnodeName,\n\t\t\terr,\n\t\t)\n\t}\n\tfor i := range node.Binds {\n\t\tparts := strings.Split(node.Binds[i], \":\")\n\t\tparts[0] = r.Replace(parts[0])\n\t\tnode.Binds[i] = strings.Join(parts, \":\")\n\t}\n\n\tnode.Volumes, err = source.GetNodeVolumes(nodeName)\n\tif err != nil {\n\t\treturn fmt.Errorf(\n\t\t\t\"failed to resolve volumes for node %q during magic variable expansion: %w\",\n\t\t\tnodeName,\n\t\t\terr,\n\t\t)\n\t}\n\tfor i := range node.Volumes {\n\t\tparts := strings.Split(node.Volumes[i], \":\")\n\t\tif len(parts) == 1 {\n\t\t\tcontinue\n\t\t}\n\t\tparts[0] = r.Replace(parts[0])\n\t\tnode.Volumes[i] = strings.Join(parts, \":\")\n\t}\n\n\tnode.Exec = source.GetNodeExec(nodeName)\n\tif labRuntimeNodeHasStages(source, nodeName) {\n\t\tnode.Stages, err = source.GetStages(nodeName)\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"failed to resolve stages for node %q during magic variable expansion: %w\",\n\t\t\t\tnodeName,\n\t\t\t\terr,\n\t\t\t)\n\t\t}\n\t}\n\tnodeConfig := &clabtypes.NodeConfig{\n\t\tShortName: nodeName,\n\t\tExec:      node.Exec,\n\t\tStages:    node.Stages,\n\t}\n\tc.processNodeExecs(nodeConfig)\n\tnode.Exec = nodeConfig.Exec\n\tnode.Stages = nodeConfig.Stages\n\n\tentries := c.expandKindSpecificConfigMagicVars(\n\t\tsource.GetNodeKindSpecificConfig(nodeName), nodeName,\n\t)\n\tif len(entries) != 0 {\n\t\tnode.KindSpecificConfig = make(map[string]any, len(entries))\n\t\tfor _, entry := range entries {\n\t\t\tnode.KindSpecificConfig[entry.Key] = entry.Value\n\t\t}\n\t}\n\n\treturn nil\n}\n\nfunc labRuntimeNodeHasStages(topology *clabtypes.Topology, nodeName string) bool {\n\tdefinitions := []*clabtypes.NodeDefinition{\n\t\ttopology.Defaults,\n\t\ttopology.GetKind(topology.GetNodeKind(nodeName)),\n\t\ttopology.GetGroup(topology.GetNodeGroup(nodeName)),\n\t\ttopology.Nodes[nodeName],\n\t}\n\tfor _, definition := range definitions {\n\t\tif definition != nil && definition.Stages != nil {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}\n\n// clearInheritedLabRuntimeNodeFields prevents the inherited values from being merged a second\n// time after their effective, expanded copies have been placed on every node.\nfunc clearInheritedLabRuntimeNodeFields(topology *clabtypes.Topology) {\n\tdefinitions := []*clabtypes.NodeDefinition{topology.Defaults}\n\tfor _, definition := range topology.Kinds {\n\t\tdefinitions = append(definitions, definition)\n\t}\n\tfor _, definition := range topology.Groups {\n\t\tdefinitions = append(definitions, definition)\n\t}\n\n\tfor _, definition := range definitions {\n\t\tif definition == nil {\n\t\t\tcontinue\n\t\t}\n\t\tdefinition.StartupConfig = \"\"\n\t\tdefinition.Binds = nil\n\t\tdefinition.Volumes = nil\n\t\tdefinition.Exec = nil\n\t\tdefinition.Stages = nil\n\t\tdefinition.KindSpecificConfig = nil\n\t}\n}",
+                "lineStart": 1,
+                "lineEnd": 180,
+                "totalLines": 180,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1794762155280,
+              "end": 1794762155287
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1e02925ab001FilR1Y7ll22kew",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b240018Txmqq3zAhWKmc",
+          "callID": "call_ce8b8f7b88894e26a340a612",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/link.go",
+              "limit": 90,
+              "offset": 280
+            },
+            "output": "<path>/source/head/links/link.go</path>\n<type>file</type>\n<content>\n280: \tdefault:\n281: \t\treturn fmt.Errorf(\"unknown link type %q\", lt)\n282: \t}\n283: \n284: \treturn nil\n285: }\n286: \n287: // MarshalYAML serializes LinkDefinition (e.g when used with generate command).\n288: // As of now it falls back to converting the LinkConfig into a\n289: // RawVEthLink, such that the generated LinkConfigs adhere to the new LinkDefinition\n290: // format instead of the brief one.\n291: func (r *LinkDefinition) MarshalYAML() (any, error) {\n292: \tswitch r.Link.GetType() {\n293: \tcase LinkTypeHost:\n294: \t\tx := struct {\n295: \t\t\tLinkHostRaw `yaml:\",inline\"`\n296: \t\t\tType        string `yaml:\"type\"`\n297: \t\t}{\n298: \t\t\tLinkHostRaw: *r.Link.(*LinkHostRaw),\n299: \t\t\tType:        string(LinkTypeVEth),\n300: \t\t}\n301: \t\treturn x, nil\n302: \tcase LinkTypeVEth:\n303: \t\tx := struct {\n304: \t\t\t// the Type field is injected artificially\n305: \t\t\t// to allow strict yaml parsing to work.\n306: \t\t\tType        string `yaml:\"type\"`\n307: \t\t\tLinkVEthRaw `yaml:\",inline\"`\n308: \t\t}{\n309: \t\t\tLinkVEthRaw: *r.Link.(*LinkVEthRaw),\n310: \t\t\tType:        string(LinkTypeVEth),\n311: \t\t}\n312: \t\treturn x, nil\n313: \tcase LinkTypeVethStitch:\n314: \t\tx := struct {\n315: \t\t\tType                string `yaml:\"type\"`\n316: \t\t\tLinkVEthStitchedRaw `yaml:\",inline\"`\n317: \t\t}{\n318: \t\t\tLinkVEthStitchedRaw: *r.Link.(*LinkVEthStitchedRaw),\n319: \t\t\tType:                string(LinkTypeVethStitch),\n320: \t\t}\n321: \t\treturn x, nil\n322: \tcase LinkTypeMgmtNet:\n323: \t\tx := struct {\n324: \t\t\tType           string `yaml:\"type\"`\n325: \t\t\tLinkMgmtNetRaw `yaml:\",inline\"`\n326: \t\t}{\n327: \t\t\tLinkMgmtNetRaw: *r.Link.(*LinkMgmtNetRaw),\n328: \t\t\tType:           string(LinkTypeMgmtNet),\n329: \t\t}\n330: \t\treturn x, nil\n331: \tcase LinkTypeMacVLan:\n332: \t\tx := struct {\n333: \t\t\tType           string `yaml:\"type\"`\n334: \t\t\tLinkMacVlanRaw `yaml:\",inline\"`\n335: \t\t}{\n336: \t\t\tLinkMacVlanRaw: *r.Link.(*LinkMacVlanRaw),\n337: \t\t\tType:           string(LinkTypeMacVLan),\n338: \t\t}\n339: \t\treturn x, nil\n340: \tcase LinkTypeVxlan:\n341: \t\tx := struct {\n342: \t\t\tType         string `yaml:\"type\"`\n343: \t\t\tLinkVxlanRaw `yaml:\",inline\"`\n344: \t\t}{\n345: \t\t\tLinkVxlanRaw: *r.Link.(*LinkVxlanRaw),\n346: \t\t\tType:         string(LinkTypeVxlan),\n347: \t\t}\n348: \t\treturn x, nil\n349: \tcase LinkTypeDummy:\n350: \t\tx := struct {\n351: \t\t\tType         string `yaml:\"type\"`\n352: \t\t\tLinkDummyRaw `yaml:\",inline\"`\n353: \t\t}{\n354: \t\t\tLinkDummyRaw: *r.Link.(*LinkDummyRaw),\n355: \t\t\tType:         string(LinkTypeDummy),\n356: \t\t}\n357: \t\treturn x, nil\n358: \tcase LinkTypeBrief:\n359: \t\treturn r.Link, nil\n360: \t}\n361: \n362: \treturn nil, fmt.Errorf(\"unable to marshall\")\n363: }\n364: \n365: // RawLink is an interface that all raw link types must implement.\n366: // Raw link types define the links as they are defined in the topology file\n367: // and solely a product of unmarshaling.\n368: // Raw links are later \"resolved\" to concrete link types (e.g LinkVeth).\n369: type RawLink interface {\n\n(Showing lines 280-369 of 804. Use offset=370 to continue.)\n</content>",
+            "title": "source/head/links/link.go",
+            "metadata": {
+              "preview": "\tdefault:\n\t\treturn fmt.Errorf(\"unknown link type %q\", lt)\n\t}\n\n\treturn nil\n}\n\n// MarshalYAML serializes LinkDefinition (e.g when used with generate command).\n// As of now it falls back to converting the LinkConfig into a\n// RawVEthLink, such that the generated LinkConfigs adhere to the new LinkDefinition\n// format instead of the brief one.\nfunc (r *LinkDefinition) MarshalYAML() (any, error) {\n\tswitch r.Link.GetType() {\n\tcase LinkTypeHost:\n\t\tx := struct {\n\t\t\tLinkHostRaw `yaml:\",inline\"`\n\t\t\tType        string `yaml:\"type\"`\n\t\t}{\n\t\t\tLinkHostRaw: *r.Link.(*LinkHostRaw),\n\t\t\tType:        string(LinkTypeVEth),",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/link.go",
+                "text": "\tdefault:\n\t\treturn fmt.Errorf(\"unknown link type %q\", lt)\n\t}\n\n\treturn nil\n}\n\n// MarshalYAML serializes LinkDefinition (e.g when used with generate command).\n// As of now it falls back to converting the LinkConfig into a\n// RawVEthLink, such that the generated LinkConfigs adhere to the new LinkDefinition\n// format instead of the brief one.\nfunc (r *LinkDefinition) MarshalYAML() (any, error) {\n\tswitch r.Link.GetType() {\n\tcase LinkTypeHost:\n\t\tx := struct {\n\t\t\tLinkHostRaw `yaml:\",inline\"`\n\t\t\tType        string `yaml:\"type\"`\n\t\t}{\n\t\t\tLinkHostRaw: *r.Link.(*LinkHostRaw),\n\t\t\tType:        string(LinkTypeVEth),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeVEth:\n\t\tx := struct {\n\t\t\t// the Type field is injected artificially\n\t\t\t// to allow strict yaml parsing to work.\n\t\t\tType        string `yaml:\"type\"`\n\t\t\tLinkVEthRaw `yaml:\",inline\"`\n\t\t}{\n\t\t\tLinkVEthRaw: *r.Link.(*LinkVEthRaw),\n\t\t\tType:        string(LinkTypeVEth),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeVethStitch:\n\t\tx := struct {\n\t\t\tType                string `yaml:\"type\"`\n\t\t\tLinkVEthStitchedRaw `yaml:\",inline\"`\n\t\t}{\n\t\t\tLinkVEthStitchedRaw: *r.Link.(*LinkVEthStitchedRaw),\n\t\t\tType:                string(LinkTypeVethStitch),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeMgmtNet:\n\t\tx := struct {\n\t\t\tType           string `yaml:\"type\"`\n\t\t\tLinkMgmtNetRaw `yaml:\",inline\"`\n\t\t}{\n\t\t\tLinkMgmtNetRaw: *r.Link.(*LinkMgmtNetRaw),\n\t\t\tType:           string(LinkTypeMgmtNet),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeMacVLan:\n\t\tx := struct {\n\t\t\tType           string `yaml:\"type\"`\n\t\t\tLinkMacVlanRaw `yaml:\",inline\"`\n\t\t}{\n\t\t\tLinkMacVlanRaw: *r.Link.(*LinkMacVlanRaw),\n\t\t\tType:           string(LinkTypeMacVLan),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeVxlan:\n\t\tx := struct {\n\t\t\tType         string `yaml:\"type\"`\n\t\t\tLinkVxlanRaw `yaml:\",inline\"`\n\t\t}{\n\t\t\tLinkVxlanRaw: *r.Link.(*LinkVxlanRaw),\n\t\t\tType:         string(LinkTypeVxlan),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeDummy:\n\t\tx := struct {\n\t\t\tType         string `yaml:\"type\"`\n\t\t\tLinkDummyRaw `yaml:\",inline\"`\n\t\t}{\n\t\t\tLinkDummyRaw: *r.Link.(*LinkDummyRaw),\n\t\t\tType:         string(LinkTypeDummy),\n\t\t}\n\t\treturn x, nil\n\tcase LinkTypeBrief:\n\t\treturn r.Link, nil\n\t}\n\n\treturn nil, fmt.Errorf(\"unable to marshall\")\n}\n\n// RawLink is an interface that all raw link types must implement.\n// Raw link types define the links as they are defined in the topology file\n// and solely a product of unmarshaling.\n// Raw links are later \"resolved\" to concrete link types (e.g LinkVeth).\ntype RawLink interface {",
+                "lineStart": 280,
+                "lineEnd": 369,
+                "totalLines": 804,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794762155442,
+              "end": 1794762155455
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1e02925c2001sTiYAwCqjodMZv",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0291b240018Txmqq3zAhWKmc",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 20042,
+            "input": 150,
+            "output": 61,
+            "reasoning": 119,
+            "cache": {
+              "read": 19712,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1e02925d10016aKJrsjpNfhOv4",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762155473,
+          "completed": 1794762157983
+        },
+        "parentID": "msg_1e0291b0e001Xz6szdoGX1PVzO",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-JC4Lbi",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 22972,
+          "input": 2827,
+          "output": 54,
+          "reasoning": 123,
+          "cache": {
+            "read": 19968,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1e0292b66001HMkteMG2Fnp9u8",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e02925d10016aKJrsjpNfhOv4"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1e0292b68001buh72aHZn9Sw2s",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e02925d10016aKJrsjpNfhOv4",
+          "text": "Confirmed:\n- `core/labruntime_topology.go`: function starts at line 14, re-marshal at 45-61, unmarshal+expand at 14-42.\n- `links/link.go`: `MarshalYAML` at 291; `LinkTypeHost` case at 293-301 with `Type: string(LinkTypeVEth)` at line 299; no `LinkTypeVxlanStitch` case; default `unable to marshall` at 362.\n\nNow verify `core/clab.go` and `core/labruntime_test.go` anchors.",
+          "time": {
+            "start": 1794762156904,
+            "end": 1794762157862
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1e0292f28001ySCAY7K5JE8l0A",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e02925d10016aKJrsjpNfhOv4",
+          "callID": "call_d7f28e38852c45c0b09a5ad2",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/clab.go",
+              "limit": 50,
+              "offset": 155
+            },
+            "output": "<path>/source/head/core/clab.go</path>\n<type>file</type>\n<content>\n155: \t\treturn strings.ToLower(envN)\n156: \tdefault:\n157: \t\treturn clabruntimedocker.RuntimeName\n158: \t}\n159: }\n160: \n161: func (c *CLab) prepareLabRuntimeTopology() error {\n162: \tif c.topologyEnv != nil {\n163: \t\treturn errors.New(\"topology env is not supported with lab runtimes\")\n164: \t}\n165: \n166: \tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n167: \n168: \tif strings.Contains(c.Config.Name, gitBranchVar) ||\n169: \t\tstrings.Contains(c.Config.Name, gitHashVar) {\n170: \t\tr := c.magicTopoNameReplacer()\n171: \t\toldName := c.Config.Name\n172: \t\tc.Config.Name = r.Replace(c.Config.Name)\n173: \t\tlog.Debugf(\n174: \t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n175: \t\t\toldName,\n176: \t\t\tc.Config.Name,\n177: \t\t)\n178: \t}\n179: \n180: \tif err := c.sanitizeLabRuntimeNames(); err != nil {\n181: \t\treturn err\n182: \t}\n183: \n184: \tif err := c.TopoPaths.SetLabDirByPrefix(c.Config.Name); err != nil {\n185: \t\treturn err\n186: \t}\n187: \n188: \tif c.Config.Prefix == nil {\n189: \t\tc.Config.Prefix = new(string)\n190: \t\t*c.Config.Prefix = defaultPrefix\n191: \t}\n192: \n193: \texpandedTopology, err := c.labRuntimeTopologyWithExpandedMagicVars()\n194: \tif err != nil {\n195: \t\treturn err\n196: \t}\n197: \tc.renderedTopology = expandedTopology\n198: \n199: \treturn nil\n200: }\n201: \n202: // sanitizeLabRuntimeNames aligns the lab and node names with what a lab runtime can name the\n203: // objects it creates with. The lab name is renamed here so containerlab and the runtime keep\n204: // addressing the lab by the same name; node names are renamed by the runtime itself, where the\n\n(Showing lines 155-204 of 1018. Use offset=205 to continue.)\n</content>",
+            "title": "source/head/core/clab.go",
+            "metadata": {
+              "preview": "\t\treturn strings.ToLower(envN)\n\tdefault:\n\t\treturn clabruntimedocker.RuntimeName\n\t}\n}\n\nfunc (c *CLab) prepareLabRuntimeTopology() error {\n\tif c.topologyEnv != nil {\n\t\treturn errors.New(\"topology env is not supported with lab runtimes\")\n\t}\n\n\tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n\n\tif strings.Contains(c.Config.Name, gitBranchVar) ||\n\t\tstrings.Contains(c.Config.Name, gitHashVar) {\n\t\tr := c.magicTopoNameReplacer()\n\t\toldName := c.Config.Name\n\t\tc.Config.Name = r.Replace(c.Config.Name)\n\t\tlog.Debugf(\n\t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/clab.go",
+                "text": "\t\treturn strings.ToLower(envN)\n\tdefault:\n\t\treturn clabruntimedocker.RuntimeName\n\t}\n}\n\nfunc (c *CLab) prepareLabRuntimeTopology() error {\n\tif c.topologyEnv != nil {\n\t\treturn errors.New(\"topology env is not supported with lab runtimes\")\n\t}\n\n\tlog.Info(\"Parsing & checking topology\", \"file\", c.TopoPaths.TopologyFilenameBase())\n\n\tif strings.Contains(c.Config.Name, gitBranchVar) ||\n\t\tstrings.Contains(c.Config.Name, gitHashVar) {\n\t\tr := c.magicTopoNameReplacer()\n\t\toldName := c.Config.Name\n\t\tc.Config.Name = r.Replace(c.Config.Name)\n\t\tlog.Debugf(\n\t\t\t\"Topology name contains Git variables, substituted topology name: %q -> %q\",\n\t\t\toldName,\n\t\t\tc.Config.Name,\n\t\t)\n\t}\n\n\tif err := c.sanitizeLabRuntimeNames(); err != nil {\n\t\treturn err\n\t}\n\n\tif err := c.TopoPaths.SetLabDirByPrefix(c.Config.Name); err != nil {\n\t\treturn err\n\t}\n\n\tif c.Config.Prefix == nil {\n\t\tc.Config.Prefix = new(string)\n\t\t*c.Config.Prefix = defaultPrefix\n\t}\n\n\texpandedTopology, err := c.labRuntimeTopologyWithExpandedMagicVars()\n\tif err != nil {\n\t\treturn err\n\t}\n\tc.renderedTopology = expandedTopology\n\n\treturn nil\n}\n\n// sanitizeLabRuntimeNames aligns the lab and node names with what a lab runtime can name the\n// objects it creates with. The lab name is renamed here so containerlab and the runtime keep\n// addressing the lab by the same name; node names are renamed by the runtime itself, where the",
+                "lineStart": 155,
+                "lineEnd": 204,
+                "totalLines": 1018,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794762157868,
+              "end": 1794762157875
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1e0292f8c001Fv8bL3QkAzJaqK",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e02925d10016aKJrsjpNfhOv4",
+          "callID": "call_6b3fbaa432e04a54896e3476",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/labruntime_test.go",
+              "limit": 115,
+              "offset": 80
+            },
+            "output": "<path>/source/head/core/labruntime_test.go</path>\n<type>file</type>\n<content>\n80: \n81: \tif got := resolveRuntimeName(\"\"); got != \"c9s\" {\n82: \t\tt.Fatalf(\"resolveRuntimeName() = %q, want c9s\", got)\n83: \t}\n84: \tif got := resolveRuntimeName(\"c9S\"); got != \"c9s\" {\n85: \t\tt.Fatalf(\"resolveRuntimeName(c9S) = %q, want c9s\", got)\n86: \t}\n87: }\n88: \n89: func TestLabRuntimeDeployRequestExpandsMagicVars(t *testing.T) {\n90: \tt.Parallel()\n91: \n92: \ttopologyDir := t.TempDir()\n93: \ttopologyFile := filepath.Join(topologyDir, \"lab.clab.yml\")\n94: \tconst topology = `name: lab1\n95: topology:\n96:   defaults:\n97:     kind: linux\n98:     startup-config: configs/__clabNodeName__.cfg\n99:     exec:\n100:       - echo __clabLabName__ __clabNodeName__ __clabDir__ __clabNodeDir__\n101:   kinds:\n102:     linux:\n103:       binds:\n104:         - configs/__clabNodeName__/frr.conf:/etc/frr/frr.conf\n105:   groups:\n106:     routers:\n107:       volumes:\n108:         - state/__clabNodeName__:/state\n109:       copy-to-flash:\n110:         - image-__clabNodeName__.bin\n111:       stages:\n112:         configure:\n113:           exec:\n114:             - command: bash configs/__clabNodeName__.sh\n115:   nodes:\n116:     r1:\n117:       group: routers\n118:     r2:\n119:       group: routers\n120: `\n121: \tif err := os.WriteFile(topologyFile, []byte(topology), 0o600); err != nil {\n122: \t\tt.Fatal(err)\n123: \t}\n124: \n125: \tc, err := NewContainerLab(\n126: \t\tWithTopoPath(topologyFile, nil),\n127: \t\tWithRuntime(clablabruntime.ClabernetesRuntimeName, nil),\n128: \t)\n129: \tif err != nil {\n130: \t\tt.Fatal(err)\n131: \t}\n132: \n133: \treq, err := c.labRuntimeDeployRequest()\n134: \tif err != nil {\n135: \t\tt.Fatal(err)\n136: \t}\n137: \tif strings.Contains(string(req.TopologyDefinition), \"__clab\") {\n138: \t\tt.Fatalf(\"runtime definition still contains magic variables:\\n%s\", req.TopologyDefinition)\n139: \t}\n140: \n141: \truntimeConfig := &Config{}\n142: \tif err := yaml.Unmarshal(req.TopologyDefinition, runtimeConfig); err != nil {\n143: \t\tt.Fatal(err)\n144: \t}\n145: \tfor _, nodeName := range []string{\"r1\", \"r2\"} {\n146: \t\tnode := runtimeConfig.Topology.Nodes[nodeName]\n147: \t\tif node == nil {\n148: \t\t\tt.Fatalf(\"node %s is missing\", nodeName)\n149: \t\t}\n150: \t\tif got, want := node.StartupConfig, \"configs/\"+nodeName+\".cfg\"; got != want {\n151: \t\t\tt.Errorf(\"%s startup-config = %q, want %q\", nodeName, got, want)\n152: \t\t}\n153: \t\twantExec := \"echo clab-lab1 \" + nodeName + \" \" +\n154: \t\t\tfilepath.Join(topologyDir, \"clab-lab1\") + \" \" +\n155: \t\t\tfilepath.Join(topologyDir, \"clab-lab1\", nodeName)\n156: \t\tif got := node.Exec; len(got) != 1 || got[0] != wantExec {\n157: \t\t\tt.Errorf(\"%s exec = %q, want %q\", nodeName, got, wantExec)\n158: \t\t}\n159: \t\twantBind := \"configs/\" + nodeName + \"/frr.conf:/etc/frr/frr.conf\"\n160: \t\tif got := node.Binds; len(got) != 1 || got[0] != wantBind {\n161: \t\t\tt.Errorf(\"%s binds = %q, want %q\", nodeName, got, wantBind)\n162: \t\t}\n163: \t\twantVolume := \"state/\" + nodeName + \":/state\"\n164: \t\tif got := node.Volumes; len(got) != 1 || got[0] != wantVolume {\n165: \t\t\tt.Errorf(\"%s volumes = %q, want %q\", nodeName, got, wantVolume)\n166: \t\t}\n167: \t\twantStageExec := \"bash configs/\" + nodeName + \".sh\"\n168: \t\tif got := node.Stages.Configure.Execs; len(got) != 1 || got[0].Command != wantStageExec {\n169: \t\t\tt.Errorf(\"%s staged exec = %+v, want command %q\", nodeName, got, wantStageExec)\n170: \t\t}\n171: \t\timages, ok := node.KindSpecificConfig[\"copy-to-flash\"].([]any)\n172: \t\tif !ok || len(images) != 1 || images[0] != \"image-\"+nodeName+\".bin\" {\n173: \t\t\tt.Errorf(\"%s copy-to-flash = %#v\", nodeName,\n174: \t\t\t\tnode.KindSpecificConfig[\"copy-to-flash\"])\n175: \t\t}\n176: \t}\n177: \n178: \tif got := c.Config.Topology.Defaults.StartupConfig; got != \"configs/__clabNodeName__.cfg\" {\n179: \t\tt.Fatalf(\"source topology was modified: startup-config = %q\", got)\n180: \t}\n181: }\n182: \n183: func TestApplyLabRuntimeDeployOptionsCopiesMaxWorkers(t *testing.T) {\n184: \tt.Parallel()\n185: \n186: \treq := &clablabruntime.DeployRequest{}\n187: \tapplyLabRuntimeDeployOptions(req, &DeployOptions{maxWorkers: 7})\n188: \n189: \tif req.MaxWorkers != 7 {\n190: \t\tt.Fatalf(\"runtime max workers = %d, want 7\", req.MaxWorkers)\n191: \t}\n192: }\n193: \n194: func TestDestroyWithLabRuntimeRejectsNodeFilterBeforeDeletion(t *testing.T) {\n\n(Showing lines 80-194 of 283. Use offset=195 to continue.)\n</content>",
+            "title": "source/head/core/labruntime_test.go",
+            "metadata": {
+              "preview": "\n\tif got := resolveRuntimeName(\"\"); got != \"c9s\" {\n\t\tt.Fatalf(\"resolveRuntimeName() = %q, want c9s\", got)\n\t}\n\tif got := resolveRuntimeName(\"c9S\"); got != \"c9s\" {\n\t\tt.Fatalf(\"resolveRuntimeName(c9S) = %q, want c9s\", got)\n\t}\n}\n\nfunc TestLabRuntimeDeployRequestExpandsMagicVars(t *testing.T) {\n\tt.Parallel()\n\n\ttopologyDir := t.TempDir()\n\ttopologyFile := filepath.Join(topologyDir, \"lab.clab.yml\")\n\tconst topology = `name: lab1\ntopology:\n  defaults:\n    kind: linux\n    startup-config: configs/__clabNodeName__.cfg\n    exec:",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/labruntime_test.go",
+                "text": "\n\tif got := resolveRuntimeName(\"\"); got != \"c9s\" {\n\t\tt.Fatalf(\"resolveRuntimeName() = %q, want c9s\", got)\n\t}\n\tif got := resolveRuntimeName(\"c9S\"); got != \"c9s\" {\n\t\tt.Fatalf(\"resolveRuntimeName(c9S) = %q, want c9s\", got)\n\t}\n}\n\nfunc TestLabRuntimeDeployRequestExpandsMagicVars(t *testing.T) {\n\tt.Parallel()\n\n\ttopologyDir := t.TempDir()\n\ttopologyFile := filepath.Join(topologyDir, \"lab.clab.yml\")\n\tconst topology = `name: lab1\ntopology:\n  defaults:\n    kind: linux\n    startup-config: configs/__clabNodeName__.cfg\n    exec:\n      - echo __clabLabName__ __clabNodeName__ __clabDir__ __clabNodeDir__\n  kinds:\n    linux:\n      binds:\n        - configs/__clabNodeName__/frr.conf:/etc/frr/frr.conf\n  groups:\n    routers:\n      volumes:\n        - state/__clabNodeName__:/state\n      copy-to-flash:\n        - image-__clabNodeName__.bin\n      stages:\n        configure:\n          exec:\n            - command: bash configs/__clabNodeName__.sh\n  nodes:\n    r1:\n      group: routers\n    r2:\n      group: routers\n`\n\tif err := os.WriteFile(topologyFile, []byte(topology), 0o600); err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\tc, err := NewContainerLab(\n\t\tWithTopoPath(topologyFile, nil),\n\t\tWithRuntime(clablabruntime.ClabernetesRuntimeName, nil),\n\t)\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\treq, err := c.labRuntimeDeployRequest()\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif strings.Contains(string(req.TopologyDefinition), \"__clab\") {\n\t\tt.Fatalf(\"runtime definition still contains magic variables:\\n%s\", req.TopologyDefinition)\n\t}\n\n\truntimeConfig := &Config{}\n\tif err := yaml.Unmarshal(req.TopologyDefinition, runtimeConfig); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tfor _, nodeName := range []string{\"r1\", \"r2\"} {\n\t\tnode := runtimeConfig.Topology.Nodes[nodeName]\n\t\tif node == nil {\n\t\t\tt.Fatalf(\"node %s is missing\", nodeName)\n\t\t}\n\t\tif got, want := node.StartupConfig, \"configs/\"+nodeName+\".cfg\"; got != want {\n\t\t\tt.Errorf(\"%s startup-config = %q, want %q\", nodeName, got, want)\n\t\t}\n\t\twantExec := \"echo clab-lab1 \" + nodeName + \" \" +\n\t\t\tfilepath.Join(topologyDir, \"clab-lab1\") + \" \" +\n\t\t\tfilepath.Join(topologyDir, \"clab-lab1\", nodeName)\n\t\tif got := node.Exec; len(got) != 1 || got[0] != wantExec {\n\t\t\tt.Errorf(\"%s exec = %q, want %q\", nodeName, got, wantExec)\n\t\t}\n\t\twantBind := \"configs/\" + nodeName + \"/frr.conf:/etc/frr/frr.conf\"\n\t\tif got := node.Binds; len(got) != 1 || got[0] != wantBind {\n\t\t\tt.Errorf(\"%s binds = %q, want %q\", nodeName, got, wantBind)\n\t\t}\n\t\twantVolume := \"state/\" + nodeName + \":/state\"\n\t\tif got := node.Volumes; len(got) != 1 || got[0] != wantVolume {\n\t\t\tt.Errorf(\"%s volumes = %q, want %q\", nodeName, got, wantVolume)\n\t\t}\n\t\twantStageExec := \"bash configs/\" + nodeName + \".sh\"\n\t\tif got := node.Stages.Configure.Execs; len(got) != 1 || got[0].Command != wantStageExec {\n\t\t\tt.Errorf(\"%s staged exec = %+v, want command %q\", nodeName, got, wantStageExec)\n\t\t}\n\t\timages, ok := node.KindSpecificConfig[\"copy-to-flash\"].([]any)\n\t\tif !ok || len(images) != 1 || images[0] != \"image-\"+nodeName+\".bin\" {\n\t\t\tt.Errorf(\"%s copy-to-flash = %#v\", nodeName,\n\t\t\t\tnode.KindSpecificConfig[\"copy-to-flash\"])\n\t\t}\n\t}\n\n\tif got := c.Config.Topology.Defaults.StartupConfig; got != \"configs/__clabNodeName__.cfg\" {\n\t\tt.Fatalf(\"source topology was modified: startup-config = %q\", got)\n\t}\n}\n\nfunc TestApplyLabRuntimeDeployOptionsCopiesMaxWorkers(t *testing.T) {\n\tt.Parallel()\n\n\treq := &clablabruntime.DeployRequest{}\n\tapplyLabRuntimeDeployOptions(req, &DeployOptions{maxWorkers: 7})\n\n\tif req.MaxWorkers != 7 {\n\t\tt.Fatalf(\"runtime max workers = %d, want 7\", req.MaxWorkers)\n\t}\n}\n\nfunc TestDestroyWithLabRuntimeRejectsNodeFilterBeforeDeletion(t *testing.T) {",
+                "lineStart": 80,
+                "lineEnd": 194,
+                "totalLines": 283,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1794762157970,
+              "end": 1794762157976
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1e0292f9b00166oJuDNr3LpO7c",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e02925d10016aKJrsjpNfhOv4",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 22972,
+            "input": 2827,
+            "output": 54,
+            "reasoning": 123,
+            "cache": {
+              "read": 19968,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1e0292fa90016chLv7ZgFdjDsG",
+        "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+        "time": {
+          "created": 1794762157993,
+          "completed": 1794762177700
+        },
+        "parentID": "msg_1e0291b0e001Xz6szdoGX1PVzO",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-JC4Lbi",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 29503,
+          "input": 2116,
+          "output": 4420,
+          "reasoning": 183,
+          "cache": {
+            "read": 22784,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1e02935b0001yLi9AlsM9kqZae",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0292fa90016chLv7ZgFdjDsG"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1e02935b2001mQeJqDyheCMSSh",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0292fa90016chLv7ZgFdjDsG",
+          "text": "All anchors confirmed:\n- `core/clab.go`: `prepareLabRuntimeTopology` at 161-200, expansion call at 193-197.\n- `core/labruntime_test.go`: test at 89-181; topology literal at 94-120; no links.\n- `core/labruntime_topology.go`: expansion function 14-62; re-marshal at 45-61; per-node expansion 64-140; guard on stages 142-156; clear inherited 160-179.\n- `links/link.go`: `MarshalYAML` at 291-363; host case 293-301 with wrong `Type` at 299; missing `LinkTypeVxlanStitch` case; `unable to marshall` at 362.\n\nEverything from my prior investigation stands. Now emit the complete Markdown review + final JSON.",
+          "time": {
+            "start": 1794762159538,
+            "end": 1794762160874
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1e0293b03001lcMXBpGbiNxtP6",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0292fa90016chLv7ZgFdjDsG",
+          "text": "All anchors rechecked and confirmed against the head snapshot; the findings and line numbers stand as investigated. Here is the complete review.\n\n# Code Review: magic variable expansion for lab-runtime topologies\n\n## Summary\n\nThis PR makes `prepareLabRuntimeTopology` (running whenever a lab runtime such as `c9s` is selected) expand per-node magic variables (`__clabNodeName__`, `__clabLabName__`, `__clabDir__`, `__clabNodeDir__`) and materialize inherited `defaults`/`kinds`/`groups` values onto every node definition, storing the result in `c.renderedTopology` for the runtime deploy request. The implementation is careful: source and expanded configs are parsed into separate `Config` values so no shared slices are mutated, the top-level `mgmt`/`prefix`/`settings` keys survive via the `yaml.MapSlice` round-trip, kind-specific config merge semantics are preserved, and the new test covers defaults, kinds, groups, binds, volumes, exec, stages, and kind-specific config, plus a check that the source topology is untouched.\n\nThe significant problem is that the expansion path re-marshals the whole `topology` section through `clabtypes.Topology`, which runs `links.LinkDefinition.MarshalYAML` — and that pre-existing marshaler is wrong for host links (`Type: string(LinkTypeVEth)` instead of `LinkTypeHost`). Before this PR the runtime definition was the verbatim topology file, so host links survived; after it, every lab-runtime deploy of a topology with a host link re-encodes the link as a `type: veth` link whose `host-interface`/`endpoint` keys are silently dropped by the next parse, breaking the deploy (the c9s compiler is fail-closed). A closely related but lower-impact gap: `type: vxlan-stitch` links hit the marshaler's generic `unable to marshall` error.\n\n## Findings\n\n| Priority | Count | Summary |\n|---|---|---|\n| P1 | 1 | Host links corrupted by the new definition re-marshal |\n| P3 | 1 | `vxlan-stitch` links fail the new render with a cryptic `unable to marshall` error |\n| P4 | 1 | Re-marshal runs unconditionally even when no magic variables are present |\n\n### P1 — Host links break on lab runtimes: new re-marshal emits `type: veth` for host links\n\n**Location:** [`core/labruntime_topology.go#L45-L61`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L45-L61) (introduced by this PR), exposing the pre-existing bug in [`links/link.go#L293-L301`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L293-L301).\n\n**Problem:** `labRuntimeTopologyWithExpandedMagicVars` unconditionally unmarshals `c.renderedTopology` into `clabtypes.Topology` and re-marshals it (lines 45–61). Every link therefore passes through `links.LinkDefinition.MarshalYAML`, whose `LinkTypeHost` case builds the output struct with `Type: string(LinkTypeVEth)` at line 299 while keeping the `LinkHostRaw` fields inline. The serialized link is:\n\n```yaml\nmtu: 9500\nhost-interface: eth1\nendpoint:\n  node: r1\n  interface: eth1\ntype: veth\n```\n\nWhen that definition is parsed again — by `stageTopologyLocalFiles` at [`labruntime/clabernetes/files.go#L119-L134`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/files.go#L119-L134) and by the c9s compiler — `type: veth` selects `LinkVEthRaw`, and `host-interface`/`endpoint` are not fields of `LinkVEthRaw`, so the non-strict parse silently ignores them and produces a veth link with zero endpoints. `clabernetesBriefLinks` then converts it to a brief link with an empty endpoint list ([`files.go#L271-L293`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/files.go#L271-L293)), which the brief-link model cannot represent (two endpoints are required, see [`links/link_brief.go#L18-L26`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link_brief.go#L18-L26)).\n\n**Trigger:** any lab-runtime deploy (`--runtime c9s`) of a topology containing a host link — in either the brief notation (`endpoints: [r1:eth1, host:eth1]`) or the full `type: host` form. The re-marshal runs for every lab-runtime deploy, not only for topologies that use magic variables.\n\n**Impact:** a regression on a documented, supported combination (the c9s runtime explicitly supports host links, see the `*clablinks.LinkHostRaw` case in `clabernetesBriefLink`). Before this PR the definition bytes passed through verbatim and host links deployed correctly; after it, `compilePrimitiveResources` fails the deploy client-side with a fail-closed compile error ([`labruntime/clabernetes/primitives.go#L59-L68`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/primitives.go#L59-L68)), or the host link is dropped depending on how the external compiler treats the orphan keys. Either outcome breaks a lab that deploys correctly today. The PR's test at [`core/labruntime_test.go#L89-L181`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_test.go#L89-L181) contains no links, so this is not covered.\n\n**Correction:** fix the root cause in `links/link.go`: the host case should emit `Type: string(LinkTypeHost)` (a one-line fix that also repairs `clab generate` output for host links). Add a round-trip test in `core/labruntime_test.go` that runs a topology with brief veth, host, and mgmt-net links through `labRuntimeTopologyWithExpandedMagicVars` and asserts the re-parsed definition preserves the endpoint semantics — that test would have caught this.\n\n### P3 — `type: vxlan-stitch` links fail the new render with a generic `unable to marshall` error\n\n**Location:** [`links/link.go#L340-L363`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L340-L363), reached via the re-marshal in [`core/labruntime_topology.go#L56-L59`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L56-L59).\n\n**Problem:** `LinkDefinition.UnmarshalYAML` accepts `type: vxlan-stitch` (`LinkTypeVxlanStitch`), but `MarshalYAML` has no case for it, so `yaml.Marshal` fails with the bare `unable to marshall` error at line 362, wrapped by the PR as `failed to render topology with expanded magic variables: unable to marshall`. Before this PR, the definition passed through verbatim and the same topology failed later, in `clabernetesBriefLink`, with the clearer message `failed to render clabernetes-compatible brief link for vxlan-stitch link`. The deploy outcome is the same (c9s does not support these links), so this is a diagnostics regression, not a functional one.\n\n**Trigger:** a c9s deploy of a topology with a full-form `type: vxlan-stitch` link.\n\n**Impact:** the user gets an error that looks like a containerlab bug rather than an unsupported link type, and it surfaces before any c9s-specific context.\n\n**Correction:** add a `LinkTypeVxlanStitch` case to `MarshalYAML` that emits `Type: string(LinkTypeVxlanStitch)` with the `LinkVxlanRaw` fields inline (mirroring the `LinkTypeVxlan` case); the type round-trips, so the definition then fails later at the existing, well-worded `clabernetesBriefLink` check.\n\n### P4 — Re-marshal runs even when the definition contains no magic variables\n\n**Location:** [`core/labruntime_topology.go#L14-L32`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L14-L32).\n\n**Problem:** the function always parses, mutates, and re-marshals the definition, even for topologies with no magic variables at all. The rewrite is semantically neutral for those topologies (the c9s side performs the same merges itself), but it changes the stored representation: comments and YAML anchors in the file are lost from the `Topology` CR's `spec.topology`, brief links are rewritten in full form, and the materialized inherited values and default MTUs appear on every node. It also widens the blast radius of the P1 bug from magic-variable users to all lab-runtime users.\n\n**Trigger:** every lab-runtime deploy.\n\n**Impact:** cosmetic representation churn and a small, avoidable parse/marshal cost; no functional difference for topology definitions without magic variables.\n\n**Correction:** optionally short-circuit when `strings.Contains(c.renderedTopology, \"__clab\")` is false (the git variables are already substituted earlier in `prepareLabRuntimeTopology` at [`core/clab.go#L168-L178`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/clab.go#L168-L178)), leaving the verbatim definition in place for the common case. This is a proportionate guard, not a rewrite; the P1 correction above remains the real fix.\n\n## Coverage notes\n\n- This is a source-only review: no tests were executed and no builds were run. All conclusions come from reading the snapshot at head `dfe60303f4b864b41040cb167d382755aab25189`.\n- Verified safe: `GetStages`/`mergeStringSliceFields`/`MergeStringSlices` return fresh slices and `processNodeExecs` copies exec structs, so `source` definitions are not mutated across nodes; the `yaml.MapSlice` round-trip preserves top-level `mgmt`/`prefix`/`settings` raw values; strict parsing of the original file means unknown keys cannot be silently dropped by the re-marshal; kind-specific config merge precedence (node > group > kind > defaults, first block wins) is preserved by the materialization; license and `env-files` are consistently *not* expanded (matching the local path, with c9s staging expanding them); magic-var expansion is idempotent for the c9s staging step; `sanitizeLabRuntimeNames` runs before `SetLabDirByPrefix` and the expansion, so `__clabDir__`/`__clabLabName__` resolve against the sanitized lab name; empty stage objects and `volumes`/`stages` are valid per `schemas/clab.schema.json`, so no schema change is needed; docs (`docs/manual/topo-def-file.md`) describe magic variables generically with no lab-runtime limitation that this PR would invalidate.\n- The new test `TestLabRuntimeDeployRequestExpandsMagicVars` covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages exec, and kind-specific config, but exercises no links — the P1 bug lives exactly there.\n- Unresolved uncertainty: the exact behavior of the external `github.com/clabernetes/clabernetes/compiler` package when parsing the corrupted host-link form (hard error versus dropped link) could not be inspected from this snapshot; both outcomes are regressions, so the finding stands.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P1\",\n      \"title\": \"Host links break on lab runtimes: new re-marshal emits `type: veth` for host links\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/labruntime_topology.go\",\n        \"start\": 45,\n        \"end\": 61\n      },\n      \"problem\": \"`labRuntimeTopologyWithExpandedMagicVars` unconditionally re-marshals the `topology` section through `clabtypes.Topology`, which runs `links.LinkDefinition.MarshalYAML` for every link. The `LinkTypeHost` case in that pre-existing marshaler (links/link.go:293-301) builds its output struct with `Type: string(LinkTypeVEth)` while keeping the `LinkHostRaw` fields inline, so a host link serializes as `type: veth` with orphan `host-interface` and `endpoint` keys. When the definition is parsed again by `stageTopologyLocalFiles` (labruntime/clabernetes/files.go:124) or by the c9s compiler, `type: veth` selects `LinkVEthRaw`, the orphan keys are silently ignored by the non-strict parse, and the link loses both endpoints.\",\n      \"trigger\": \"Any lab-runtime deploy (`--runtime c9s`) of a topology containing a host link, in either the brief notation (`endpoints: [r1:eth1, host:eth1]`) or the full `type: host` form. The re-marshal runs for every lab-runtime deploy, not only for topologies that use magic variables.\",\n      \"impact\": \"Before this PR the definition bytes passed through verbatim and host links deployed correctly on c9s; after it, `clabernetesBriefLinks` produces a brief link with an empty endpoint list and the fail-closed c9s compile (`compilePrimitiveResources`, labruntime/clabernetes/primitives.go:59-68) fails the deploy with a compile error, or the host link is dropped from the deployed lab. Either outcome is a regression on a documented, supported feature combination, and the PR's test contains no links.\",\n      \"suggestion\": \"Fix the root cause in `links/link.go`: the `LinkTypeHost` case of `LinkDefinition.MarshalYAML` should emit `Type: string(LinkTypeHost)` (this also repairs `clab generate` output for host links). Add a round-trip test in `core/labruntime_test.go` that runs a topology with brief veth, host, and mgmt-net links through `labRuntimeTopologyWithExpandedMagicVars` and asserts the re-parsed definition preserves the endpoint semantics.\"\n    },\n    {\n      \"priority\": \"P3\",\n      \"title\": \"`type: vxlan-stitch` links fail the new lab-runtime render with a generic `unable to marshall` error\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"links/link.go\",\n        \"start\": 340,\n        \"end\": 363\n      },\n      \"problem\": \"`LinkDefinition.UnmarshalYAML` accepts `type: vxlan-stitch` (`LinkTypeVxlanStitch`), but `LinkDefinition.MarshalYAML` has no case for it, so `yaml.Marshal` in the new `labRuntimeTopologyWithExpandedMagicVars` fails with the bare `unable to marshall` error, wrapped as `failed to render topology with expanded magic variables: unable to marshall`. Before this PR the definition passed through verbatim and the same topology failed later in `clabernetesBriefLink` with the clearer message `failed to render clabernetes-compatible brief link for vxlan-stitch link`.\",\n      \"trigger\": \"A c9s deploy of a topology with a full-form `type: vxlan-stitch` link.\",\n      \"impact\": \"The deploy outcome is unchanged (c9s rejects these links either way), so this is a diagnostics regression: the error looks like a containerlab bug rather than an unsupported link type, and it surfaces before any c9s-specific context.\",\n      \"suggestion\": \"Add a `LinkTypeVxlanStitch` case to `LinkDefinition.MarshalYAML` that emits `Type: string(LinkTypeVxlanStitch)` with the `LinkVxlanRaw` fields inline, mirroring the `LinkTypeVxlan` case. The type round-trips, so the definition then fails later at the existing, well-worded `clabernetesBriefLink` check.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Definition re-marshal runs unconditionally even when no magic variables are present\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/labruntime_topology.go\",\n        \"start\": 14,\n        \"end\": 32\n      },\n      \"problem\": \"The function always parses, mutates, and re-marshals the definition, even for topologies with no magic variables. For those topologies the rewrite is semantically neutral (the c9s side performs the same merges itself), but it changes the stored representation: comments and YAML anchors are lost from the `Topology` CR's `spec.topology`, brief links are rewritten in full form, and materialized inherited values plus default link MTUs appear on every node. It also widens the blast radius of the P1 host-link bug to all lab-runtime users.\",\n      \"trigger\": \"Every lab-runtime deploy.\",\n      \"impact\": \"Cosmetic representation churn and a small, avoidable parse/marshal cost; no functional difference for definitions without magic variables.\",\n      \"suggestion\": \"Optionally short-circuit when `strings.Contains(c.renderedTopology, \\\"__clab\\\")` is false (the git variables are already substituted earlier in `prepareLabRuntimeTopology`), leaving the verbatim definition in place for the common case. This is a proportionate guard, not a rewrite; the P1 correction remains the real fix.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no tests or builds were executed; all conclusions come from reading the snapshot at head dfe60303f4b864b41040cb167d382755aab25189.\",\n      \"Verified safe: GetStages/mergeStringSliceFields/MergeStringSlices return fresh slices and processNodeExecs copies exec structs, so source definitions are not mutated across nodes; the yaml.MapSlice round-trip preserves top-level mgmt/prefix/settings raw values; strict parsing of the original file means unknown keys cannot be silently dropped by the re-marshal; kind-specific config merge precedence (node > group > kind > defaults, first block wins) is preserved by the materialization.\",\n      \"Verified consistent: license and env-files are not magic-var-expanded (matching the local path, with c9s staging expanding them); magic-var expansion is idempotent for the c9s staging step; sanitizeLabRuntimeNames runs before SetLabDirByPrefix and the expansion, so __clabDir__/__clabLabName__ resolve against the sanitized lab name; empty stage objects and volumes/stages are valid per schemas/clab.schema.json; docs/manual/topo-def-file.md describes magic variables generically with no lab-runtime limitation this PR would invalidate.\",\n      \"The new test covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages exec, and kind-specific config, but exercises no links, which is exactly where the P1 bug lives.\",\n      \"Unresolved: the exact behavior of the external github.com/clabernetes/clabernetes/compiler package when parsing the corrupted host-link form (hard error versus dropped link) could not be inspected from this snapshot; both outcomes are regressions, so the P1 finding stands.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1794762160899,
+            "end": 1794762177691
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1e0297ca0001e5YjYeSQtt2Y5G",
+          "sessionID": "ses_e1fe24e0bffevYoq2SK01tj05C",
+          "messageID": "msg_1e0292fa90016chLv7ZgFdjDsG",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 29503,
+            "input": 2116,
+            "output": 4420,
+            "reasoning": 183,
+            "cache": {
+              "read": 22784,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P1 - Host links break on lab runtimes&#58; new re-marshal emits `type: veth` for host links** | [core/labruntime&#95;topology.go:45-61](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L45-L61) |\n| **P3 - `type: vxlan-stitch` links fail the new lab-runtime render with a generic `unable to marshall` error** | [links/link.go:340-363](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L340-L363) |\n| **P4 - Definition re-marshal runs unconditionally even when no magic variables are present** | [core/labruntime&#95;topology.go:14-32](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L14-L32) |\n\n## P1 - Host links break on lab runtimes&#58; new re-marshal emits `type: veth` for host links\n\n**Location:** [core/labruntime&#95;topology.go:45-61](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L45-L61)\n\n**Problem:** `labRuntimeTopologyWithExpandedMagicVars` unconditionally re-marshals the `topology` section through `clabtypes.Topology`, which runs `links.LinkDefinition.MarshalYAML` for every link. The `LinkTypeHost` case in that pre-existing marshaler &#40;[`links/link.go:293-301`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L293-L301)&#41; builds its output struct with `Type: string(LinkTypeVEth)` while keeping the `LinkHostRaw` fields inline, so a host link serializes as `type: veth` with orphan `host-interface` and `endpoint` keys. When the definition is parsed again by `stageTopologyLocalFiles` &#40;[`labruntime/clabernetes/files.go:124`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/files.go#L124-L124)&#41; or by the c9s compiler, `type: veth` selects `LinkVEthRaw`, the orphan keys are silently ignored by the non-strict parse, and the link loses both endpoints.\n\n**Trigger:** Any lab-runtime deploy &#40;`--runtime c9s`&#41; of a `topology` containing a host link, in either the brief notation &#40;`endpoints: [r1:eth1, host:eth1]`&#41; or the full `type: host` form. The re-marshal runs for every lab-runtime deploy, not only for topologies that use magic variables.\n\n**Impact:** Before this PR the definition bytes passed through verbatim and host links deployed correctly on c9s; after it, `clabernetesBriefLinks` produces a brief link with an empty `endpoint` list and the fail-closed c9s compile &#40;`compilePrimitiveResources`, [`labruntime/clabernetes/primitives.go:59-68`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/labruntime/clabernetes/primitives.go#L59-L68)&#41; fails the deploy with a compile error, or the host link is dropped from the deployed lab. Either outcome is a regression on a documented, supported feature combination, and the PR&#39;s test contains no links.\n\n**Suggested correction:** Fix the root cause in [`links/link.go`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L1-L1)&#58; the `LinkTypeHost` case of `LinkDefinition.MarshalYAML` should emit `Type: string(LinkTypeHost)` &#40;this also repairs `clab generate` output for host links&#41;. Add a round-trip test in [`core/labruntime_test.go`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_test.go#L1-L1) that runs a `topology` with brief veth, host, and mgmt-net links through `labRuntimeTopologyWithExpandedMagicVars` and asserts the re-parsed definition preserves the `endpoint` semantics.\n\n\n## P3 - `type: vxlan-stitch` links fail the new lab-runtime render with a generic `unable to marshall` error\n\n**Location:** [links/link.go:340-363](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/links/link.go#L340-L363)\n\n**Problem:** `LinkDefinition.UnmarshalYAML` accepts `type: vxlan-stitch` &#40;`LinkTypeVxlanStitch`&#41;, but `LinkDefinition.MarshalYAML` has no case for it, so `yaml.Marshal` in the new `labRuntimeTopologyWithExpandedMagicVars` fails with the bare `unable to marshall` error, wrapped as `failed to render topology with expanded magic variables: unable to marshall`. Before this PR the definition passed through verbatim and the same `topology` failed later in `clabernetesBriefLink` with the clearer message `failed to render clabernetes-compatible brief link for vxlan-stitch link`.\n\n**Trigger:** A c9s deploy of a `topology` with a full-form `type: vxlan-stitch` link.\n\n**Impact:** The deploy outcome is unchanged &#40;c9s rejects these links either way&#41;, so this is a diagnostics regression&#58; the error looks like a containerlab bug rather than an unsupported link type, and it surfaces before any c9s-specific context.\n\n**Suggested correction:** Add a `LinkTypeVxlanStitch` case to `LinkDefinition.MarshalYAML` that emits `Type: string(LinkTypeVxlanStitch)` with the `LinkVxlanRaw` fields inline, mirroring the `LinkTypeVxlan` case. The type round-trips, so the definition then fails later at the existing, well-worded `clabernetesBriefLink` check.\n\n\n## P4 - Definition re-marshal runs unconditionally even when no magic variables are present\n\n**Location:** [core/labruntime&#95;topology.go:14-32](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/core/labruntime_topology.go#L14-L32)\n\n**Problem:** The function always parses, mutates, and re-marshals the definition, even for topologies with no magic variables. For those topologies the rewrite is semantically neutral &#40;the c9s side performs the same merges itself&#41;, but it changes the stored representation&#58; comments and YAML anchors are lost from the `Topology` CR&#39;s `spec.topology`, brief links are rewritten in full form, and materialized inherited values plus default link MTUs appear on every node. It also widens the blast radius of the P1 host-link bug to all lab-runtime users.\n\n**Trigger:** Every lab-runtime deploy.\n\n**Impact:** Cosmetic representation churn and a small, avoidable parse/marshal cost; no functional difference for definitions without magic variables.\n\n**Suggested correction:** Optionally short-circuit when `strings.Contains(c.renderedTopology, \"__clab\")` is false &#40;the git variables are already substituted earlier in `prepareLabRuntimeTopology`&#41;, leaving the verbatim definition in place for the common case. This is a proportionate guard, not a rewrite; the P1 correction remains the real fix.\n\n\n## Coverage\n\n- Source-only review&#58; no tests or builds were executed; all conclusions come from reading the snapshot at head dfe60303f4b864b41040cb167d382755aab25189.\n- Verified safe&#58; `GetStages`/`mergeStringSliceFields`/`MergeStringSlices` return fresh slices and `processNodeExecs` copies exec structs, so source definitions are not mutated across nodes; the `yaml.MapSlice` round-trip preserves top-level mgmt/prefix/settings raw values; strict parsing of the original file means unknown keys cannot be silently dropped by the re-marshal; kind-specific config merge precedence &#40;node &#62; group &#62; kind &#62; defaults, first block wins&#41; is preserved by the materialization.\n- Verified consistent&#58; license and env-files are not magic-var-expanded &#40;matching the local path, with c9s staging expanding them&#41;; magic-var expansion is idempotent for the c9s staging step; `sanitizeLabRuntimeNames` runs before `SetLabDirByPrefix` and the expansion, so &#95;&#95;clabDir&#95;&#95;/&#95;&#95;clabLabName&#95;&#95; resolve against the sanitized lab name; empty stage objects and volumes/stages are valid per [`schemas/clab.schema.json`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/schemas/clab.schema.json#L1-L1); [`docs/manual/topo-def-file.md`](https://github.com/srl-labs/containerlab/blob/dfe60303f4b864b41040cb167d382755aab25189/docs/manual/topo-def-file.md#L1-L1) describes magic variables generically with no lab-runtime limitation this PR would invalidate.\n- The new test covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages exec, and kind-specific config, but exercises no links, which is exactly where the P1 bug lives.\n- Unresolved&#58; the exact behavior of the external `github.com`/clabernetes/clabernetes/compiler package when parsing the corrupted host-link form &#40;hard error versus dropped link&#41; could not be inspected from this snapshot; both outcomes are regressions, so the P1 finding stands.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P1\",\n      \"title\": \"Host links break on lab runtimes: new re-marshal emits `type: veth` for host links\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/labruntime_topology.go\",\n        \"start\": 45,\n        \"end\": 61\n      },\n      \"problem\": \"`labRuntimeTopologyWithExpandedMagicVars` unconditionally re-marshals the `topology` section through `clabtypes.Topology`, which runs `links.LinkDefinition.MarshalYAML` for every link. The `LinkTypeHost` case in that pre-existing marshaler (`links/link.go:293-301`) builds its output struct with `Type: string(LinkTypeVEth)` while keeping the `LinkHostRaw` fields inline, so a host link serializes as `type: veth` with orphan `host-interface` and `endpoint` keys. When the definition is parsed again by `stageTopologyLocalFiles` (`labruntime/clabernetes/files.go:124`) or by the c9s compiler, `type: veth` selects `LinkVEthRaw`, the orphan keys are silently ignored by the non-strict parse, and the link loses both endpoints.\",\n      \"trigger\": \"Any lab-runtime deploy (`--runtime c9s`) of a `topology` containing a host link, in either the brief notation (`endpoints: [r1:eth1, host:eth1]`) or the full `type: host` form. The re-marshal runs for every lab-runtime deploy, not only for topologies that use magic variables.\",\n      \"impact\": \"Before this PR the definition bytes passed through verbatim and host links deployed correctly on c9s; after it, `clabernetesBriefLinks` produces a brief link with an empty `endpoint` list and the fail-closed c9s compile (`compilePrimitiveResources`, `labruntime/clabernetes/primitives.go:59-68`) fails the deploy with a compile error, or the host link is dropped from the deployed lab. Either outcome is a regression on a documented, supported feature combination, and the PR's test contains no links.\",\n      \"suggestion\": \"Fix the root cause in `links/link.go`: the `LinkTypeHost` case of `LinkDefinition.MarshalYAML` should emit `Type: string(LinkTypeHost)` (this also repairs `clab generate` output for host links). Add a round-trip test in `core/labruntime_test.go` that runs a `topology` with brief veth, host, and mgmt-net links through `labRuntimeTopologyWithExpandedMagicVars` and asserts the re-parsed definition preserves the `endpoint` semantics.\"\n    },\n    {\n      \"priority\": \"P3\",\n      \"title\": \"`type: vxlan-stitch` links fail the new lab-runtime render with a generic `unable to marshall` error\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"links/link.go\",\n        \"start\": 340,\n        \"end\": 363\n      },\n      \"problem\": \"`LinkDefinition.UnmarshalYAML` accepts `type: vxlan-stitch` (`LinkTypeVxlanStitch`), but `LinkDefinition.MarshalYAML` has no case for it, so `yaml.Marshal` in the new `labRuntimeTopologyWithExpandedMagicVars` fails with the bare `unable to marshall` error, wrapped as `failed to render topology with expanded magic variables: unable to marshall`. Before this PR the definition passed through verbatim and the same `topology` failed later in `clabernetesBriefLink` with the clearer message `failed to render clabernetes-compatible brief link for vxlan-stitch link`.\",\n      \"trigger\": \"A c9s deploy of a `topology` with a full-form `type: vxlan-stitch` link.\",\n      \"impact\": \"The deploy outcome is unchanged (c9s rejects these links either way), so this is a diagnostics regression: the error looks like a containerlab bug rather than an unsupported link type, and it surfaces before any c9s-specific context.\",\n      \"suggestion\": \"Add a `LinkTypeVxlanStitch` case to `LinkDefinition.MarshalYAML` that emits `Type: string(LinkTypeVxlanStitch)` with the `LinkVxlanRaw` fields inline, mirroring the `LinkTypeVxlan` case. The type round-trips, so the definition then fails later at the existing, well-worded `clabernetesBriefLink` check.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Definition re-marshal runs unconditionally even when no magic variables are present\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/labruntime_topology.go\",\n        \"start\": 14,\n        \"end\": 32\n      },\n      \"problem\": \"The function always parses, mutates, and re-marshals the definition, even for topologies with no magic variables. For those topologies the rewrite is semantically neutral (the c9s side performs the same merges itself), but it changes the stored representation: comments and YAML anchors are lost from the `Topology` CR's `spec.topology`, brief links are rewritten in full form, and materialized inherited values plus default link MTUs appear on every node. It also widens the blast radius of the P1 host-link bug to all lab-runtime users.\",\n      \"trigger\": \"Every lab-runtime deploy.\",\n      \"impact\": \"Cosmetic representation churn and a small, avoidable parse/marshal cost; no functional difference for definitions without magic variables.\",\n      \"suggestion\": \"Optionally short-circuit when `strings.Contains(c.renderedTopology, \\\"__clab\\\")` is false (the git variables are already substituted earlier in `prepareLabRuntimeTopology`), leaving the verbatim definition in place for the common case. This is a proportionate guard, not a rewrite; the P1 correction remains the real fix.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no tests or builds were executed; all conclusions come from reading the snapshot at head dfe60303f4b864b41040cb167d382755aab25189.\",\n      \"Verified safe: `GetStages`/`mergeStringSliceFields`/`MergeStringSlices` return fresh slices and `processNodeExecs` copies exec structs, so source definitions are not mutated across nodes; the `yaml.MapSlice` round-trip preserves top-level mgmt/prefix/settings raw values; strict parsing of the original file means unknown keys cannot be silently dropped by the re-marshal; kind-specific config merge precedence (node > group > kind > defaults, first block wins) is preserved by the materialization.\",\n      \"Verified consistent: license and env-files are not magic-var-expanded (matching the local path, with c9s staging expanding them); magic-var expansion is idempotent for the c9s staging step; `sanitizeLabRuntimeNames` runs before `SetLabDirByPrefix` and the expansion, so __clabDir__/__clabLabName__ resolve against the sanitized lab name; empty stage objects and volumes/stages are valid per `schemas/clab.schema.json`; `docs/manual/topo-def-file.md` describes magic variables generically with no lab-runtime limitation this PR would invalidate.\",\n      \"The new test covers defaults/kinds/groups for startup-config, exec, binds, volumes, stages exec, and kind-specific config, but exercises no links, which is exactly where the P1 bug lives.\",\n      \"Unresolved: the exact behavior of the external `github.com`/clabernetes/clabernetes/compiler package when parsing the corrupted host-link form (hard error versus dropped link) could not be inspected from this snapshot; both outcomes are regressions, so the P1 finding stands.\"\n    ]\n  }\n}\n```"
 }
