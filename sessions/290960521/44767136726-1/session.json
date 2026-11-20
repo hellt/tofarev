@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "59b994d18ff6d545181f6b20e298115e6c600c6f",
-  "updatedAt": "2026-11-20T15:55:36.190Z",
+  "updatedAt": "2026-11-20T15:57:51.191Z",
   "state": "running",
   "info": {
     "id": "ses_e0658bbefffepOw4b701rwv1yX",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 156204,
-      "output": 3601,
-      "reasoning": 12760,
+      "input": 167822,
+      "output": 3811,
+      "reasoning": 20372,
       "cache": {
-        "read": 1143232,
+        "read": 1397824,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795189851152,
-      "updated": 1795190135731
+      "updated": 1795190253842
     }
   },
   "messages": [
@@ -3578,7 +3578,478 @@
         "id": "msg_1f9ab9bb0001DXOJoo5d0358P3",
         "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
         "time": {
-          "created": 1795190135728
+          "created": 1795190135728,
+          "completed": 1795190138828
+        },
+        "parentID": "msg_1f9aab94c001LnVZlSjAX15msn",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-uXYr8s",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 60383,
+          "input": 3232,
+          "output": 26,
+          "reasoning": 37,
+          "cache": {
+            "read": 57088,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9aba4fe0014iTpJll9lLZdaU",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9ab9bb0001DXOJoo5d0358P3"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9aba500001ihkTKSLJPY4nnG",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9ab9bb0001DXOJoo5d0358P3",
+          "text": "Now read the docker.go and podman.go diff sections (1101-1520), and runtime.go (1479-1520), tests (1521-1690).",
+          "time": {
+            "start": 1795190138112,
+            "end": 1795190138806
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9aba7b8001ZrxTX6pcY1UhqH",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9ab9bb0001DXOJoo5d0358P3",
+          "callID": "call_7e0c3b9e6e974e96990fdc0a",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 400,
+              "offset": 1101
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n1101: diff --git a/runtime/docker/docker.go b/runtime/docker/docker.go\n1102: index 376f699..50b8df0 100644\n1103: --- a/runtime/docker/docker.go\n1104: +++ b/runtime/docker/docker.go\n1105: @@ -15,10 +15,11 @@ import (\n1106:  \t\"os\"\n1107:  \t\"path\"\n1108:  \t\"path/filepath\"\n1109:  \t\"strconv\"\n1110:  \t\"strings\"\n1111: +\t\"sync\"\n1112:  \t\"time\"\n1113:  \n1114:  \tcerrdefs \"github.com/containerd/errdefs\"\n1115:  \t\"github.com/docker/docker/api/types/image\"\n1116:  \t\"github.com/docker/docker/api/types/mount\"\n1117: @@ -34,12 +35,14 @@ import (\n1118:  \t\"github.com/docker/docker/errdefs\"\n1119:  \t\"github.com/docker/docker/pkg/jsonmessage\"\n1120:  \t\"github.com/docker/docker/pkg/stdcopy\"\n1121:  \t\"github.com/dustin/go-humanize\"\n1122:  \t\"github.com/google/shlex\"\n1123: +\tdockerterm \"github.com/moby/term\"\n1124:  \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n1125:  \tclabexec \"github.com/srl-labs/containerlab/exec\"\n1126: +\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n1127:  \tclablinks \"github.com/srl-labs/containerlab/links\"\n1128:  \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n1129:  \tclabnftables \"github.com/srl-labs/containerlab/runtime/docker/firewall/nftables\"\n1130:  \tclabtypes \"github.com/srl-labs/containerlab/types\"\n1131:  \tclabutils \"github.com/srl-labs/containerlab/utils\"\n1132: @@ -2090,10 +2093,236 @@ func (d *DockerRuntime) WriteContainerLogs(\n1133:  \t}\n1134:  \n1135:  \treturn nil\n1136:  }\n1137:  \n1138: +// AttachContainer runs an interactive command in a container through a Docker exec session,\n1139: +// like docker exec -it.\n1140: +func (d *DockerRuntime) AttachContainer(\n1141: +\tctx context.Context,\n1142: +\tcontainerName string,\n1143: +\tcmd []string,\n1144: +\ttty bool,\n1145: +\tstreams clablabruntime.AttachStreams,\n1146: +) error {\n1147: +\t// resizing ends with the session\n1148: +\tctx, cancel := context.WithCancel(ctx)\n1149: +\tdefer cancel()\n1150: +\n1151: +\t// the terminal starts with the size that was already sent, for commands that read it once\n1152: +\tvar consoleSize *[2]uint\n1153: +\tif tty && streams.Resize != nil {\n1154: +\t\tselect {\n1155: +\t\tcase size, ok := <-streams.Resize:\n1156: +\t\t\tif ok {\n1157: +\t\t\t\tconsoleSize = &[2]uint{uint(size.Height), uint(size.Width)}\n1158: +\t\t\t}\n1159: +\t\tdefault:\n1160: +\t\t}\n1161: +\t}\n1162: +\n1163: +\t// the output is always attached, without it Docker ends the session before the command\n1164: +\t// exits\n1165: +\texecID, err := d.Client.ContainerExecCreate(ctx, containerName, container.ExecOptions{\n1166: +\t\tUser:         \"0\", // root\n1167: +\t\tTty:          tty,\n1168: +\t\tConsoleSize:  consoleSize,\n1169: +\t\tAttachStdin:  streams.Stdin != nil,\n1170: +\t\tAttachStdout: true,\n1171: +\t\tAttachStderr: true,\n1172: +\t\tCmd:          cmd,\n1173: +\t})\n1174: +\tif err != nil {\n1175: +\t\treturn fmt.Errorf(\"failed to create exec in container %q: %w\", containerName, err)\n1176: +\t}\n1177: +\n1178: +\trsp, err := d.Client.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{Tty: tty})\n1179: +\tif err != nil {\n1180: +\t\treturn fmt.Errorf(\"failed to attach to exec in container %q: %w\", containerName, err)\n1181: +\t}\n1182: +\tdefer rsp.Close()\n1183: +\n1184: +\tif tty && streams.Resize != nil {\n1185: +\t\tgo d.resizeExec(ctx, execID.ID, streams.Resize)\n1186: +\t}\n1187: +\n1188: +\tif streams.Stdin != nil {\n1189: +\t\tstdin := streams.Stdin\n1190: +\t\tif tty {\n1191: +\t\t\t// the detach keys end the input here, like docker exec does, so that Docker ends the\n1192: +\t\t\t// session the same way as when stdin ends\n1193: +\t\t\tstdin = dockerterm.NewEscapeProxy(stdin, detachKeys)\n1194: +\t\t}\n1195: +\n1196: +\t\tgo func() {\n1197: +\t\t\t_, _ = io.Copy(rsp.Conn, stdin)\n1198: +\t\t\t// the end of the input closes the command's stdin\n1199: +\t\t\t_ = rsp.CloseWrite()\n1200: +\t\t}()\n1201: +\t}\n1202: +\n1203: +\tstdout, stderr := streams.Stdout, streams.Stderr\n1204: +\tif stdout == nil {\n1205: +\t\tstdout = io.Discard\n1206: +\t}\n1207: +\tif stderr == nil {\n1208: +\t\tstderr = io.Discard\n1209: +\t}\n1210: +\n1211: +\tstart := &execStartCheck{inspect: func() (container.ExecInspect, error) {\n1212: +\t\treturn d.Client.ContainerExecInspect(ctx, execID.ID)\n1213: +\t}}\n1214: +\n1215: +\toutputDone := make(chan error, 1)\n1216: +\tgo func() {\n1217: +\t\tvar err error\n1218: +\t\tif tty {\n1219: +\t\t\t_, err = io.Copy(start.writer(stdout), rsp.Reader)\n1220: +\t\t} else {\n1221: +\t\t\t_, err = stdcopy.StdCopy(start.writer(stdout), start.writer(stderr), rsp.Reader)\n1222: +\t\t}\n1223: +\t\toutputDone <- err\n1224: +\t}()\n1225: +\n1226: +\tselect {\n1227: +\tcase err := <-outputDone:\n1228: +\t\tif err != nil {\n1229: +\t\t\treturn fmt.Errorf(\"failed to read exec output of container %q: %w\", containerName, err)\n1230: +\t\t}\n1231: +\tcase <-ctx.Done():\n1232: +\t\t// no output is written after the call returns\n1233: +\t\tstart.end()\n1234: +\n1235: +\t\treturn ctx.Err()\n1236: +\t}\n1237: +\n1238: +\texecInspect, err := d.Client.ContainerExecInspect(ctx, execID.ID)\n1239: +\tif err != nil {\n1240: +\t\treturn err\n1241: +\t}\n1242: +\tif failed, reason := start.result(); failed || notStarted(execInspect) {\n1243: +\t\terr := fmt.Errorf(\"command %q failed to start in container %q\",\n1244: +\t\t\tstrings.Join(cmd, \" \"), containerName)\n1245: +\t\tif reason := strings.TrimSpace(reason); reason != \"\" {\n1246: +\t\t\terr = fmt.Errorf(\"%w: %s\", err, reason)\n1247: +\t\t}\n1248: +\n1249: +\t\treturn err\n1250: +\t}\n1251: +\tif execInspect.Running {\n1252: +\t\t// Docker ends the output of a terminal session when its stdin ends or on the detach\n1253: +\t\t// keys, without ending the command\n1254: +\t\treturn fmt.Errorf(\"detached from command %q in container %q, which is still running\",\n1255: +\t\t\tstrings.Join(cmd, \" \"), containerName)\n1256: +\t}\n1257: +\tif execInspect.ExitCode != 0 {\n1258: +\t\treturn &clablabruntime.CommandExitError{Code: execInspect.ExitCode}\n1259: +\t}\n1260: +\n1261: +\treturn nil\n1262: +}\n1263: +\n1264: +// detachKeys are Docker's default detach keys, ctrl-p ctrl-q.\n1265: +var detachKeys = []byte{0x10, 0x11} //nolint: gochecknoglobals\n1266: +\n1267: +// notStarted tells whether an exec ended without its process ever running, such as a missing\n1268: +// executable.\n1269: +func notStarted(inspect container.ExecInspect) bool {\n1270: +\treturn !inspect.Running && inspect.Pid == 0 && inspect.ExitCode != 0\n1271: +}\n1272: +\n1273: +// execStartCheck holds back the first output of an exec until Docker reports whether the command\n1274: +// started. Docker writes why a command didn't start into the output, which becomes the error\n1275: +// instead. Output after the session ended is dropped.\n1276: +type execStartCheck struct {\n1277: +\tinspect func() (container.ExecInspect, error)\n1278: +\n1279: +\tmu      sync.Mutex\n1280: +\tchecked bool\n1281: +\tfailed  bool\n1282: +\treason  []byte\n1283: +\tended   bool\n1284: +}\n1285: +\n1286: +func (c *execStartCheck) end() {\n1287: +\tc.mu.Lock()\n1288: +\tdefer c.mu.Unlock()\n1289: +\n1290: +\tc.ended = true\n1291: +}\n1292: +\n1293: +func (c *execStartCheck) writer(w io.Writer) io.Writer {\n1294: +\treturn execStartWriter{check: c, w: w}\n1295: +}\n1296: +\n1297: +func (c *execStartCheck) result() (bool, string) {\n1298: +\tc.mu.Lock()\n1299: +\tdefer c.mu.Unlock()\n1300: +\n1301: +\treturn c.failed, string(c.reason)\n1302: +}\n1303: +\n1304: +// hold tells whether output must be held back or dropped, checking the exec on the first output.\n1305: +func (c *execStartCheck) hold(p []byte) bool {\n1306: +\tc.mu.Lock()\n1307: +\tdefer c.mu.Unlock()\n1308: +\n1309: +\tif c.ended {\n1310: +\t\treturn true\n1311: +\t}\n1312: +\tif !c.checked {\n1313: +\t\tc.checked = true\n1314: +\t\tif inspect, err := c.inspect(); err == nil && !inspect.Running && inspect.Pid == 0 {\n1315: +\t\t\tc.failed = true\n1316: +\t\t}\n1317: +\t}\n1318: +\tif c.failed {\n1319: +\t\tc.reason = append(c.reason, p...)\n1320: +\t}\n1321: +\n1322: +\treturn c.failed\n1323: +}\n1324: +\n1325: +type execStartWriter struct {\n1326: +\tcheck *execStartCheck\n1327: +\tw     io.Writer\n1328: +}\n1329: +\n1330: +func (w execStartWriter) Write(p []byte) (int, error) {\n1331: +\tif w.check.hold(p) {\n1332: +\t\treturn len(p), nil\n1333: +\t}\n1334: +\n1335: +\treturn w.w.Write(p)\n1336: +}\n1337: +\n1338: +// resizeExec applies terminal size changes to an exec session until resize is closed or ctx\n1339: +// ends.\n1340: +func (d *DockerRuntime) resizeExec(\n1341: +\tctx context.Context,\n1342: +\texecID string,\n1343: +\tresize <-chan clablabruntime.TerminalSize,\n1344: +) {\n1345: +\tfor {\n1346: +\t\tselect {\n1347: +\t\tcase <-ctx.Done():\n1348: +\t\t\treturn\n1349: +\t\tcase size, ok := <-resize:\n1350: +\t\t\tif !ok || ctx.Err() != nil {\n1351: +\t\t\t\treturn\n1352: +\t\t\t}\n1353: +\t\t\terr := d.Client.ContainerExecResize(ctx, execID, container.ResizeOptions{\n1354: +\t\t\t\tHeight: uint(size.Height),\n1355: +\t\t\t\tWidth:  uint(size.Width),\n1356: +\t\t\t})\n1357: +\t\t\tif err != nil {\n1358: +\t\t\t\tlog.Debugf(\"failed to resize the terminal of exec %s: %v\", execID, err)\n1359: +\t\t\t}\n1360: +\t\t}\n1361: +\t}\n1362: +}\n1363: +\n1364:  // InspectImage returns detailed information about a container image.\n1365:  func (d *DockerRuntime) InspectImage(\n1366:  \tctx context.Context,\n1367:  \timageName string,\n1368:  ) (*clabruntime.ImageInspect, error) {\n1369: diff --git a/runtime/podman/podman.go b/runtime/podman/podman.go\n1370: index 2a1d917..e6fd3fe 100644\n1371: --- a/runtime/podman/podman.go\n1372: +++ b/runtime/podman/podman.go\n1373: @@ -2,11 +2,13 @@\n1374:  // +build linux,podman\n1375:  \n1376:  package podman\n1377:  \n1378:  import (\n1379: +\t\"bufio\"\n1380:  \t\"context\"\n1381: +\t\"errors\"\n1382:  \t\"fmt\"\n1383:  \t\"io\"\n1384:  \t\"net/netip\"\n1385:  \t\"os\"\n1386:  \t\"path/filepath\"\n1387: @@ -14,20 +16,22 @@ import (\n1388:  \t\"strings\"\n1389:  \t\"time\"\n1390:  \n1391:  \t\"github.com/charmbracelet/log\"\n1392:  \t\"github.com/srl-labs/containerlab/exec\"\n1393: +\t\"github.com/srl-labs/containerlab/labruntime\"\n1394:  \t\"github.com/srl-labs/containerlab/links\"\n1395:  \t\"github.com/srl-labs/containerlab/runtime\"\n1396:  \t\"github.com/srl-labs/containerlab/types\"\n1397:  \t\"github.com/srl-labs/containerlab/utils\"\n1398:  \tnetTypes \"go.podman.io/common/libnetwork/types\"\n1399:  \t\"go.podman.io/podman/v6/pkg/api/handlers\"\n1400:  \t\"go.podman.io/podman/v6/pkg/bindings\"\n1401:  \t\"go.podman.io/podman/v6/pkg/bindings/containers\"\n1402:  \t\"go.podman.io/podman/v6/pkg/bindings/images\"\n1403:  \t\"go.podman.io/podman/v6/pkg/bindings/network\"\n1404: +\t\"golang.org/x/term\"\n1405:  )\n1406:  \n1407:  const (\n1408:  \tRuntimeName    = \"podman\"\n1409:  \tdefaultTimeout = 120 * time.Second\n1410: @@ -786,10 +790,68 @@ func (r *PodmanRuntime) WriteContainerLogs(\n1411:  \t\t\treturn nil\n1412:  \t\t}\n1413:  \t}\n1414:  }\n1415:  \n1416: +// AttachContainer runs an interactive command in a container through a Podman exec session.\n1417: +// The Podman bindings run a terminal session from the process's own terminal, which they set\n1418: +// to raw mode and take the size from, so streams.Resize is not used.\n1419: +func (r *PodmanRuntime) AttachContainer(\n1420: +\tctx context.Context,\n1421: +\tcontainerName string,\n1422: +\tcmd []string,\n1423: +\ttty bool,\n1424: +\tstreams labruntime.AttachStreams,\n1425: +) error {\n1426: +\tif tty && term.IsTerminal(int(os.Stdin.Fd())) && streams.Stdin != os.Stdin {\n1427: +\t\treturn errors.New(\"podman connects a terminal session to containerlab's terminal, \" +\n1428: +\t\t\t\"so the session needs containerlab's stdin\")\n1429: +\t}\n1430: +\n1431: +\tctx, err := r.connect(ctx)\n1432: +\tif err != nil {\n1433: +\t\treturn err\n1434: +\t}\n1435: +\n1436: +\texecCreateConf := handlers.ExecCreateConfig{}\n1437: +\texecCreateConf.User = \"root\"\n1438: +\texecCreateConf.Tty = tty\n1439: +\texecCreateConf.AttachStdin = streams.Stdin != nil\n1440: +\texecCreateConf.AttachStdout = streams.Stdout != nil\n1441: +\texecCreateConf.AttachStderr = streams.Stderr != nil\n1442: +\texecCreateConf.Cmd = cmd\n1443: +\texecID, err := containers.ExecCreate(ctx, containerName, &execCreateConf)\n1444: +\tif err != nil {\n1445: +\t\treturn fmt.Errorf(\"failed to create exec in container %q: %w\", containerName, err)\n1446: +\t}\n1447: +\n1448: +\texecSAAOpts := new(containers.ExecStartAndAttachOptions)\n1449: +\tif streams.Stdin != nil {\n1450: +\t\texecSAAOpts.WithInputStream(*bufio.NewReader(streams.Stdin)).WithAttachInput(true)\n1451: +\t}\n1452: +\tif streams.Stdout != nil {\n1453: +\t\texecSAAOpts.WithOutputStream(streams.Stdout).WithAttachOutput(true)\n1454: +\t}\n1455: +\tif streams.Stderr != nil {\n1456: +\t\texecSAAOpts.WithErrorStream(streams.Stderr).WithAttachError(true)\n1457: +\t}\n1458: +\n1459: +\tif err := containers.ExecStartAndAttach(ctx, execID, execSAAOpts); err != nil {\n1460: +\t\treturn fmt.Errorf(\"failed to start/attach exec in container %q: %w\", containerName, err)\n1461: +\t}\n1462: +\n1463: +\tinspectOut, err := containers.ExecInspect(ctx, execID, nil)\n1464: +\tif err != nil {\n1465: +\t\treturn err\n1466: +\t}\n1467: +\tif inspectOut.ExitCode != 0 {\n1468: +\t\treturn &labruntime.CommandExitError{Code: inspectOut.ExitCode}\n1469: +\t}\n1470: +\n1471: +\treturn nil\n1472: +}\n1473: +\n1474:  func (*PodmanRuntime) StreamEvents(\n1475:  \tcontext.Context,\n1476:  \truntime.EventStreamOptions,\n1477:  ) (<-chan runtime.ContainerEvent, <-chan error, error) {\n1478:  \treturn nil, nil, fmt.Errorf(\"StreamEvents is not implemented for Podman runtime\")\n1479: diff --git a/runtime/runtime.go b/runtime/runtime.go\n1480: index 8a811d5..1eb3ac2 100644\n1481: --- a/runtime/runtime.go\n1482: +++ b/runtime/runtime.go\n1483: @@ -12,10 +12,11 @@ import (\n1484:  \t\"strconv\"\n1485:  \t\"time\"\n1486:  \n1487:  \t\"github.com/charmbracelet/log\"\n1488:  \tclabexec \"github.com/srl-labs/containerlab/exec\"\n1489: +\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n1490:  \tclablinks \"github.com/srl-labs/containerlab/links\"\n1491:  \tclabtypes \"github.com/srl-labs/containerlab/types\"\n1492:  )\n1493:  \n1494:  type ContainerRuntime interface {\n1495: @@ -122,10 +123,25 @@ type ContainerLogWriter interface {\n1496:  \t\topts ContainerLogOptions,\n1497:  \t\tstdout, stderr io.Writer,\n1498:  \t) error\n1499:  }\n1500:  \n\n(Showing lines 1101-1500 of 1690. Use offset=1501 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/runtime/docker/docker.go b/runtime/docker/docker.go\nindex 376f699..50b8df0 100644\n--- a/runtime/docker/docker.go\n+++ b/runtime/docker/docker.go\n@@ -15,10 +15,11 @@ import (\n \t\"os\"\n \t\"path\"\n \t\"path/filepath\"\n \t\"strconv\"\n \t\"strings\"\n+\t\"sync\"\n \t\"time\"\n \n \tcerrdefs \"github.com/containerd/errdefs\"\n \t\"github.com/docker/docker/api/types/image\"\n \t\"github.com/docker/docker/api/types/mount\"\n@@ -34,12 +35,14 @@ import (\n \t\"github.com/docker/docker/errdefs\"\n \t\"github.com/docker/docker/pkg/jsonmessage\"\n \t\"github.com/docker/docker/pkg/stdcopy\"",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/runtime/docker/docker.go b/runtime/docker/docker.go\nindex 376f699..50b8df0 100644\n--- a/runtime/docker/docker.go\n+++ b/runtime/docker/docker.go\n@@ -15,10 +15,11 @@ import (\n \t\"os\"\n \t\"path\"\n \t\"path/filepath\"\n \t\"strconv\"\n \t\"strings\"\n+\t\"sync\"\n \t\"time\"\n \n \tcerrdefs \"github.com/containerd/errdefs\"\n \t\"github.com/docker/docker/api/types/image\"\n \t\"github.com/docker/docker/api/types/mount\"\n@@ -34,12 +35,14 @@ import (\n \t\"github.com/docker/docker/errdefs\"\n \t\"github.com/docker/docker/pkg/jsonmessage\"\n \t\"github.com/docker/docker/pkg/stdcopy\"\n \t\"github.com/dustin/go-humanize\"\n \t\"github.com/google/shlex\"\n+\tdockerterm \"github.com/moby/term\"\n \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n \tclabexec \"github.com/srl-labs/containerlab/exec\"\n+\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n \tclablinks \"github.com/srl-labs/containerlab/links\"\n \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n \tclabnftables \"github.com/srl-labs/containerlab/runtime/docker/firewall/nftables\"\n \tclabtypes \"github.com/srl-labs/containerlab/types\"\n \tclabutils \"github.com/srl-labs/containerlab/utils\"\n@@ -2090,10 +2093,236 @@ func (d *DockerRuntime) WriteContainerLogs(\n \t}\n \n \treturn nil\n }\n \n+// AttachContainer runs an interactive command in a container through a Docker exec session,\n+// like docker exec -it.\n+func (d *DockerRuntime) AttachContainer(\n+\tctx context.Context,\n+\tcontainerName string,\n+\tcmd []string,\n+\ttty bool,\n+\tstreams clablabruntime.AttachStreams,\n+) error {\n+\t// resizing ends with the session\n+\tctx, cancel := context.WithCancel(ctx)\n+\tdefer cancel()\n+\n+\t// the terminal starts with the size that was already sent, for commands that read it once\n+\tvar consoleSize *[2]uint\n+\tif tty && streams.Resize != nil {\n+\t\tselect {\n+\t\tcase size, ok := <-streams.Resize:\n+\t\t\tif ok {\n+\t\t\t\tconsoleSize = &[2]uint{uint(size.Height), uint(size.Width)}\n+\t\t\t}\n+\t\tdefault:\n+\t\t}\n+\t}\n+\n+\t// the output is always attached, without it Docker ends the session before the command\n+\t// exits\n+\texecID, err := d.Client.ContainerExecCreate(ctx, containerName, container.ExecOptions{\n+\t\tUser:         \"0\", // root\n+\t\tTty:          tty,\n+\t\tConsoleSize:  consoleSize,\n+\t\tAttachStdin:  streams.Stdin != nil,\n+\t\tAttachStdout: true,\n+\t\tAttachStderr: true,\n+\t\tCmd:          cmd,\n+\t})\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to create exec in container %q: %w\", containerName, err)\n+\t}\n+\n+\trsp, err := d.Client.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{Tty: tty})\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to attach to exec in container %q: %w\", containerName, err)\n+\t}\n+\tdefer rsp.Close()\n+\n+\tif tty && streams.Resize != nil {\n+\t\tgo d.resizeExec(ctx, execID.ID, streams.Resize)\n+\t}\n+\n+\tif streams.Stdin != nil {\n+\t\tstdin := streams.Stdin\n+\t\tif tty {\n+\t\t\t// the detach keys end the input here, like docker exec does, so that Docker ends the\n+\t\t\t// session the same way as when stdin ends\n+\t\t\tstdin = dockerterm.NewEscapeProxy(stdin, detachKeys)\n+\t\t}\n+\n+\t\tgo func() {\n+\t\t\t_, _ = io.Copy(rsp.Conn, stdin)\n+\t\t\t// the end of the input closes the command's stdin\n+\t\t\t_ = rsp.CloseWrite()\n+\t\t}()\n+\t}\n+\n+\tstdout, stderr := streams.Stdout, streams.Stderr\n+\tif stdout == nil {\n+\t\tstdout = io.Discard\n+\t}\n+\tif stderr == nil {\n+\t\tstderr = io.Discard\n+\t}\n+\n+\tstart := &execStartCheck{inspect: func() (container.ExecInspect, error) {\n+\t\treturn d.Client.ContainerExecInspect(ctx, execID.ID)\n+\t}}\n+\n+\toutputDone := make(chan error, 1)\n+\tgo func() {\n+\t\tvar err error\n+\t\tif tty {\n+\t\t\t_, err = io.Copy(start.writer(stdout), rsp.Reader)\n+\t\t} else {\n+\t\t\t_, err = stdcopy.StdCopy(start.writer(stdout), start.writer(stderr), rsp.Reader)\n+\t\t}\n+\t\toutputDone <- err\n+\t}()\n+\n+\tselect {\n+\tcase err := <-outputDone:\n+\t\tif err != nil {\n+\t\t\treturn fmt.Errorf(\"failed to read exec output of container %q: %w\", containerName, err)\n+\t\t}\n+\tcase <-ctx.Done():\n+\t\t// no output is written after the call returns\n+\t\tstart.end()\n+\n+\t\treturn ctx.Err()\n+\t}\n+\n+\texecInspect, err := d.Client.ContainerExecInspect(ctx, execID.ID)\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\tif failed, reason := start.result(); failed || notStarted(execInspect) {\n+\t\terr := fmt.Errorf(\"command %q failed to start in container %q\",\n+\t\t\tstrings.Join(cmd, \" \"), containerName)\n+\t\tif reason := strings.TrimSpace(reason); reason != \"\" {\n+\t\t\terr = fmt.Errorf(\"%w: %s\", err, reason)\n+\t\t}\n+\n+\t\treturn err\n+\t}\n+\tif execInspect.Running {\n+\t\t// Docker ends the output of a terminal session when its stdin ends or on the detach\n+\t\t// keys, without ending the command\n+\t\treturn fmt.Errorf(\"detached from command %q in container %q, which is still running\",\n+\t\t\tstrings.Join(cmd, \" \"), containerName)\n+\t}\n+\tif execInspect.ExitCode != 0 {\n+\t\treturn &clablabruntime.CommandExitError{Code: execInspect.ExitCode}\n+\t}\n+\n+\treturn nil\n+}\n+\n+// detachKeys are Docker's default detach keys, ctrl-p ctrl-q.\n+var detachKeys = []byte{0x10, 0x11} //nolint: gochecknoglobals\n+\n+// notStarted tells whether an exec ended without its process ever running, such as a missing\n+// executable.\n+func notStarted(inspect container.ExecInspect) bool {\n+\treturn !inspect.Running && inspect.Pid == 0 && inspect.ExitCode != 0\n+}\n+\n+// execStartCheck holds back the first output of an exec until Docker reports whether the command\n+// started. Docker writes why a command didn't start into the output, which becomes the error\n+// instead. Output after the session ended is dropped.\n+type execStartCheck struct {\n+\tinspect func() (container.ExecInspect, error)\n+\n+\tmu      sync.Mutex\n+\tchecked bool\n+\tfailed  bool\n+\treason  []byte\n+\tended   bool\n+}\n+\n+func (c *execStartCheck) end() {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\n+\tc.ended = true\n+}\n+\n+func (c *execStartCheck) writer(w io.Writer) io.Writer {\n+\treturn execStartWriter{check: c, w: w}\n+}\n+\n+func (c *execStartCheck) result() (bool, string) {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\n+\treturn c.failed, string(c.reason)\n+}\n+\n+// hold tells whether output must be held back or dropped, checking the exec on the first output.\n+func (c *execStartCheck) hold(p []byte) bool {\n+\tc.mu.Lock()\n+\tdefer c.mu.Unlock()\n+\n+\tif c.ended {\n+\t\treturn true\n+\t}\n+\tif !c.checked {\n+\t\tc.checked = true\n+\t\tif inspect, err := c.inspect(); err == nil && !inspect.Running && inspect.Pid == 0 {\n+\t\t\tc.failed = true\n+\t\t}\n+\t}\n+\tif c.failed {\n+\t\tc.reason = append(c.reason, p...)\n+\t}\n+\n+\treturn c.failed\n+}\n+\n+type execStartWriter struct {\n+\tcheck *execStartCheck\n+\tw     io.Writer\n+}\n+\n+func (w execStartWriter) Write(p []byte) (int, error) {\n+\tif w.check.hold(p) {\n+\t\treturn len(p), nil\n+\t}\n+\n+\treturn w.w.Write(p)\n+}\n+\n+// resizeExec applies terminal size changes to an exec session until resize is closed or ctx\n+// ends.\n+func (d *DockerRuntime) resizeExec(\n+\tctx context.Context,\n+\texecID string,\n+\tresize <-chan clablabruntime.TerminalSize,\n+) {\n+\tfor {\n+\t\tselect {\n+\t\tcase <-ctx.Done():\n+\t\t\treturn\n+\t\tcase size, ok := <-resize:\n+\t\t\tif !ok || ctx.Err() != nil {\n+\t\t\t\treturn\n+\t\t\t}\n+\t\t\terr := d.Client.ContainerExecResize(ctx, execID, container.ResizeOptions{\n+\t\t\t\tHeight: uint(size.Height),\n+\t\t\t\tWidth:  uint(size.Width),\n+\t\t\t})\n+\t\t\tif err != nil {\n+\t\t\t\tlog.Debugf(\"failed to resize the terminal of exec %s: %v\", execID, err)\n+\t\t\t}\n+\t\t}\n+\t}\n+}\n+\n // InspectImage returns detailed information about a container image.\n func (d *DockerRuntime) InspectImage(\n \tctx context.Context,\n \timageName string,\n ) (*clabruntime.ImageInspect, error) {\ndiff --git a/runtime/podman/podman.go b/runtime/podman/podman.go\nindex 2a1d917..e6fd3fe 100644\n--- a/runtime/podman/podman.go\n+++ b/runtime/podman/podman.go\n@@ -2,11 +2,13 @@\n // +build linux,podman\n \n package podman\n \n import (\n+\t\"bufio\"\n \t\"context\"\n+\t\"errors\"\n \t\"fmt\"\n \t\"io\"\n \t\"net/netip\"\n \t\"os\"\n \t\"path/filepath\"\n@@ -14,20 +16,22 @@ import (\n \t\"strings\"\n \t\"time\"\n \n \t\"github.com/charmbracelet/log\"\n \t\"github.com/srl-labs/containerlab/exec\"\n+\t\"github.com/srl-labs/containerlab/labruntime\"\n \t\"github.com/srl-labs/containerlab/links\"\n \t\"github.com/srl-labs/containerlab/runtime\"\n \t\"github.com/srl-labs/containerlab/types\"\n \t\"github.com/srl-labs/containerlab/utils\"\n \tnetTypes \"go.podman.io/common/libnetwork/types\"\n \t\"go.podman.io/podman/v6/pkg/api/handlers\"\n \t\"go.podman.io/podman/v6/pkg/bindings\"\n \t\"go.podman.io/podman/v6/pkg/bindings/containers\"\n \t\"go.podman.io/podman/v6/pkg/bindings/images\"\n \t\"go.podman.io/podman/v6/pkg/bindings/network\"\n+\t\"golang.org/x/term\"\n )\n \n const (\n \tRuntimeName    = \"podman\"\n \tdefaultTimeout = 120 * time.Second\n@@ -786,10 +790,68 @@ func (r *PodmanRuntime) WriteContainerLogs(\n \t\t\treturn nil\n \t\t}\n \t}\n }\n \n+// AttachContainer runs an interactive command in a container through a Podman exec session.\n+// The Podman bindings run a terminal session from the process's own terminal, which they set\n+// to raw mode and take the size from, so streams.Resize is not used.\n+func (r *PodmanRuntime) AttachContainer(\n+\tctx context.Context,\n+\tcontainerName string,\n+\tcmd []string,\n+\ttty bool,\n+\tstreams labruntime.AttachStreams,\n+) error {\n+\tif tty && term.IsTerminal(int(os.Stdin.Fd())) && streams.Stdin != os.Stdin {\n+\t\treturn errors.New(\"podman connects a terminal session to containerlab's terminal, \" +\n+\t\t\t\"so the session needs containerlab's stdin\")\n+\t}\n+\n+\tctx, err := r.connect(ctx)\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\n+\texecCreateConf := handlers.ExecCreateConfig{}\n+\texecCreateConf.User = \"root\"\n+\texecCreateConf.Tty = tty\n+\texecCreateConf.AttachStdin = streams.Stdin != nil\n+\texecCreateConf.AttachStdout = streams.Stdout != nil\n+\texecCreateConf.AttachStderr = streams.Stderr != nil\n+\texecCreateConf.Cmd = cmd\n+\texecID, err := containers.ExecCreate(ctx, containerName, &execCreateConf)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to create exec in container %q: %w\", containerName, err)\n+\t}\n+\n+\texecSAAOpts := new(containers.ExecStartAndAttachOptions)\n+\tif streams.Stdin != nil {\n+\t\texecSAAOpts.WithInputStream(*bufio.NewReader(streams.Stdin)).WithAttachInput(true)\n+\t}\n+\tif streams.Stdout != nil {\n+\t\texecSAAOpts.WithOutputStream(streams.Stdout).WithAttachOutput(true)\n+\t}\n+\tif streams.Stderr != nil {\n+\t\texecSAAOpts.WithErrorStream(streams.Stderr).WithAttachError(true)\n+\t}\n+\n+\tif err := containers.ExecStartAndAttach(ctx, execID, execSAAOpts); err != nil {\n+\t\treturn fmt.Errorf(\"failed to start/attach exec in container %q: %w\", containerName, err)\n+\t}\n+\n+\tinspectOut, err := containers.ExecInspect(ctx, execID, nil)\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\tif inspectOut.ExitCode != 0 {\n+\t\treturn &labruntime.CommandExitError{Code: inspectOut.ExitCode}\n+\t}\n+\n+\treturn nil\n+}\n+\n func (*PodmanRuntime) StreamEvents(\n \tcontext.Context,\n \truntime.EventStreamOptions,\n ) (<-chan runtime.ContainerEvent, <-chan error, error) {\n \treturn nil, nil, fmt.Errorf(\"StreamEvents is not implemented for Podman runtime\")\ndiff --git a/runtime/runtime.go b/runtime/runtime.go\nindex 8a811d5..1eb3ac2 100644\n--- a/runtime/runtime.go\n+++ b/runtime/runtime.go\n@@ -12,10 +12,11 @@ import (\n \t\"strconv\"\n \t\"time\"\n \n \t\"github.com/charmbracelet/log\"\n \tclabexec \"github.com/srl-labs/containerlab/exec\"\n+\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n \tclablinks \"github.com/srl-labs/containerlab/links\"\n \tclabtypes \"github.com/srl-labs/containerlab/types\"\n )\n \n type ContainerRuntime interface {\n@@ -122,10 +123,25 @@ type ContainerLogWriter interface {\n \t\topts ContainerLogOptions,\n \t\tstdout, stderr io.Writer,\n \t) error\n }\n ",
+                "lineStart": 1101,
+                "lineEnd": 1500,
+                "totalLines": 1690,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190138811,
+              "end": 1795190138823
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9aba7c9001Flwwy8CEg43HP6",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9ab9bb0001DXOJoo5d0358P3",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 60383,
+            "input": 3232,
+            "output": 26,
+            "reasoning": 37,
+            "cache": {
+              "read": 57088,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9aba7d10017z4Fxf6olSPHOq",
+        "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+        "time": {
+          "created": 1795190138833,
+          "completed": 1795190141512
+        },
+        "parentID": "msg_1f9aab94c001LnVZlSjAX15msn",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-uXYr8s",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 65026,
+          "input": 4711,
+          "output": 26,
+          "reasoning": 1,
+          "cache": {
+            "read": 60288,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9abb1b2001htyZl3p5UNKsTn",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aba7d10017z4Fxf6olSPHOq"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9abb238001EWm0XM5j4Yr3CL",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aba7d10017z4Fxf6olSPHOq",
+          "callID": "call_fcd34fdd0c5a4f86aac3fc07",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 190,
+              "offset": 1501
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n1501: +// ContainerAttacher is implemented by container runtimes that can run an interactive command in\n1502: +// a container, the way lab runtimes do with labruntime.NodeAttacher.\n1503: +type ContainerAttacher interface {\n1504: +\t// AttachContainer runs cmd in the container with the given streams attached and a terminal\n1505: +\t// when tty is set; stdout then carries the combined output. It returns a\n1506: +\t// *labruntime.CommandExitError when the command exits with a nonzero code.\n1507: +\tAttachContainer(\n1508: +\t\tctx context.Context,\n1509: +\t\tcontainerName string,\n1510: +\t\tcmd []string,\n1511: +\t\ttty bool,\n1512: +\t\tstreams clablabruntime.AttachStreams,\n1513: +\t) error\n1514: +}\n1515: +\n1516:  // LogTail renders a log tail for container runtime APIs: \"all\" or the number of lines.\n1517:  func LogTail(tail *int64) string {\n1518:  \tif tail == nil || *tail < 0 {\n1519:  \t\treturn \"all\"\n1520:  \t}\n1521: diff --git a/tests/01-smoke/34-exec-attached.clab.yml b/tests/01-smoke/34-exec-attached.clab.yml\n1522: new file mode 100644\n1523: index 0000000..85f96cc\n1524: --- /dev/null\n1525: +++ b/tests/01-smoke/34-exec-attached.clab.yml\n1526: @@ -0,0 +1,11 @@\n1527: +# yaml-language-server: $schema=../../schemas/clab.schema.json\n1528: +name: exec-attached\n1529: +\n1530: +topology:\n1531: +  nodes:\n1532: +    l1:\n1533: +      kind: linux\n1534: +      image: alpine:3\n1535: +    l2:\n1536: +      kind: linux\n1537: +      image: alpine:3\n1538: diff --git a/tests/01-smoke/34-exec-attached.robot b/tests/01-smoke/34-exec-attached.robot\n1539: new file mode 100644\n1540: index 0000000..fb27d1d\n1541: --- /dev/null\n1542: +++ b/tests/01-smoke/34-exec-attached.robot\n1543: @@ -0,0 +1,104 @@\n1544: +*** Comments ***\n1545: +This suite tests the exec command with stdin and a TTY attached (--stdin and --tty) with the\n1546: +local container runtimes.\n1547: +\n1548: +\n1549: +*** Settings ***\n1550: +Library             OperatingSystem\n1551: +Library             Process\n1552: +Resource            ../common.robot\n1553: +\n1554: +Suite Setup         Run    ${CLAB_BIN} --runtime ${runtime} destroy -t ${topo} --cleanup\n1555: +Suite Teardown      Run    ${CLAB_BIN} --runtime ${runtime} destroy -t ${topo} --cleanup\n1556: +\n1557: +\n1558: +*** Variables ***\n1559: +${lab-name}         exec-attached\n1560: +${topo}             ${CURDIR}/34-exec-attached.clab.yml\n1561: +${runtime}          docker\n1562: +${l1}               --label clab-node-name\\=l1\n1563: +\n1564: +\n1565: +*** Test Cases ***\n1566: +Deploy ${lab-name} lab\n1567: +    ${rc}    ${output} =    Run And Return Rc And Output\n1568: +    ...    ${CLAB_BIN} --runtime ${runtime} deploy -t ${topo}\n1569: +    Log    ${output}\n1570: +    Should Be Equal As Integers    ${rc}    0\n1571: +\n1572: +Exec passes stdin to the command\n1573: +    ${result} =    Run Exec\n1574: +    ...    printf 'line1\\\\nline2\\\\n' |\n1575: +    ...    -t ${topo} ${l1} --stdin --cmd \"sh -c 'cat > /tmp/stdin.txt'\"\n1576: +    Should Be Equal As Integers    ${result.rc}    0\n1577: +    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --cmd \"cat /tmp/stdin.txt\"\n1578: +    Should Be Equal As Integers    ${result.rc}    0\n1579: +    Should Be Equal    ${result.stdout}    line1\\nline2\n1580: +\n1581: +Exec with stdin keeps stdout and stderr apart\n1582: +    ${result} =    Run Exec\n1583: +    ...    ${EMPTY}    -t ${topo} ${l1} -i --cmd \"sh -c 'echo out; echo err >&2'\"\n1584: +    Should Be Equal As Integers    ${result.rc}    0\n1585: +    Should Be Equal    ${result.stdout}    out\n1586: +    Should Contain    ${result.stderr}    err\n1587: +\n1588: +Exec with stdin exits with the exit code of the command\n1589: +    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --cmd \"sh -c 'exit 7'\"\n1590: +    Should Be Equal As Integers    ${result.rc}    7\n1591: +\n1592: +Exec with stdin fails for a command that doesn't start\n1593: +    Skip If    '${runtime}' == 'podman'    podman reports the exit code of a command that doesn't start\n1594: +    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --cmd no-such-command\n1595: +    Should Not Be Equal As Integers    ${result.rc}    0\n1596: +    Should Be Empty    ${result.stdout}\n1597: +    Should Contain    ${result.stderr}    failed to start\n1598: +\n1599: +Exec with a TTY runs the command in a terminal\n1600: +    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} --tty --cmd tty\n1601: +    Should Be Equal As Integers    ${result.rc}    0\n1602: +    Should Start With    ${result.stdout}    /dev/pts/\n1603: +\n1604: +Exec with stdin and a TTY needs a terminal\n1605: +    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --tty --cmd sh\n1606: +    Should Not Be Equal As Integers    ${result.rc}    0\n1607: +    Should Contain    ${result.stderr}    not a TTY\n1608: +\n1609: +Exec with stdin and a TTY from a terminal exits with the exit code of the command\n1610: +    ${result} =    Run Exec In A Terminal    -i --tty --cmd \"sh -c 'exit 5'\"\n1611: +    Should Be Equal As Integers    ${result.rc}    5\n1612: +\n1613: +Exec with stdin and a TTY starts the command with the size of the terminal\n1614: +    ${result} =    Run Exec In A Terminal    -i --tty --cmd \"stty size\"    stty rows 30 cols 100;\n1615: +    Should Be Equal As Integers    ${result.rc}    0\n1616: +    Should Contain    ${result.stdout}    30 100\n1617: +\n1618: +Exec with stdin needs a filter matching one node\n1619: +    ${result} =    Run Exec    ${EMPTY}    -t ${topo} -i --cmd true\n1620: +    Should Not Be Equal As Integers    ${result.rc}    0\n1621: +    Should Contain    ${result.stderr}    matched 2\n1622: +\n1623: +\n1624: +*** Keywords ***\n1625: +Run Exec\n1626: +    [Documentation]    Runs exec with the given args and stdin from the pipe, or from /dev/null\n1627: +    ...    when the pipe is empty.\n1628: +    [Arguments]    ${pipe}    ${args}\n1629: +    IF    $pipe\n1630: +        ${cmd} =    Set Variable    ${pipe} ${CLAB_BIN} --runtime ${runtime} exec ${args}\n1631: +    ELSE\n1632: +        ${cmd} =    Set Variable    ${CLAB_BIN} --runtime ${runtime} exec ${args} < /dev/null\n1633: +    END\n1634: +    ${result} =    Process.Run Process    ${cmd}    shell=True\n1635: +    Log    stdout:${\\n}${result.stdout}\n1636: +    Log    stderr:${\\n}${result.stderr}\n1637: +    RETURN    ${result}\n1638: +\n1639: +Run Exec In A Terminal\n1640: +    [Documentation]    Runs exec on l1 with the given args in a terminal script creates, after\n1641: +    ...    the setup command.\n1642: +    [Arguments]    ${args}    ${setup}=${EMPTY}\n1643: +    ${result} =    Process.Run Process\n1644: +    ...    script    -qec    ${setup} ${CLAB_BIN} --runtime ${runtime} exec -t ${topo} ${l1} ${args}\n1645: +    ...    /dev/null    stdin=/dev/null    timeout=60s\n1646: +    Log    output:${\\n}${result.stdout}\n1647: +    RETURN    ${result}\n1648: diff --git a/tests/14-clabernetes/01-linux-lifecycle.robot b/tests/14-clabernetes/01-linux-lifecycle.robot\n1649: index bc27828..c7ae91c 100644\n1650: --- a/tests/14-clabernetes/01-linux-lifecycle.robot\n1651: +++ b/tests/14-clabernetes/01-linux-lifecycle.robot\n1652: @@ -363,10 +363,38 @@ Logs follow streams new device log lines\n1653:          Run Keyword And Ignore Error    Terminate Process    c9s_logs    kill=True\n1654:          Remove File If Exists    ${events-log}\n1655:          Remove File If Exists    ${events-err}\n1656:      END\n1657:  \n1658: +Exec with stdin and a TTY reaches the device container\n1659: +    ${copy} =    Run Clab Command\n1660: +    ...    exec -t ${topo} --label ${client-label} --stdin --cmd \"sh -c 'cat > /tmp/clab-stdin.yml'\" < ${topo}\n1661: +    Should Be Equal As Integers    ${copy.rc}    0\n1662: +    ${read} =    Run Clab Command\n1663: +    ...    exec -t ${topo} --label ${client-label} --stdin --cmd \"cat /tmp/clab-stdin.yml\" < /dev/null\n1664: +    Should Be Equal As Integers    ${read.rc}    0\n1665: +    ${want} =    Get File    ${topo}\n1666: +    Should Be Equal    ${read.stdout}    ${{ $want.rstrip(\"\\n\") }}\n1667: +\n1668: +    ${exit} =    Run Clab Command\n1669: +    ...    exec -t ${topo} --label ${client-label} --stdin --cmd \"sh -c 'exit 7'\" < /dev/null\n1670: +    Should Be Equal As Integers    ${exit.rc}    7\n1671: +\n1672: +    ${tty} =    Run Clab Command    exec -t ${topo} --label ${client-label} --tty --cmd tty < /dev/null\n1673: +    Should Be Equal As Integers    ${tty.rc}    0\n1674: +    Should Start With    ${tty.stdout}    /dev/pts/\n1675: +\n1676: +    # an interactive session needs a terminal, which script creates; Kubernetes applies its size\n1677: +    # after the command started\n1678: +    ${session} =    Process.Run Process\n1679: +    ...    script    -qec\n1680: +    ...    stty rows 30 cols 100; ${CLAB_BIN} --runtime ${runtime} exec -t ${topo} --label ${client-label} -i --tty --cmd \"sh -c 'until stty size | grep -q 100; do sleep 0.1; done; stty size; exit 5'\"\n1681: +    ...    /dev/null    stdin=/dev/null    timeout=60s\n1682: +    Log    ${session.stdout}\n1683: +    Should Be Equal As Integers    ${session.rc}    5\n1684: +    Should Contain    ${session.stdout}    30 100\n1685: +\n1686:  Library attaches, port-forwards, streams logs and samples stats as an impersonated user\n1687:      ${rbac} =    Process.Run Process\n1688:      ...    kubectl -n ${lab-namespace} create role c9s-lab-reader --verb\\=get,list,watch --resource\\=topologies.c9s.run,nodes.c9s.run,links.c9s.run,nodeprofiles.c9s.run,pods.metrics.k8s.io && kubectl -n ${lab-namespace} create rolebinding clab-alice-reader --role\\=c9s-lab-reader --user\\=clab:alice && kubectl -n ${lab-namespace} create rolebinding clab-alice-admin --clusterrole\\=admin --user\\=clab:alice\n1689:      ...    shell=True\n1690:      Log    ${rbac.stdout}${\\n}${rbac.stderr}\n\n(End of file - total 1690 lines)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "+// ContainerAttacher is implemented by container runtimes that can run an interactive command in\n+// a container, the way lab runtimes do with labruntime.NodeAttacher.\n+type ContainerAttacher interface {\n+\t// AttachContainer runs cmd in the container with the given streams attached and a terminal\n+\t// when tty is set; stdout then carries the combined output. It returns a\n+\t// *labruntime.CommandExitError when the command exits with a nonzero code.\n+\tAttachContainer(\n+\t\tctx context.Context,\n+\t\tcontainerName string,\n+\t\tcmd []string,\n+\t\ttty bool,\n+\t\tstreams clablabruntime.AttachStreams,\n+\t) error\n+}\n+\n // LogTail renders a log tail for container runtime APIs: \"all\" or the number of lines.\n func LogTail(tail *int64) string {\n \tif tail == nil || *tail < 0 {\n \t\treturn \"all\"\n \t}",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "+// ContainerAttacher is implemented by container runtimes that can run an interactive command in\n+// a container, the way lab runtimes do with labruntime.NodeAttacher.\n+type ContainerAttacher interface {\n+\t// AttachContainer runs cmd in the container with the given streams attached and a terminal\n+\t// when tty is set; stdout then carries the combined output. It returns a\n+\t// *labruntime.CommandExitError when the command exits with a nonzero code.\n+\tAttachContainer(\n+\t\tctx context.Context,\n+\t\tcontainerName string,\n+\t\tcmd []string,\n+\t\ttty bool,\n+\t\tstreams clablabruntime.AttachStreams,\n+\t) error\n+}\n+\n // LogTail renders a log tail for container runtime APIs: \"all\" or the number of lines.\n func LogTail(tail *int64) string {\n \tif tail == nil || *tail < 0 {\n \t\treturn \"all\"\n \t}\ndiff --git a/tests/01-smoke/34-exec-attached.clab.yml b/tests/01-smoke/34-exec-attached.clab.yml\nnew file mode 100644\nindex 0000000..85f96cc\n--- /dev/null\n+++ b/tests/01-smoke/34-exec-attached.clab.yml\n@@ -0,0 +1,11 @@\n+# yaml-language-server: $schema=../../schemas/clab.schema.json\n+name: exec-attached\n+\n+topology:\n+  nodes:\n+    l1:\n+      kind: linux\n+      image: alpine:3\n+    l2:\n+      kind: linux\n+      image: alpine:3\ndiff --git a/tests/01-smoke/34-exec-attached.robot b/tests/01-smoke/34-exec-attached.robot\nnew file mode 100644\nindex 0000000..fb27d1d\n--- /dev/null\n+++ b/tests/01-smoke/34-exec-attached.robot\n@@ -0,0 +1,104 @@\n+*** Comments ***\n+This suite tests the exec command with stdin and a TTY attached (--stdin and --tty) with the\n+local container runtimes.\n+\n+\n+*** Settings ***\n+Library             OperatingSystem\n+Library             Process\n+Resource            ../common.robot\n+\n+Suite Setup         Run    ${CLAB_BIN} --runtime ${runtime} destroy -t ${topo} --cleanup\n+Suite Teardown      Run    ${CLAB_BIN} --runtime ${runtime} destroy -t ${topo} --cleanup\n+\n+\n+*** Variables ***\n+${lab-name}         exec-attached\n+${topo}             ${CURDIR}/34-exec-attached.clab.yml\n+${runtime}          docker\n+${l1}               --label clab-node-name\\=l1\n+\n+\n+*** Test Cases ***\n+Deploy ${lab-name} lab\n+    ${rc}    ${output} =    Run And Return Rc And Output\n+    ...    ${CLAB_BIN} --runtime ${runtime} deploy -t ${topo}\n+    Log    ${output}\n+    Should Be Equal As Integers    ${rc}    0\n+\n+Exec passes stdin to the command\n+    ${result} =    Run Exec\n+    ...    printf 'line1\\\\nline2\\\\n' |\n+    ...    -t ${topo} ${l1} --stdin --cmd \"sh -c 'cat > /tmp/stdin.txt'\"\n+    Should Be Equal As Integers    ${result.rc}    0\n+    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --cmd \"cat /tmp/stdin.txt\"\n+    Should Be Equal As Integers    ${result.rc}    0\n+    Should Be Equal    ${result.stdout}    line1\\nline2\n+\n+Exec with stdin keeps stdout and stderr apart\n+    ${result} =    Run Exec\n+    ...    ${EMPTY}    -t ${topo} ${l1} -i --cmd \"sh -c 'echo out; echo err >&2'\"\n+    Should Be Equal As Integers    ${result.rc}    0\n+    Should Be Equal    ${result.stdout}    out\n+    Should Contain    ${result.stderr}    err\n+\n+Exec with stdin exits with the exit code of the command\n+    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --cmd \"sh -c 'exit 7'\"\n+    Should Be Equal As Integers    ${result.rc}    7\n+\n+Exec with stdin fails for a command that doesn't start\n+    Skip If    '${runtime}' == 'podman'    podman reports the exit code of a command that doesn't start\n+    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --cmd no-such-command\n+    Should Not Be Equal As Integers    ${result.rc}    0\n+    Should Be Empty    ${result.stdout}\n+    Should Contain    ${result.stderr}    failed to start\n+\n+Exec with a TTY runs the command in a terminal\n+    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} --tty --cmd tty\n+    Should Be Equal As Integers    ${result.rc}    0\n+    Should Start With    ${result.stdout}    /dev/pts/\n+\n+Exec with stdin and a TTY needs a terminal\n+    ${result} =    Run Exec    ${EMPTY}    -t ${topo} ${l1} -i --tty --cmd sh\n+    Should Not Be Equal As Integers    ${result.rc}    0\n+    Should Contain    ${result.stderr}    not a TTY\n+\n+Exec with stdin and a TTY from a terminal exits with the exit code of the command\n+    ${result} =    Run Exec In A Terminal    -i --tty --cmd \"sh -c 'exit 5'\"\n+    Should Be Equal As Integers    ${result.rc}    5\n+\n+Exec with stdin and a TTY starts the command with the size of the terminal\n+    ${result} =    Run Exec In A Terminal    -i --tty --cmd \"stty size\"    stty rows 30 cols 100;\n+    Should Be Equal As Integers    ${result.rc}    0\n+    Should Contain    ${result.stdout}    30 100\n+\n+Exec with stdin needs a filter matching one node\n+    ${result} =    Run Exec    ${EMPTY}    -t ${topo} -i --cmd true\n+    Should Not Be Equal As Integers    ${result.rc}    0\n+    Should Contain    ${result.stderr}    matched 2\n+\n+\n+*** Keywords ***\n+Run Exec\n+    [Documentation]    Runs exec with the given args and stdin from the pipe, or from /dev/null\n+    ...    when the pipe is empty.\n+    [Arguments]    ${pipe}    ${args}\n+    IF    $pipe\n+        ${cmd} =    Set Variable    ${pipe} ${CLAB_BIN} --runtime ${runtime} exec ${args}\n+    ELSE\n+        ${cmd} =    Set Variable    ${CLAB_BIN} --runtime ${runtime} exec ${args} < /dev/null\n+    END\n+    ${result} =    Process.Run Process    ${cmd}    shell=True\n+    Log    stdout:${\\n}${result.stdout}\n+    Log    stderr:${\\n}${result.stderr}\n+    RETURN    ${result}\n+\n+Run Exec In A Terminal\n+    [Documentation]    Runs exec on l1 with the given args in a terminal script creates, after\n+    ...    the setup command.\n+    [Arguments]    ${args}    ${setup}=${EMPTY}\n+    ${result} =    Process.Run Process\n+    ...    script    -qec    ${setup} ${CLAB_BIN} --runtime ${runtime} exec -t ${topo} ${l1} ${args}\n+    ...    /dev/null    stdin=/dev/null    timeout=60s\n+    Log    output:${\\n}${result.stdout}\n+    RETURN    ${result}\ndiff --git a/tests/14-clabernetes/01-linux-lifecycle.robot b/tests/14-clabernetes/01-linux-lifecycle.robot\nindex bc27828..c7ae91c 100644\n--- a/tests/14-clabernetes/01-linux-lifecycle.robot\n+++ b/tests/14-clabernetes/01-linux-lifecycle.robot\n@@ -363,10 +363,38 @@ Logs follow streams new device log lines\n         Run Keyword And Ignore Error    Terminate Process    c9s_logs    kill=True\n         Remove File If Exists    ${events-log}\n         Remove File If Exists    ${events-err}\n     END\n \n+Exec with stdin and a TTY reaches the device container\n+    ${copy} =    Run Clab Command\n+    ...    exec -t ${topo} --label ${client-label} --stdin --cmd \"sh -c 'cat > /tmp/clab-stdin.yml'\" < ${topo}\n+    Should Be Equal As Integers    ${copy.rc}    0\n+    ${read} =    Run Clab Command\n+    ...    exec -t ${topo} --label ${client-label} --stdin --cmd \"cat /tmp/clab-stdin.yml\" < /dev/null\n+    Should Be Equal As Integers    ${read.rc}    0\n+    ${want} =    Get File    ${topo}\n+    Should Be Equal    ${read.stdout}    ${{ $want.rstrip(\"\\n\") }}\n+\n+    ${exit} =    Run Clab Command\n+    ...    exec -t ${topo} --label ${client-label} --stdin --cmd \"sh -c 'exit 7'\" < /dev/null\n+    Should Be Equal As Integers    ${exit.rc}    7\n+\n+    ${tty} =    Run Clab Command    exec -t ${topo} --label ${client-label} --tty --cmd tty < /dev/null\n+    Should Be Equal As Integers    ${tty.rc}    0\n+    Should Start With    ${tty.stdout}    /dev/pts/\n+\n+    # an interactive session needs a terminal, which script creates; Kubernetes applies its size\n+    # after the command started\n+    ${session} =    Process.Run Process\n+    ...    script    -qec\n+    ...    stty rows 30 cols 100; ${CLAB_BIN} --runtime ${runtime} exec -t ${topo} --label ${client-label} -i --tty --cmd \"sh -c 'until stty size | grep -q 100; do sleep 0.1; done; stty size; exit 5'\"\n+    ...    /dev/null    stdin=/dev/null    timeout=60s\n+    Log    ${session.stdout}\n+    Should Be Equal As Integers    ${session.rc}    5\n+    Should Contain    ${session.stdout}    30 100\n+\n Library attaches, port-forwards, streams logs and samples stats as an impersonated user\n     ${rbac} =    Process.Run Process\n     ...    kubectl -n ${lab-namespace} create role c9s-lab-reader --verb\\=get,list,watch --resource\\=topologies.c9s.run,nodes.c9s.run,links.c9s.run,nodeprofiles.c9s.run,pods.metrics.k8s.io && kubectl -n ${lab-namespace} create rolebinding clab-alice-reader --role\\=c9s-lab-reader --user\\=clab:alice && kubectl -n ${lab-namespace} create rolebinding clab-alice-admin --clusterrole\\=admin --user\\=clab:alice\n     ...    shell=True\n     Log    ${rbac.stdout}${\\n}${rbac.stderr}",
+                "lineStart": 1501,
+                "lineEnd": 1690,
+                "totalLines": 1690,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795190141501,
+              "end": 1795190141507
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9abb245001I39i8Jz9l5tit3",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aba7d10017z4Fxf6olSPHOq",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 65026,
+            "input": 4711,
+            "output": 26,
+            "reasoning": 1,
+            "cache": {
+              "read": 60288,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9abb24d001pQrI7FHbLk432v",
+        "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+        "time": {
+          "created": 1795190141517,
+          "completed": 1795190204021
+        },
+        "parentID": "msg_1f9aab94c001LnVZlSjAX15msn",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-uXYr8s",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 72368,
+          "input": 3244,
+          "output": 71,
+          "reasoning": 4029,
+          "cache": {
+            "read": 65024,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9abbcab001Rwqq1YAfHABgaA",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9abb24d001pQrI7FHbLk432v"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9abbcae001Za3Ha17OQ7SAkT",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9abb24d001pQrI7FHbLk432v",
+          "text": "Now I've covered the entire diff. Let me also check the labruntime.go diff region for `NodeAttacher` interface addition — the diff didn't show a labruntime/runtime.go hunk! Wait, the diff showed only runtime/runtime.go (ContainerAttacher). But labruntime/runtime.go has new types (AttachRequest etc.) — was it already present in base? The manifest only lists changed paths, and labruntime/runtime.go is NOT in the changed list (18 paths don't include labruntime/runtime.go). So AttachRequest/AttachStreams/NodeAttacher already existed in base (they were used by logs/portforward features). Good — the PR reuses existing types.\n\nLet me verify: check base/labruntime/runtime.go for AttachRequest and NodeAttacher.\n\nAlso verify clabernetes access.go base hunk only changed the sizeCtx part — yes (diff lines 764-784, one hunk).\n\nNow let me check `labRuntimeContainerParts` in core (used by ExecAttached for lab runtime) — exists in base presumably. And `requireLabName`. Fine.\n\nRemaining checks:\n\n1. execFn: `execAttachedFn` — cobraCmd.Flags().Changed(\"format\") check happens BEFORE ParseExecOutputFormat. Fine.\n\n2. execAttachedFn error path condition (line 201): `err != nil && o.Exec.Stdin && term.IsTerminal(...)`. Consider the case: `--tty` without `--stdin` and an error occurs (e.g. filter mismatch, runtime error). Raw mode is not active; the error returns through cobra normally. Fine. Case: `--stdin` (no --tty) with error: condition true (stdin is a terminal), so os.Exit(1) with \"Error: ...\" — same message cobra would print (cobra prints \"Error: <err>\" when SilenceErrors false). Let me check root.go SilenceErrors. If SilenceErrors is true, then the error would NOT be printed at all by cobra, meaning returning err would produce exit code 1 with NO message — so the special path actually fixes missing message. Let me check root.go.\n\n3. Podman attach: `AttachStdout = streams.Stdout != nil` and `AttachStderr = streams.Stderr != nil` — if neither set (cmd library path without output), podman exec would not attach output. Docker comments say \"the output is always attached, without it Docker ends the session before the command exits\". For podman, does ExecStartAndAttach without output cause issues? Probably not a big deal; the CLI always attaches stdout/stderr.\n\n4. Podman `WithInputStream(*bufio.NewReader(streams.Stdin))` — takes a `bufio.Reader` by value? That copies the struct; fine.\n\n5. Podman TTY + no resize: podman bindings take the terminal size from containerlab's own terminal — but wait, cmd/exec.go sets raw mode on os.Stdin with `--stdin --tty`. Podman bindings detect their own terminal. OK.\n\nBut: podman `--tty` without `--stdin` (from a terminal): the guard: `tty && term.IsTerminal(os.Stdin) && streams.Stdin != os.Stdin` → streams.Stdin is nil ≠ os.Stdin → error \"podman connects a terminal session to containerlab's terminal, so the session needs containerlab's stdin\". Docs: \"With Podman, `--tty` from a terminal needs `--stdin`\". OK consistent.\n\nBut note: with podman `--tty --stdin` where stdin is NOT a terminal: guard skipped (term.IsTerminal false), and execCreateConf.Tty = true with AttachStdin from a pipe. Podman's Tty=true — Podman server-side will allocate a PTY and take size? The bindings comment says the session runs from the process's own terminal... If the process's stdin is not a terminal, what happens? Hmm — the podman binding ExecStartAndAttach with Tty and non-terminal input: podman lib creates a pseudo-terminal in the container; the size defaults to something. Not a correctness blocker for review; smoke test covers podman? The podman job is continue-on-error. The robot test `Exec with a TTY runs the command in a terminal` runs with `--tty` and `/dev/null` stdin for podman — passes presumably (podman's own terminal isn't a terminal in CI either...). OK.\n\n6. Docker execStartCheck hold: for the first output, it calls ContainerExecInspect to check if the command started. Race: output may arrive before the process started? Docker writes \"OCI runtime exec failed: ...\" on the connection when the exec fails; the inspect check handles both. Note the `hold` only checks once on the first output — if the first output arrives before the failure message... hmm, for `notStarted` exec, docker sends the failure message and closes; the first output is the failure message itself, so checked→failed. If the command starts fine, first output passes and subsequent outputs are passed through. But there's a subtle race: what if the command is very fast and exits before first output? Then inspect shows !Running && Pid==0? No — Pid != 0 for a started command that exited; Pid==0 only when never started. OK, sound.\n\n7. c9s Attach: when TTY, stderr merged into stdout (stderr = nil) — matches TTY semantics. Good. When not TTY and Stderr is nil but Stdout non-nil... PodExecOptions.Stderr=false, fine.\n\n8. c9s: `exitErr.ExitStatus()` — for commands that can't start (e.g. missing executable), kubeexec.ExitError with status 127 → mapped to CommandExitError instead of an error. But the docs say \"A command that can't start ... is reported as an error with the Docker and clabernetes runtimes, and containerlab exits with 1.\" Hmm — with c9s, a missing executable gives exec code 127 from the API server (\"oci runtime error\"?). Actually kubectl reports \"OCI runtime exec failed: exec: \\\"nope\\\": executable file not found\" as a stream error? The kube exec error would be ExitError with code 127 and the message? If the container runtime fails to exec, the API server sends an error status with the message, which StreamWithContext returns as StatusError → ExitError{ExitStatus: 127, Status message}. errors.As(&exitErr) matches kubeexec.ExitError — StatusError is returned as error; kubeexec.ExitError wraps? In client-go, `remotecommand` returns the StatusError; `kubeexec.ExitError` is a different type (code.DoExec). Actually the remotecommand returns `StatusError` for exec failures; the code in c9s does errors.As(err, &exitErr) for kubeexec.ExitError — the api error path goes through `ExitError`? Let me think: client-go remotecommand on non-200 status returns `apierrors.FromObject(...)`/StatusError. The ExitError is returned by `kubeexec.CodeExitError`? In client-go's remotecommand, the error from the api server with status \"Failure\" containing an exec code is returned as `kubeexec.CodeExitError` which embeds ExitError? Hmm. This level of detail is speculative; the c9s e2e test only checks exit 7 and TTY. Docs claim c9s reports can't-start as an error; unverified but not evidence of a defect. Leave as coverage note? It's fine.\n\n9. clabernetes `Attach` with `req.TTY && streams.Resize != nil` — resizeCtx fix. Note: `Next()` is called by remotecommand during streaming; after the stream ends, the deferred cancel ends the queue goroutine. Good.\n\n10. c9s default attach command \"sh\" when Command empty — used by other callers (library users). Fine.\n\n11. `AttachRequest.Container` allows attaching to any container of the pod. ExecAttached doesn't set Container — default primary. OK.\n\n12. `execFn` now uses `cobraCmd.Context()` instead of `context.Background()` — improvement.\n\n13. cmd/context.go: `exitOnSignal` — restored. Note: the signal goroutine previously os.Exit(1); now restores terminal first. Race: `restoreOnSignalExit.Store(&restoreTerminal)` then `defer restoreOnSignalExit.Store(nil)` — LIFO order: Store(nil) runs before restoreTerminal() deferred call? Defers run LIFO: deferred restoreTerminal() was registered first (line 177: `defer restoreTerminal()`), then `defer restoreOnSignalExit.Store(nil)` (line 180). On return: Store(nil) runs first, then restoreTerminal(). So between Store(nil) and restoreTerminal(), a signal arriving would find nil and skip restore — then restore happens anyway in the defer... but os.Exit in exitOnSignal skips the pending defers! So there is a tiny window: signal arrives after Store(nil) but before restoreTerminal() runs → terminal left in raw mode. Window is microseconds; P4 at most. Actually wait, order matters: if the signal arrives BEFORE Store(nil), exitOnSignal calls the restore func — fine. If after Store(nil) but before the deferred restore executes... the deferred restoreTerminal() is the last defer to run; the window between Store(nil) and restoreTerminal() is tiny (one defer pops). Since Go processes defers synchronously on the returning goroutine, the window is nanoseconds. Also on normal error return path (return err), terminal restored. On os.Exit paths (exit code), restoreTerminal called explicitly before os.Exit. Good design. I'll not report the race (too speculative, tiny).\n\nActually wait — there's a subtle issue: the exit-path condition `errors.As(err, &exitErr)` calls os.Exit(exitErr.Code) — which skips the deferred `restoreTerminal()`? No — restoreTerminal() is called explicitly at line 251 before os.Exit. Good. And signal race handled via restoreOnSignalExit. OK.\n\n14. Now, check root.go SilenceErrors to assess finding #1.\n\n15. Also check: `execAttachedFn` uses `term.IsTerminal(int(os.Stdin.Fd()))` in the error path even when `--stdin` without `--tty`: MakeRaw was never called; stdin in canonical mode. If err != nil, os.Exit(1) with \"Error: err\" to stderr. Without the special path, cobra would print \"Error: err\" too (if SilenceErrors false) — so identical behavior. So the condition is overly broad but harmless behaviorally? It bypasses `defer cancel()` etc., but process exits anyway. So the finding is minor (P4): the condition should be scoped to when raw mode is active (o.Exec.TTY && o.Exec.Stdin), because for plain `--stdin` errors it needlessly bypasses cobra's error handling — behaviorally equivalent today (cobra prints the same message). Let me check root.go SilenceErrors to determine if there's an actual difference.\n\n16. Podman root vs docker root vs c9s default user — P3. Let me double check podman's plain Exec: line 527-532 ExecCreateConfig{} — no User set → podman exec runs as the container's user (default). Docker plain Exec sets User \"0\". So docker plain exec already ran as root; podman plain exec runs as default user. The PR's attach: docker root (consistent with docker plain), podman root (inconsistent with podman plain), c9s default (inconsistent with docker/podman attach). Impact: `whoami` differs across runtimes for attached exec; and for podman, behavior differs between plain and attached exec. Since alpine linux kind containers default to root anyway, most smoke tests pass. Still a cross-runtime inconsistency worth flagging as P3 (correctness/consistency) or P4? It's user-visible behavior inconsistent with the documented `docker exec -i` analogy (docker exec runs as the container's user unless -u). I'll go P3.\n\nHmm, wait — for c9s, pod exec runs as the container's user too (no user in PodExecOptions). So attach as root is a docker/podman-only quirk. Docs don't mention it. OK, P3 finding: hardcoded root user in AttachContainer differs across runtimes and from non-attached exec behavior on podman, undocumented.\n\n17. `notStarted()` heuristic: `ExitCode != 0` with Pid==0 && !Running — for podman? Not used there. For docker exec create with a command that doesn't exist, docker's exec inspect: Running=false, Pid=0, ExitCode=0? Hmm — docker sets ExitCode to -1? Actually the notStarted heuristic requires ExitCode != 0. When docker fails to start the exec, ExecInspect reports ExitCode: -1? Hmm, I believe docker reports 127? The test fake uses exitCode:127 with Pid 0. Real docker: when exec fails to start, ExitCode is -1? Hmm. docker exec of missing binary: `docker exec c nope` → inspect shows {\"ExitCode\":127,\"Pid\":0,\"Running\":false}? Actually docker returns exit code 127 for the exec. I think this is fine — the author presumably verified behavior; the e2e test covers the real docker case (`no-such-command` with \"failed to start\" in stderr). Since real docker e2e passes in CI, the heuristic works. Fine.\n\n18. execStartCheck.hold: first output triggers inspect. Race: outputDone receives after all output copied; then the final execInspect + result() decision. If a fast command started and exited before the first output arrives, `hold` calls inspect: !Running && Pid!=0 → not failed (Pid check). Good. If output arrives before the process is created... docker sends output only after the process starts or fails. If the failure message arrives, checked → Pid==0 → failed. Good.\n\nBut there's a race in `hold`: the first output may arrive while the process hasn't started yet in docker's bookkeeping? Docker attaches the exec stream after start; failure message is written on failure. If the process starts slightly later, Pid could still be 0 at the first output? Docker creates the exec process synchronously before writing to the stream; the exec process is created on `exec start` — so by the time any output flows, Pid is set. Except the failure message case, which sets Pid=0. Edge: what if the first output arrives while the process is still being created (e.g., a race in docker writing)? Then Pid=0, marked failed wrongly, output dropped, and error \"failed to start\" returned even though the command runs on. Hmm. In practice, docker's exec start handler writes the failure message only on error, and any other output comes from the running process — after the process is created. There's a genuine small race window between process creation (pid assignment) and output delivery? The pid is assigned at creation before any process output can be read. OK — the inspect happens when the first output arrives, and by then the process exists. Fine.\n\n19. `terminalSizes` — send() is also called from the winch goroutine, but `send()` at line 288 runs on the main goroutine before the goroutine starts. Race-free since the goroutine starts after. Channel buffered 1, drain-then-send prevents blocking. Fine.\n\nNote: SIGWINCH with windows — goreleaser builds linux only; not an issue. But actually also `syscall.SIGWINCH` is only defined on unix; containerlab is linux-only. Fine.\n\n20. Now, `execAttachedFn` line 195: exit code path uses `os.Exit(exitErr.Code)`. If the command exits with code > 255? Fine.\n\n21. cobraCmd.InOrStdin() — for CLI, equals os.Stdin unless set elsewhere. The podman guard compares `streams.Stdin != os.Stdin` — if a test/program sets a custom stdin on the cobra command, podman refuses TTY. Intentional (documented).\n\n22. The e2e \"Exec with stdin needs a filter matching one node\" expects stderr contains \"matched 2\" — the attachedExecTarget error message \"the filter matched 2\" — good.\n\n23. Check `labRuntimeContainerParts` exists in core. Quick grep. Also check `requireLabName`. These are pre-existing presumably.\n\n24. One more: `execFn` — for the lab-runtime path, plain exec passes `listOptions...` to `c.Exec`; attached path to `c.ExecAttached`. Fine.\n\n25. Docker attach: `AttachStderr: true` always — even for TTY (docker merges). Good.\n\n26. Docker: when `streams.Stdin == nil` and `tty`: EscapeProxy not applied; io.Copy not started; the exec has AttachStdin=false. Docker will end the session when the command exits — since output is attached, `docker exec -t` (no -i) ends the session when the command exits. So execInspect.Running false. Good.\n\n27. Podman: `AttachStdout/AttachStderr` based on streams — if a caller passes neither (library use), output not attached; ExecStartAndAttach presumably returns output anyway or not. Not the CLI path. Fine.\n\n28. c9s attach with `--tty` and no resize: options.TerminalSizeQueue nil — k8s remotecommand with Tty and no size queue: it works (kubectl requires a size queue for -t; but client-go allows nil? In remotecommand.StreamWithContext, if Tty and TerminalSizeQueue is nil, it doesn't resize; the server may error? Actually kubectl always passes a size queue. client-go v4 streamProtocolV4.handleResizes: if o.TerminalSizeQueue == nil, it skips. The server side attaches with ttyDimensions unset? The API server requires... in practice `kubectl exec -t` without resize works? Hmm. The clabernetes e2e test only tests `-i --tty` (with resize). The `--tty` without `--stdin` c9s test: `exec ... --tty --cmd tty < /dev/null` — this is in the c9s test too (line 1672)! And it expects rc 0 and /dev/pts. So c9s `--tty` without resize works. Good.\n\nWait — c9s `--tty` without `--stdin`: streams.Stdin nil → PodExecOptions.Stdin false, Tty true. The test expects rc 0 — so it works (test covers it). OK.\n\n29. Now check root.go for SilenceErrors.\n\n30. Also check `docs/manual/clabernetes/runtime.md` claim \"like `kubectl exec -it`\" — fine.\n\n31. Also the smoke-tests.yml: adds \"34*.robot\" — the matrix test-suite list. Good.\n\n32. Also check that `Cmd` for the smoke test config — fine.\n\nLet me check root.go SilenceErrors/SilenceUsage and labRuntimeContainerParts.",
+          "time": {
+            "start": 1795190144174,
+            "end": 1795190203742
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9aca562001843kjordtGkXzY",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9abb24d001pQrI7FHbLk432v",
+          "callID": "call_43644cf4ea7f4107a643bf55",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/cmd",
+              "pattern": "SilenceErrors|SilenceUsage"
+            },
+            "output": "Found 9 matches\n/source/head/cmd/root.go:\n  Line 59: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/validate.go:\n  Line 19: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/deploy.go:\n  Line 59: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/stop.go:\n  Line 22: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/start.go:\n  Line 22: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/redeploy.go:\n  Line 22: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/logs.go:\n  Line 24: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/capture.go:\n  Line 46: \t\tSilenceUsage: true,\n\n\n/source/head/cmd/restart.go:\n  Line 22: \t\tSilenceUsage: true,\n",
+            "title": "SilenceErrors|SilenceUsage",
+            "metadata": {
+              "matches": 9,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795190203752,
+              "end": 1795190203767
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9aca64b001KWynQXNKnBinIQ",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9abb24d001pQrI7FHbLk432v",
+          "callID": "call_bc10141fe3d44f66b2b24768",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/core",
+              "pattern": "func labRuntimeContainerParts|func \\(c \\*CLab\\) requireLabName"
+            },
+            "output": "Found 2 matches\n/source/head/core/labruntime_access.go:\n  Line 237: func (c *CLab) requireLabName() error {\n\n\n/source/head/core/labruntime.go:\n  Line 674: func labRuntimeContainerParts(c clabruntime.GenericContainer) (string, string, string, error) {\n",
+            "title": "func labRuntimeContainerParts|func \\(c \\*CLab\\) requireLabName",
+            "metadata": {
+              "matches": 2,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795190203983,
+              "end": 1795190203993
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9aca671001tyZ4MmyfEJ3k6K",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9abb24d001pQrI7FHbLk432v",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 72368,
+            "input": 3244,
+            "output": 71,
+            "reasoning": 4029,
+            "cache": {
+              "read": 65024,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9aca67c001mXb3Ux6EEJmf0P",
+        "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+        "time": {
+          "created": 1795190204028,
+          "completed": 1795190253828
+        },
+        "parentID": "msg_1f9aab94c001LnVZlSjAX15msn",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-uXYr8s",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 76255,
+          "input": 431,
+          "output": 87,
+          "reasoning": 3545,
+          "cache": {
+            "read": 72192,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9acb01a001NbcHl2ByXwhTkJ",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aca67c001mXb3Ux6EEJmf0P"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9acb01c001Z3ZEdf0KZWwtlv",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aca67c001mXb3Ux6EEJmf0P",
+          "text": "SilenceUsage: true everywhere; SilenceErrors is NOT set → false → cobra prints \"Error: <err>\" itself. So for `--stdin` without `--tty` errors, the special path prints the same \"Error: ...\" message and exits 1 — behaviorally identical to returning the error (cobra prints \"Error: ...\" and the process exits 1). So the over-broad condition is a P4 clarity improvement at most. Given karpathy/ponytail rules (surgical, minimal), I could report it as P4: the condition `o.Exec.Stdin && term.IsTerminal(...)` includes cases where no raw mode is active (plain `--stdin`), bypassing cobra's normal error handling unnecessarily; tighten to the raw-mode condition (`o.Exec.Stdin && o.Exec.TTY`) or just `restoreTerminal != nop`. Actually there's a real behavioral difference: when err is returned, cobra's error handling may be intercepted by main? Let me check main.go / how RunE errors are handled — probably `log.Fatal`? If root command has SilenceErrors false, cobra prints and `Execute()` returns error, then main does os.Exit(1). Same result. So P4.\n\nHmm, wait — actually there might be a real reason: the comment says \"the stdin copy still reads the terminal, so the error is printed without those queries\". In raw mode, printing a multi-line error is messy and \"terminal queries\" (escape sequences) would be swallowed. The author guarded with term.IsTerminal — but raw mode is only active with --tty+--stdin. With plain --stdin, no raw mode, so no queries. The guard over-triggers but is harmless. P4.\n\nNow the remaining verification: does the PR's docker `User: \"0\"` differ from base behavior? Base had no AttachContainer, so new. Podman plain Exec: `ExecCreateConfig{}` — no user. So podman plain exec runs as the container's configured user (usually root for these images, but for nodes with a `user:` set in topology, e.g. linux kind with user... e.g. a node with `exec` user?). So attached exec on podman runs as root even for a node configured with a non-root user; on c9s it runs as the container's user. Cross-runtime inconsistency. P3.\n\nLet me double-check c9s attach doesn't set user — correct, PodExecOptions has no User field (k8s doesn't support user in exec). So the inconsistency is inherent to k8s. The finding: docker/podman force root; c9s uses the container's user; docs don't mention. Suggest: drop the hardcoded user (let the container default apply, matching `docker exec` without -u and c9s), or document. Since docker's plain Exec also hardcodes root (pre-existing), changing might alter consistency... but the plain docker exec root is pre-existing; the PR could either keep root everywhere it can or not force it. The simplest correction: remove `User` from the new attach paths so behavior matches the documented `docker exec -i` semantics and the c9s path; or document that attached exec runs as root with docker/podman. I'll present it as P3 with both options.\n\nNow, anything else? Let me check the e2e robot test: `Exec with stdin and a TTY needs a terminal` expects stderr contains \"not a TTY\" — the error message is \"the input device is not a TTY; use --stdin without --tty\" — contains \"not a TTY\". Good.\n\n`Run Exec In A Terminal` uses `script -qec` — with `-i --tty --cmd \"stty size\"` and setup `stty rows 30 cols 100;` — the terminalSizes sends size 30x100 before the session starts (docker ConsoleSize). Good.\n\nOne more check: in the robot test, `Run Exec` for pipe case: `printf 'line1\\nline2\\n' | ${CLAB_BIN} --runtime docker exec ...`. OK.\n\nAnother potential issue: `execAttachedFn` for `--tty` without `--stdin` and non-TTY stdout: terminalSizes returns a closed... no, returns buffered empty channel that never gets anything — Docker reads initial size with select/default → no ConsoleSize. resizeExec goroutine started (tty && Resize != nil) → blocks forever on the empty channel until ctx ends (deferred cancel ends it). The ctx is execFn's ctx, canceled when execFn returns. Fine — no leak.\n\nBut wait: with `--tty` and stdout NOT a terminal (CI case), `terminalSizes` returns a channel that never receives; resizeExec goroutine blocks on `<-resize` until ctx.Done — that's fine since ctx cancels on return.\n\nEdge: `execAttachedFn` returns err (e.g. runtime error) with `--tty` — deferred cancel() in execFn cancels ctx, goroutine exits. Fine.\n\nNow, one more subtle bug candidate: in execAttachedFn, when `--tty` and `--stdin` and stdin IS a terminal, but the attached exec fails BEFORE MakeRaw... no, MakeRaw happens before ExecAttached. When ExecAttached returns error and stdin is terminal: restoreTerminal() then os.Exit(1). Good — terminal restored.\n\nWhat about `errors.As(err, &exitErr)` with `--tty` only (no --stdin)? os.Exit(code) — restoreTerminal is nop. Fine.\n\nWhat about the signal case: during an interactive session (raw mode), SIGINT: the signal goroutine in SignalHandledContext cancels ctx; the docker attach returns ctx.Err() → err != nil, o.Exec.Stdin && term.IsTerminal → restore + exit 1. Good. But wait: `FinishOnCancel`/`CleanOnCancel` paths call exitOnSignal which loads restoreOnSignalExit — stored. Good.\n\nBut note: execFn uses `cobraCmd.Context()` — is that the SignalHandledContext? Presumably root sets it. OK.\n\nNow — one more potential issue: `exitOnSignal` in the `FinishOnCancel` flow: after `cancel()`, the exec copy goroutines get unblocked, ExecAttached returns ctx.Err(), execAttachedFn restores and exits 1... and the signal goroutine is still blocked waiting for a second signal. Race between two os.Exit calls — benign.\n\nNow, is there anything about `logs` command using the same `restoreOnSignalExit`? No, only exec sets it.\n\nLet me also verify `dockerterm.NewEscapeProxy(stdin, detachKeys)` — detachKeys 0x10,0x11 (ctrl-p ctrl-q). Correct docker default is ctrl-p ctrl-q = 0x10 0x11. Good.\n\nEscapeProxy writes through: NewEscapeProxy(r io.Reader, keys []byte) io.Reader. Good.\n\nOne concern: `io.Copy(rsp.Conn, stdin)` where stdin = EscapeProxy over os.Stdin in raw mode — standard docker approach. Fine.\n\nNow docs: `docs/cmd/exec.md` claim: \"With Podman, `--tty` from a terminal needs `--stdin`, as Podman connects the session to containerlab's terminal.\" — matches guard. Good.\n\nWhat about the docs claim: \"containerlab exits with the command's exit code\" — implemented via CommandExitError → os.Exit(code). Good.\n\nDocs claim: \"A command that can't start, such as a missing executable, is reported as an error with the Docker and clabernetes runtimes, and containerlab exits with 1.\" For c9s: kube exec of a missing executable returns... the pod exec API streams; the exec fails with \"OCI runtime exec failed\" as an error status? In client-go, the api server returns a 400 status with the message; remotecommand returns StatusError; errors.As(&exitErr) for kubeexec.ExitError — StatusError is not ExitError, so it goes to the generic error branch → \"failed to attach to c9s node ...\". That matches \"reported as an error with ... clabernetes runtimes\". OK good.\n\nNow, check schema: no topology schema changes. exec is CLI. No schema impact.\n\nNow the coverage of changed paths: all 18 reviewed (smoke-tests.yml ✓, context.go ✓, exec.go ✓, exec_test.go ✓, options.go ✓, core/exec.go ✓, core/exec_test.go ✓, docs/cmd/exec.md ✓, docs/manual/clabernetes/runtime.md ✓, go.mod ✓, clabernetes/access.go ✓, attach_test.go ✓, docker.go ✓, podman.go ✓, runtime.go ✓, 34-exec-attached.clab.yml ✓, 34-exec-attached.robot ✓, 14-clabernetes robot ✓).\n\nWait — one thing about go.mod: `github.com/moby/term v0.5.2` promoted to direct. But in go.mod, the direct deps section: line 249 shows it's in the `require (` block at the top-level (direct). Fine. go.sum has it. Fine.\n\nNow let me double check the smoke-tests.yml hunk (diff lines 1-16) — earlier read showed the file has \"34*.robot\" added at line 57. That's the only change. Good.\n\nOne more potential issue in podman attach: `WithInputStream(*bufio.NewReader(streams.Stdin))` — for TTY sessions, podman sets its own terminal to raw mode (per the comment). But cmd/exec.go ALSO sets os.Stdin to raw mode with MakeRaw. Double raw mode? The podman binding (containers.ExecStartAndAttach) with Tty... does it call term.MakeRaw on the input stream? The comment says \"The Podman bindings run a terminal session from the process's own terminal, which they set to raw mode and take the size from\". If the binding sets raw mode on os.Stdin and takes its size, then cmd's MakeRaw is redundant but harmless; on restore, both restore. If the binding's raw-mode handling and clab's MakeRaw conflict (e.g., binding saves the state after clab made it raw, then restores to raw state) — the final Restore(oldState-from-clab) restores the original. But if the binding sets raw and restores its own saved state (which was clab's raw state) and then clab restores original — net original. Fine either way. Actually does the podman binding set raw mode at all? \"go.podman.io/podman/v6/pkg/bindings/containers\" ExecStartAndAttach — I believe podman's Go bindings for exec attach with Tty do handle terminal raw mode (there's code in podman bindings: `func (o *ExecStartAndAttachOptions) ...`?). Hmm, in podman's bindings there is terminal handling for `containers.ExecStartAndAttach`? There's `podman run -i` bindings... I can't verify without the vendored source. The comment in the code claims the bindings do it. Trust it; the robot test for podman tty would exercise it (podman job is continue-on-error though). OK.\n\nOne more: `execCreateConf.Tty = tty` where tty comes with `--tty` and the podman binding takes the size from containerlab's own terminal — but if `--tty` without terminal (CI), size unknown. Fine.\n\nNow check `labruntime` NodeAttacher interface — existed in base? Let me verify quickly that NodeAttacher exists in base/labruntime/runtime.go (i.e., the PR didn't need to add it). Actually the diff doesn't touch labruntime/runtime.go, so NodeAttacher and AttachRequest are pre-existing (added by an earlier commit in the same merge-base lineage). Fine.\n\nAlso check `core/labruntime.go` line 674 `labRuntimeContainerParts` — pre-existing (not in diff). Good.\n\nNow, one more possible finding: in `execAttachedFn`, when `--stdin` only (no TTY) and err == nil but the command exited nonzero → CommandExitError → os.Exit(code) — correct.\n\nWhen `--tty` only (no stdin), stdout is a terminal in CI? Not relevant.\n\nAnother: `terminalSizes` uses `os.Stdout.Fd()` for the size — but the TTY session's output goes to cobraCmd.OutOrStdout() which is os.Stdout by default. Fine.\n\nPotential finding: in `terminalSizes`, if stdout is not a terminal, the returned channel never receives and never closes — docker's initial-size read uses select/default (non-blocking) so no hang; resizeExec blocks until ctx done. c9s: TerminalSizeQueue blocks on q.resize... wait — in c9s `Next()`: `case size, ok := <-q.resize:` — if resize never yields and ctx never done, Next blocks. remotecommand calls Next() in a goroutine (handleResizes) that runs concurrently with streaming; when the stream ends, sizeCtx cancel → Next returns nil. But wait: remotecommand's handleResizes goroutine calls Next repeatedly; on stream end, the goroutine may block on Next until cancel fires. cancel is deferred → runs when Attach returns. OK.\n\nHmm — actually there is one subtle thing: in c9s, when the caller (cmd/exec.go) passes `streams.Resize` from `terminalSizes(ctx)` where ctx is execFn's ctx — when `--tty` and stdout is not a terminal (e.g., CI), resize channel is live but never sends. c9s handleResizes blocks in Next; after StreamWithContext ends, deferred cancel fires → Next returns nil → goroutine ends. Fine.\n\nAlright. Now, what about the e2e robot `Exec with stdin and a TTY from a terminal exits with the exit code of the command` — `script -qec ... /dev/null stdin=/dev/null` — clab's stdin is the pty; rc 5. Good.\n\nNow, is there an issue with `Run Exec In A Terminal` using `timeout=60s` and script? Fine.\n\nPotential finding: the smoke test suite tests only docker (with podman skip logic); c9s covered in 14-clabernetes. Fine.\n\nNow let me reconsider the execStartCheck for the non-TTY case: `stdcopy.StdCopy(start.writer(stdout), start.writer(stderr), rsp.Reader)` — with AttachStderr true, stderr demuxed. Good.\n\nAnother possible issue: Docker attach when `streams.Stdout` is nil (library caller) — output attached but written to io.Discard; the exec still attaches output so the command runs to completion. Good design.\n\nAnother: docker `AttachContainer` — on `ctx.Done()` (e.g., SIGINT), returns ctx.Err() but the stdin copy goroutine continues? `io.Copy(rsp.Conn, stdin)` — blocks reading os.Stdin (raw mode); after cancel, the copy keeps reading stdin until it ends. rsp.Close() (defer) closes the connection, so writes fail; reads from os.Stdin continue until data arrives. Hmm — the stdin goroutine leaks until stdin produces data. In raw mode with no user input, the goroutine blocks on reading os.Stdin until the process exits — os.Exit in cmd kills it. For library callers, ExecAttached returning ctx.Err() leaves a goroutine blocked reading their reader until it yields data... the doc comment says \"Stdin is read until it ends, which can outlast the call, so callers end it (for example by closing a pipe) once the session is over.\" Documented tradeoff. OK.\n\nNow, is there a finding about `cancel()` in Docker AttachContainer being deferred but the resizeExec goroutine racing? Handled by the test (TestAttachContainerEndsWithTheContext).\n\nOK — what about `podman attach` with ctx canceled: ExecStartAndAttach uses ctx; returns error; fine.\n\nWhat about c9s `Attach` when `req.TTY` and `streams.Stdout == nil`? PodExecOptions.Stdout false with Tty — the server may error \"at least one of stdin, stdout, stderr must be attached\". Library edge; CLI always sets Stdout. Fine.\n\nLet me now also double-check the `--tty` without `--stdin` for podman when stdin is NOT a terminal: guard `tty && term.IsTerminal && streams.Stdin != os.Stdin` — IsTerminal false → no error. execCreateConf.Tty=true, AttachStdin=false. Podman exec with tty and no input attach — works (like `podman exec -t`). Good.\n\nNow — the podman guard message when a library caller passes a non-os.Stdin reader with tty and clab's own stdin is a terminal: error. Documented.\n\nI think I have enough. Let me also quickly check `cmd/root.go` how errors from RunE are surfaced (to confirm the P4). Let me read main.go/root.go Execute part.",
+          "time": {
+            "start": 1795190206492,
+            "end": 1795190252786
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1f9ad64f4001ktjliqLGMi0nEv",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aca67c001mXb3Ux6EEJmf0P",
+          "text": "Let me check how cobra errors are surfaced to confirm the behavior of the `execAttachedFn` error path, and verify the base state of the podman exec user setting.",
+          "time": {
+            "start": 1795190252788,
+            "end": 1795190253815
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9ad67e5001Dwe3zHyS3rJXmk",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aca67c001mXb3Ux6EEJmf0P",
+          "callID": "call_381440f80ee8405597173ffb",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/cmd/root.go",
+              "limit": 100
+            },
+            "output": "<path>/source/head/cmd/root.go</path>\n<type>file</type>\n<content>\n1: // Copyright 2020 Nokia\n2: // Licensed under the BSD 3-Clause License.\n3: // SPDX-License-Identifier: BSD-3-Clause\n4: \n5: package cmd\n6: \n7: import (\n8: \t\"errors\"\n9: \t\"fmt\"\n10: \t\"os\"\n11: \t\"path/filepath\"\n12: \t\"sort\"\n13: \t\"strings\"\n14: \t\"time\"\n15: \n16: \t\"github.com/charmbracelet/log\"\n17: \t\"github.com/charmbracelet/x/term\"\n18: \t\"github.com/spf13/cobra\"\n19: \tclabgit \"github.com/srl-labs/containerlab/git\"\n20: \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n21: \tclabruntimedocker \"github.com/srl-labs/containerlab/runtime/docker\"\n22: \tclabutils \"github.com/srl-labs/containerlab/utils\"\n23: )\n24: \n25: func subcommandRegisterFuncs() []func(*Options) (*cobra.Command, error) {\n26: \treturn []func(*Options) (*cobra.Command, error){\n27: \t\tversionCmd,\n28: \t\tcompletionCmd,\n29: \t\tdeployCmd,\n30: \t\tdestroyCmd,\n31: \t\tstartCmd,\n32: \t\tstopCmd,\n33: \t\trestartCmd,\n34: \t\texecCmd,\n35: \t\tgenerateCmd,\n36: \t\tgraphCmd,\n37: \t\teventsCmd,\n38: \t\tinspectCmd,\n39: \t\tlogsCmd,\n40: \t\tcaptureCmd,\n41: \t\tredeployCmd,\n42: \t\tsaveCmd,\n43: \t\ttoolsCmd,\n44: \t\tvalidateCmd,\n45: \t}\n46: }\n47: \n48: // Entrypoint returns the root cobra command to be executed or errors if it cannot do so.\n49: func Entrypoint() (*cobra.Command, error) {\n50: \to := GetOptions()\n51: \n52: \tc := &cobra.Command{\n53: \t\tUse:   \"containerlab\",\n54: \t\tShort: \"deploy container based lab environments with a user-defined interconnections\",\n55: \t\tPersistentPreRunE: func(cobraCmd *cobra.Command, _ []string) error {\n56: \t\t\treturn preRunFn(cobraCmd, o)\n57: \t\t},\n58: \t\tAliases:      []string{\"clab\"},\n59: \t\tSilenceUsage: true,\n60: \t}\n61: \n62: \tc.PersistentFlags().CountVarP(\n63: \t\t&o.Global.DebugCount,\n64: \t\t\"debug\",\n65: \t\t\"d\",\n66: \t\t\"enable debug mode\",\n67: \t)\n68: \tc.PersistentFlags().StringVarP(\n69: \t\t&o.Global.TopologyFile,\n70: \t\t\"topo\",\n71: \t\t\"t\",\n72: \t\to.Global.TopologyFile,\n73: \t\t\"path to the topology definition file, a directory containing one, 'stdin', or a URL\",\n74: \t)\n75: \tc.PersistentFlags().StringArrayVarP(\n76: \t\t&o.Global.VarsFiles,\n77: \t\t\"vars\",\n78: \t\t\"\",\n79: \t\to.Global.VarsFiles,\n80: \t\t\"path to a topology template variables file (can be specified multiple times)\",\n81: \t)\n82: \tc.PersistentFlags().StringVarP(\n83: \t\t&o.Global.TopologyName,\n84: \t\t\"name\",\n85: \t\t\"\",\n86: \t\to.Global.TopologyName,\n87: \t\t\"lab/topology name\")\n88: \tc.PersistentFlags().StringVar(\n89: \t\t&o.Global.Namespace,\n90: \t\t\"namespace\",\n91: \t\to.Global.Namespace,\n92: \t\t\"Kubernetes namespace override for the clabernetes runtime\",\n93: \t)\n94: \tc.PersistentFlags().DurationVarP(\n95: \t\t&o.Global.Timeout,\n96: \t\t\"timeout\",\n97: \t\t\"\",\n98: \t\to.Global.Timeout,\n99: \t\t\"timeout for external API requests (e.g. container runtimes); lab runtimes default to 10m\",\n100: \t)\n\n(Showing lines 1-100 of 461. Use offset=101 to continue.)\n</content>",
+            "title": "source/head/cmd/root.go",
+            "metadata": {
+              "preview": "// Copyright 2020 Nokia\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage cmd\n\nimport (\n\t\"errors\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sort\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\t\"github.com/charmbracelet/x/term\"\n\t\"github.com/spf13/cobra\"\n\tclabgit \"github.com/srl-labs/containerlab/git\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/cmd/root.go",
+                "text": "// Copyright 2020 Nokia\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage cmd\n\nimport (\n\t\"errors\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sort\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\t\"github.com/charmbracelet/x/term\"\n\t\"github.com/spf13/cobra\"\n\tclabgit \"github.com/srl-labs/containerlab/git\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n\tclabruntimedocker \"github.com/srl-labs/containerlab/runtime/docker\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n\nfunc subcommandRegisterFuncs() []func(*Options) (*cobra.Command, error) {\n\treturn []func(*Options) (*cobra.Command, error){\n\t\tversionCmd,\n\t\tcompletionCmd,\n\t\tdeployCmd,\n\t\tdestroyCmd,\n\t\tstartCmd,\n\t\tstopCmd,\n\t\trestartCmd,\n\t\texecCmd,\n\t\tgenerateCmd,\n\t\tgraphCmd,\n\t\teventsCmd,\n\t\tinspectCmd,\n\t\tlogsCmd,\n\t\tcaptureCmd,\n\t\tredeployCmd,\n\t\tsaveCmd,\n\t\ttoolsCmd,\n\t\tvalidateCmd,\n\t}\n}\n\n// Entrypoint returns the root cobra command to be executed or errors if it cannot do so.\nfunc Entrypoint() (*cobra.Command, error) {\n\to := GetOptions()\n\n\tc := &cobra.Command{\n\t\tUse:   \"containerlab\",\n\t\tShort: \"deploy container based lab environments with a user-defined interconnections\",\n\t\tPersistentPreRunE: func(cobraCmd *cobra.Command, _ []string) error {\n\t\t\treturn preRunFn(cobraCmd, o)\n\t\t},\n\t\tAliases:      []string{\"clab\"},\n\t\tSilenceUsage: true,\n\t}\n\n\tc.PersistentFlags().CountVarP(\n\t\t&o.Global.DebugCount,\n\t\t\"debug\",\n\t\t\"d\",\n\t\t\"enable debug mode\",\n\t)\n\tc.PersistentFlags().StringVarP(\n\t\t&o.Global.TopologyFile,\n\t\t\"topo\",\n\t\t\"t\",\n\t\to.Global.TopologyFile,\n\t\t\"path to the topology definition file, a directory containing one, 'stdin', or a URL\",\n\t)\n\tc.PersistentFlags().StringArrayVarP(\n\t\t&o.Global.VarsFiles,\n\t\t\"vars\",\n\t\t\"\",\n\t\to.Global.VarsFiles,\n\t\t\"path to a topology template variables file (can be specified multiple times)\",\n\t)\n\tc.PersistentFlags().StringVarP(\n\t\t&o.Global.TopologyName,\n\t\t\"name\",\n\t\t\"\",\n\t\to.Global.TopologyName,\n\t\t\"lab/topology name\")\n\tc.PersistentFlags().StringVar(\n\t\t&o.Global.Namespace,\n\t\t\"namespace\",\n\t\to.Global.Namespace,\n\t\t\"Kubernetes namespace override for the clabernetes runtime\",\n\t)\n\tc.PersistentFlags().DurationVarP(\n\t\t&o.Global.Timeout,\n\t\t\"timeout\",\n\t\t\"\",\n\t\to.Global.Timeout,\n\t\t\"timeout for external API requests (e.g. container runtimes); lab runtimes default to 10m\",\n\t)",
+                "lineStart": 1,
+                "lineEnd": 100,
+                "totalLines": 461,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190253546,
+              "end": 1795190253561
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9ad68ef001XuXkyEJ4Rm3l2C",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aca67c001mXb3Ux6EEJmf0P",
+          "callID": "call_4c3e062b3c9740c0b8e1cbf2",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/runtime/podman/podman.go",
+              "limit": 60,
+              "offset": 515
+            },
+            "output": "<path>/source/head/runtime/podman/podman.go</path>\n<type>file</type>\n<content>\n515: // LogNonRunningContainerOutput implements runtime.ContainerRuntime (no-op for Podman).\n516: func (*PodmanRuntime) LogNonRunningContainerOutput(context.Context, string) {}\n517: \n518: func (r *PodmanRuntime) Exec(\n519: \tctx context.Context,\n520: \tcID string,\n521: \texecCmd *exec.ExecCmd,\n522: ) (*exec.ExecResult, error) {\n523: \tctx, err := r.connect(ctx)\n524: \tif err != nil {\n525: \t\treturn nil, err\n526: \t}\n527: \texecCreateConf := handlers.ExecCreateConfig{}\n528: \texecCreateConf.User = \"root\"\n529: \texecCreateConf.AttachStderr = true\n530: \texecCreateConf.AttachStdout = true\n531: \texecCreateConf.Cmd = execCmd.GetCmd()\n532: \texecID, err := containers.ExecCreate(ctx, cID, &execCreateConf)\n533: \tif err != nil {\n534: \t\tlog.Errorf(\"failed to create exec in container %q: %v\", cID, err)\n535: \t\treturn nil, err\n536: \t}\n537: \tvar sOut, sErr podmanWriterCloser\n538: \texecSAAOpts := new(\n539: \t\tcontainers.ExecStartAndAttachOptions,\n540: \t).WithOutputStream(&sOut).\n541: \t\tWithErrorStream(\n542: \t\t\t&sErr).\n543: \t\tWithAttachOutput(true).\n544: \t\tWithAttachError(true)\n545: \n546: \terr = containers.ExecStartAndAttach(ctx, execID, execSAAOpts)\n547: \tif err != nil {\n548: \t\tlog.Errorf(\"failed to start/attach exec in container %q: %v\", cID, err)\n549: \t\treturn nil, err\n550: \t}\n551: \t// perform inspection to retrieve the exitcode\n552: \tinspectOut, err := containers.ExecInspect(ctx, execID, nil)\n553: \tif err != nil {\n554: \t\treturn nil, err\n555: \t}\n556: \tlog.Debugf(\n557: \t\t\"Exec attached to the container %q and got stdout %q and stderr %q\",\n558: \t\tcID,\n559: \t\tsOut.Bytes(),\n560: \t\tsErr.Bytes(),\n561: \t)\n562: \n563: \t// fill the execution result\n564: \texecResult := exec.NewExecResult(execCmd)\n565: \texecResult.SetStdErr(sErr.Bytes())\n566: \texecResult.SetStdOut(sOut.Bytes())\n567: \texecResult.SetReturnCode(inspectOut.ExitCode)\n568: \n569: \treturn execResult, nil\n570: }\n571: \n572: func (r *PodmanRuntime) ExecNotWait(ctx context.Context, cID string, exec *exec.ExecCmd) error {\n573: \tctx, err := r.connect(ctx)\n574: \tif err != nil {\n\n(Showing lines 515-574 of 900. Use offset=575 to continue.)\n</content>",
+            "title": "source/head/runtime/podman/podman.go",
+            "metadata": {
+              "preview": "// LogNonRunningContainerOutput implements runtime.ContainerRuntime (no-op for Podman).\nfunc (*PodmanRuntime) LogNonRunningContainerOutput(context.Context, string) {}\n\nfunc (r *PodmanRuntime) Exec(\n\tctx context.Context,\n\tcID string,\n\texecCmd *exec.ExecCmd,\n) (*exec.ExecResult, error) {\n\tctx, err := r.connect(ctx)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\texecCreateConf := handlers.ExecCreateConfig{}\n\texecCreateConf.User = \"root\"\n\texecCreateConf.AttachStderr = true\n\texecCreateConf.AttachStdout = true\n\texecCreateConf.Cmd = execCmd.GetCmd()\n\texecID, err := containers.ExecCreate(ctx, cID, &execCreateConf)\n\tif err != nil {\n\t\tlog.Errorf(\"failed to create exec in container %q: %v\", cID, err)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/runtime/podman/podman.go",
+                "text": "// LogNonRunningContainerOutput implements runtime.ContainerRuntime (no-op for Podman).\nfunc (*PodmanRuntime) LogNonRunningContainerOutput(context.Context, string) {}\n\nfunc (r *PodmanRuntime) Exec(\n\tctx context.Context,\n\tcID string,\n\texecCmd *exec.ExecCmd,\n) (*exec.ExecResult, error) {\n\tctx, err := r.connect(ctx)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\texecCreateConf := handlers.ExecCreateConfig{}\n\texecCreateConf.User = \"root\"\n\texecCreateConf.AttachStderr = true\n\texecCreateConf.AttachStdout = true\n\texecCreateConf.Cmd = execCmd.GetCmd()\n\texecID, err := containers.ExecCreate(ctx, cID, &execCreateConf)\n\tif err != nil {\n\t\tlog.Errorf(\"failed to create exec in container %q: %v\", cID, err)\n\t\treturn nil, err\n\t}\n\tvar sOut, sErr podmanWriterCloser\n\texecSAAOpts := new(\n\t\tcontainers.ExecStartAndAttachOptions,\n\t).WithOutputStream(&sOut).\n\t\tWithErrorStream(\n\t\t\t&sErr).\n\t\tWithAttachOutput(true).\n\t\tWithAttachError(true)\n\n\terr = containers.ExecStartAndAttach(ctx, execID, execSAAOpts)\n\tif err != nil {\n\t\tlog.Errorf(\"failed to start/attach exec in container %q: %v\", cID, err)\n\t\treturn nil, err\n\t}\n\t// perform inspection to retrieve the exitcode\n\tinspectOut, err := containers.ExecInspect(ctx, execID, nil)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tlog.Debugf(\n\t\t\"Exec attached to the container %q and got stdout %q and stderr %q\",\n\t\tcID,\n\t\tsOut.Bytes(),\n\t\tsErr.Bytes(),\n\t)\n\n\t// fill the execution result\n\texecResult := exec.NewExecResult(execCmd)\n\texecResult.SetStdErr(sErr.Bytes())\n\texecResult.SetStdOut(sOut.Bytes())\n\texecResult.SetReturnCode(inspectOut.ExitCode)\n\n\treturn execResult, nil\n}\n\nfunc (r *PodmanRuntime) ExecNotWait(ctx context.Context, cID string, exec *exec.ExecCmd) error {\n\tctx, err := r.connect(ctx)\n\tif err != nil {",
+                "lineStart": 515,
+                "lineEnd": 574,
+                "totalLines": 900,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190253811,
+              "end": 1795190253821
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9ad69000012UkkL1XDEROyrE",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9aca67c001mXb3Ux6EEJmf0P",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 76255,
+            "input": 431,
+            "output": 87,
+            "reasoning": 3545,
+            "cache": {
+              "read": 72192,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9ad690c0010KT8MUdtHQCIhQ",
+        "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+        "time": {
+          "created": 1795190253836
         },
         "parentID": "msg_1f9aab94c001LnVZlSjAX15msn",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -3600,7 +4071,24 @@
           }
         }
       },
-      "parts": []
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9ad72c2001ni5FgR8FBG07tT",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9ad690c0010KT8MUdtHQCIhQ"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9ad72c40016yocYNFGfP70j4",
+          "sessionID": "ses_e0658bbefffepOw4b701rwv1yX",
+          "messageID": "msg_1f9ad690c0010KT8MUdtHQCIhQ",
+          "text": "",
+          "time": {
+            "start": 1795190256324
+          }
+        }
+      ]
     }
   ]
 }
