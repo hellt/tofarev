@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "192dec107ced8f608c230f6822578c3f5742037a",
-  "updatedAt": "2026-11-20T16:06:56.380Z",
+  "updatedAt": "2026-11-20T16:09:11.382Z",
   "state": "running",
   "info": {
     "id": "ses_e065279c1ffe97S1996q7UKKwQ",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 300851,
-      "output": 6356,
-      "reasoning": 45439,
+      "input": 387026,
+      "output": 12949,
+      "reasoning": 54462,
       "cache": {
-        "read": 1651200,
+        "read": 2283392,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795190261311,
-      "updated": 1795190808779
+      "updated": 1795190946347
     }
   },
   "messages": [
@@ -5428,7 +5428,8 @@
         "id": "msg_1f9b5e0c6001DKUryZSDeJjInj",
         "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
         "time": {
-          "created": 1795190808774
+          "created": 1795190808774,
+          "completed": 1795190825498
         },
         "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -5439,6 +5440,1076 @@
           "cwd": "/tmp/tofarev-review-ypwo0G",
           "root": "/"
         },
+        "cost": 0,
+        "tokens": {
+          "total": 62932,
+          "input": 1392,
+          "output": 25,
+          "reasoning": 1547,
+          "cache": {
+            "read": 59968,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b5e9bd0014k7yVoKA5He3D4",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b5e0c6001DKUryZSDeJjInj"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b5e9bf001PsX5ZGAXy3GyHm",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b5e0c6001DKUryZSDeJjInj",
+          "text": "`bridge.Delete` is a noop in both base and head — pre-existing behavior (host bridges are never deleted either, by design due to shared iptables rules). So a removed BridgeNS bridge leaves its bridge interface in the parent's netns. Hmm — is that true in the move test? br01|bp1 removed → bp1 keeps a leftover `br01` interface. The test doesn't check. Is this a defect introduced by this PR? The whole BridgeNS feature — when was it introduced? Base already has bridge.go with containerNs, so BridgeNS predates this PR. The PR adds reconcile/migration. The leftover-bridge-on-remove behavior is pre-existing (Delete noop). However, the PR's reconcile feature makes \"remove bridge node\" a first-class operation now... but the PR didn't change Delete. Per instructions: focus on issues introduced or materially worsened by this PR. The leftover bridge after node removal is pre-existing; I'll put it in coverage notes, not a finding. Hmm — but wait: actually, is it pre-existing? In the OLD (base) deploy flow, removing a bridge node and re-deploying — deploy flow (non-apply) doesn't delete removed nodes' interfaces either (base behavior for host bridges too). OK, coverage note.\n\nBut hold on — one more important thing: in the move case, is the stale bridge-side endpoint discovery + delete handled such that the port is removed from br01 BEFORE migration? The migration parks the port by altname and later re-enslaves to br02 — the port stays attached to br01 while parked (parking just moves netns; master is cleared on netns move). Then restore re-enslaves to br02. And br01 remains in bp1 with no ports. Leftover bridge — covered above as pre-existing-ish behavior. Actually, hmm: was bridge removal in the base even possible? In base, `bridge|parent` naming — the naming convention with \"|\" — is that pre-existing? Base bridge.go has nameWithoutSeparatorSuffix and separatorSuffix, so yes, pre-existing.\n\nNow let me also check `planDeletedNodes` — do deleted BridgeNS nodes produce stale endpoints via discovery? They're not desired → not scanned. Their ports recovered from old state only for migration candidates. If not reused → nothing; the ports die with... wait, in the move test the parent bp1 STAYS (only the bridge moves). The old port c1eth1 is on br01 in bp1's netns. If NOT reused (e.g., bridge moved and port dropped), the port stays attached to br01 in bp1 forever (invisible to discovery — orphan only if MasterIndex == br02's bridge index). Leftover port + bridge in bp1. Hmm, this IS new-ish: the reconcile feature is supposed to clean up stale endpoints; here a removed bridge's leftovers in a surviving parent are never cleaned. Is that introduced by this PR? In base, could you even remove a bridge|parent node and re-apply? Base had no `apply` reconcile flow? Wait — the apply/reconcile flow itself is introduced in this PR! `topology_reconcile.go` changes are big. Is the whole reconcile flow new in this PR or pre-existing? The diff shows modifications to existing functions (planDeletedEndpoints exists with changes). The base file exists (diff context lines). So reconcile flow predates the PR; the PR adds BridgeNS migration support to it.\n\nSo: stale bridge ports of a REMOVED BridgeNS bridge in a surviving parent's netns are never discovered/cleaned (orphan detection only matches ports attached to a desired bridge). Consequence: garbage ifaces accumulate in the parent after bridge removal. Is this a defect introduced/worsened by the PR? The orphan discovery (discoverBridgeNSEndpoints + DiscoverEndpointsForBridgeNS) is new in this PR and handles orphans only for desired bridges. Ports of removed bridges are invisible. This is a gap in the new cleanup machinery: \"Orphaned bridge-attached interfaces (owned but claimed by no desired endpoint) are keyed by their kernel names so stale-clean up can remove them\" — but only if attached to a desired bridge. For a removed bridge, its ports remain in the parent, attached to a bridge that is itself never removed. Hmm — but wait: is the old bridge actually deleted? Since bridge.Delete is a noop... but does the apply flow delete the bridge interface some other way? Let me check: does the reconcile plan treat removed BridgeNS nodes specially — maybe `plan.removeApplyLinkEndpoints` on deleted links removes the bridge iface? removeApplyLinkEndpoints runs over ADDED links only. deletedLinks → deleteApplyEndpoints (endpoints only). The bridge iface itself: nothing.\n\nLet me verify with the move test expectation: \"Should Contain ${output} br01|bp2\" and \"Should Not Contain ${output} recreated\". And asserts bp1's c1eth1 gone. It never asserts br01 gone from bp1. So the leftover bridge stays. Is that acceptable? For a user, `br01` remaining in bp1 after moving the bridge to bp2 is surprising but arguably consistent with bridge.Delete being a noop (documented for host bridges: \"can't guarantee the bridge is not used by another topology\" — same logic could apply in-container? No: an in-container bridge is owned by this lab's parent container, so it could be deleted... but noop is pre-existing).\n\nHmm, this is a genuine gap but its root (bridge.Delete noop) is pre-existing; the PR's migration machinery now depends on this behavior in the move case (the old bridge must keep existing until ports are parked). I'll note in coverage, not a finding. Actually wait — could the leftover bridge cause harm on subsequent applies? On the next apply, br01|bp1 is gone from desired and state. Its leftover port c1eth1... in the move test the port was migrated away. In a non-migration removal, the leftover ports stay attached to the leftover br01 — invisible forever. Not harmful, just garbage. Coverage note.\n\nNow let me also verify the P2 finding #1 (migration with removed old parent) more carefully regarding bridgeNSMigParentNode: it's called from parkMigratedBridgeNSPorts (line 58) and... also from restore? No — restore uses c.Nodes[mig.newKey.node] directly. deleteApplyEndpoints calls bridgeNSParentNode (not MigParentNode) but only for refs with node type BridgeNS (ref.node non-nil → bridge node is in desired topology → parent resolvable... unless parent removed from desired topology while bridge desired! E.g., bridge br01|bp1 desired but bp1 removed?? Impossible: if bp1 removed from topology, the bridge's parent doesn't exist → the bridge must also be removed/moved. But topology-wise, a bridge node could reference a non-existent parent — checkApplyNetworkModeTargets presumably validates this. OK.)\n\nNow: the guard in checkApplyNetworkModeTargets — new in this PR? Let me check the diff for it. From the summary: \"checkApplyNetworkModeTargets guards deleted network-mode targets\". Let me look at the topology_reconcile diff section (lines 365-762 of diff.txt) to see what was added/changed — to ensure I attribute correctly and to check for other issues (e.g., the `plan.empty()` etc.). Let me read diff 365-762.",
+          "time": {
+            "start": 1795190811071,
+            "end": 1795190825463
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b621fb001HReuLL0iNhKvMP",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b5e0c6001DKUryZSDeJjInj",
+          "callID": "call_428a70a7965b4074b3b0101b",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 400,
+              "offset": 365
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n365: diff --git a/core/topology_reconcile.go b/core/topology_reconcile.go\n366: index f52788d..0facaec 100644\n367: --- a/core/topology_reconcile.go\n368: +++ b/core/topology_reconcile.go\n369: @@ -30,10 +30,21 @@ type applyEndpointRef struct {\n370:  \tkey        applyEndpointKey\n371:  \tnode       clablinks.Node\n372:  \tbestEffort bool\n373:  }\n374:  \n375: +// bridgeNSMigration describes a bridge-side veth end whose owning in-container\n376: +// bridge node changed name (a parent move) while the client-side endpoint and\n377: +// the veth pair itself stay valid. Applying the migration moves the parked half\n378: +// into the new parent's namespace instead of destroying and recreating the\n379: +// pair, which preserves container-local configuration (addresses, MACs).\n380: +type bridgeNSMigration struct {\n381: +\tstaleRef   applyEndpointRef // bridge-side endpoint to be parked (not deleted)\n382: +\tnewKey     applyEndpointKey // replacement claim under a different bridge node\n383: +\trelocation *clablinks.BridgePortRelocation\n384: +}\n385: +\n386:  type applyPlan struct {\n387:  \tcurrentNodes       map[string]*runtimeNodeGroup\n388:  \taddedNodeSet       map[string]struct{}\n389:  \tdeletedNodeSet     map[string]struct{}\n390:  \trecreatedNodeSet   map[string]struct{}\n391: @@ -50,11 +61,12 @@ type applyPlan struct {\n392:  \tstate              *LabState\n393:  \tparkedNodeSet      map[string]struct{}\n394:  \tstartNodeSet       map[string]struct{}\n395:  \t// nodeChangeReasons explains per node why apply restarts or recreates it,\n396:  \t// e.g. \"added link\" or \"config drift: image\".\n397: -\tnodeChangeReasons map[string]string\n398: +\tnodeChangeReasons  map[string]string\n399: +\tbridgeNSMigrations []bridgeNSMigration\n400:  }\n401:  \n402:  func (p *applyPlan) empty() bool {\n403:  \treturn len(p.addedNodeSet) == 0 &&\n404:  \t\tlen(p.deletedNodeSet) == 0 &&\n405: @@ -407,10 +419,129 @@ func (c *CLab) planDeletedEndpoints(ctx context.Context, plan *applyPlan) {\n406:  \t\tif _, exists := plan.desiredEndpointSet[key]; exists {\n407:  \t\t\tcontinue\n408:  \t\t}\n409:  \t\tc.addStaleApplyEndpoint(ctx, plan, plannedEndpointSet, key)\n410:  \t}\n411: +\n412: +\tc.planBridgeNSMigrations(ctx, plan)\n413: +}\n414: +\n415: +// planBridgeNSMigrations finds stale BridgeNS bridge-side endpoints that the\n416: +// desired topology re-claims under a different in-container bridge node (the\n417: +// bridge moved to another parent). Such veth ends are migrated (parked and\n418: +// restored into the new parent's namespace) instead of deleted, which keeps\n419: +// the pairwise integrity of the link and the client-side configuration.\n420: +//\n421: +// Detection runs on two sources: live-discovered stale endpoints (existing\n422: +// bridge nodes) and the stored old topology (deleted bridge nodes, whose\n423: +// ports are not discovered live).\n424: +func (c *CLab) planBridgeNSMigrations(ctx context.Context, plan *applyPlan) {\n425: +\tif plan == nil {\n426: +\t\treturn\n427: +\t}\n428: +\n429: +\t// Live-discovered stale bridge-side ends (the bridge node still exists).\n430: +\tfor _, ref := range plan.staleEndpoints {\n431: +\t\tif ref.node == nil ||\n432: +\t\t\tref.node.GetLinkEndpointType() != clablinks.LinkEndpointTypeBridgeNS {\n433: +\t\t\tcontinue\n434: +\t\t}\n435: +\t\tc.addBridgeNSMigrationCandidate(plan, ref.key, ref.node)\n436: +\t}\n437: +\n438: +\t// Deleted in-container bridge nodes are absent from the desired topology,\n439: +\t// so their ports are not discovered live; recover them from the old state.\n440: +\tif plan.state != nil && plan.state.Topology != nil {\n441: +\t\tfor _, link := range plan.state.Topology.Links {\n442: +\t\t\tif link == nil || link.Link == nil {\n443: +\t\t\t\tcontinue\n444: +\t\t\t}\n445: +\n446: +\t\t\tvar bridgeEndpointPoint *[2]string\n447: +\t\t\tfor _, point := range clablinks.RawLinkEndpoints(link.Link) {\n448: +\t\t\t\tif strings.Contains(point[0], \"|\") {\n449: +\t\t\t\t\tbridgePoint := point\n450: +\t\t\t\t\tbridgeEndpointPoint = &bridgePoint\n451: +\t\t\t\t}\n452: +\t\t\t}\n453: +\t\t\tif bridgeEndpointPoint == nil {\n454: +\t\t\t\tcontinue\n455: +\t\t\t}\n456: +\n457: +\t\t\tc.addBridgeNSMigrationCandidate(\n458: +\t\t\t\tplan,\n459: +\t\t\t\tapplyEndpointKey{node: bridgeEndpointPoint[0], iface: bridgeEndpointPoint[1]},\n460: +\t\t\t\tnil,\n461: +\t\t\t)\n462: +\t\t}\n463: +\t}\n464: +}\n465: +\n466: +// addBridgeNSMigrationCandidate registers a bridge NS migration when the\n467: +// desired topology re-claims the given bridge-side endpoint under a different\n468: +// in-container bridge node with the same logical port name.\n469: +func (c *CLab) addBridgeNSMigrationCandidate(\n470: +\tplan *applyPlan,\n471: +\tstaleKey applyEndpointKey,\n472: +\tstaleNode clablinks.Node,\n473: +) {\n474: +\tif staleKey.node == \"\" || staleKey.iface == \"\" {\n475: +\t\treturn\n476: +\t}\n477: +\tif _, desired := plan.desiredEndpointSet[staleKey]; desired {\n478: +\t\treturn\n479: +\t}\n480: +\tif c.isBridgeNSMigrationPlanned(plan, staleKey) {\n481: +\t\treturn\n482: +\t}\n483: +\n484: +\tfor candidate := range plan.desiredEndpointSet {\n485: +\t\tif candidate.iface != staleKey.iface || candidate.node == staleKey.node {\n486: +\t\t\tcontinue\n487: +\t\t}\n488: +\t\tif !c.isBridgeNSNode(candidate.node) {\n489: +\t\t\tcontinue\n490: +\t\t}\n491: +\n492: +\t\tplan.bridgeNSMigrations = append(plan.bridgeNSMigrations, bridgeNSMigration{\n493: +\t\t\tstaleRef: applyEndpointRef{key: staleKey, node: staleNode},\n494: +\t\t\tnewKey:   candidate,\n495: +\t\t})\n496: +\t\tlog.Info(\n497: +\t\t\t\"Planning bridge port migration\",\n498: +\t\t\t\"from\",\n499: +\t\t\tstaleKey.String(),\n500: +\t\t\t\"to\",\n501: +\t\t\tcandidate.String(),\n502: +\t\t)\n503: +\t\treturn\n504: +\t}\n505: +}\n506: +\n507: +// isBridgeNSMigrationPlanned reports whether the given bridge endpoint is\n508: +// already covered by a planned migration.\n509: +func (c *CLab) isBridgeNSMigrationPlanned(\n510: +\tplan *applyPlan,\n511: +\tkey applyEndpointKey,\n512: +) bool {\n513: +\tfor _, mig := range plan.bridgeNSMigrations {\n514: +\t\tif mig.staleRef.key == key {\n515: +\t\t\treturn true\n516: +\t\t}\n517: +\t}\n518: +\treturn false\n519: +}\n520: +\n521: +// isBridgeNSNode reports whether the node name refers to an in-container\n522: +// bridge node of the desired topology.\n523: +func (c *CLab) isBridgeNSNode(nodeName string) bool {\n524: +\tnode, exists := c.Nodes[nodeName]\n525: +\tif !exists {\n526: +\t\treturn false\n527: +\t}\n528: +\treturn node.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS ||\n529: +\t\tnode.Config().Kind == \"bridge\" && strings.Contains(nodeName, \"|\")\n530:  }\n531:  \n532:  func (c *CLab) addStaleApplyEndpoint(\n533:  \tctx context.Context,\n534:  \tplan *applyPlan,\n535: @@ -530,10 +661,30 @@ func (c *CLab) discoverLiveApplyEndpoints(\n536:  \t\t\t}\n537:  \t\t}\n538:  \n539:  \t\tplan.setEndpointNode(nodeName, n)\n540:  \n541: +\t\t// For in-container bridges (BridgeNS), discover interfaces attached to the\n542: +\t\t// bridge in the parent container's namespace. Matching is done inside the\n543: +\t\t// namespace callback via ownership altnames, so this is order-independent\n544: +\t\t// w.r.t. the remote endpoints' discovery.\n545: +\t\tif node, ok := c.Nodes[nodeName]; ok &&\n546: +\t\t\tnode.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS {\n547: +\t\t\tparentNode, err := c.bridgeNSParentNode(nodeName)\n548: +\t\t\tif err != nil {\n549: +\t\t\t\treturn err\n550: +\t\t\t}\n551: +\t\t\tif err := c.discoverBridgeNSEndpoints(ctx, plan, nodeName, parentNode); err != nil {\n552: +\t\t\t\treturn fmt.Errorf(\n553: +\t\t\t\t\t\"failed to discover runtime interfaces for in-container bridge %q: %w\",\n554: +\t\t\t\t\tnodeName,\n555: +\t\t\t\t\terr,\n556: +\t\t\t\t)\n557: +\t\t\t}\n558: +\t\t\tcontinue\n559: +\t\t}\n560: +\n561:  \t\tinterfaces, err := clablinks.DiscoverOwnedInterfacesFor(\n562:  \t\t\tctx,\n563:  \t\t\tn,\n564:  \t\t\tnodeName,\n565:  \t\t\tc.applyKnownEndpointNames(plan, nodeName),\n566: @@ -554,10 +705,91 @@ func (c *CLab) discoverLiveApplyEndpoints(\n567:  \t}\n568:  \n569:  \treturn nil\n570:  }\n571:  \n572: +// bridgeNSParentNode resolves the parent container node whose network namespace\n573: +// hosts the given BridgeNS bridge node. Shared by discovery, validation and\n574: +// deletion paths touching BridgeNS endpoint lifecycles.\n575: +func (c *CLab) bridgeNSParentNode(bridgeName string) (clablinks.Node, error) {\n576: +\tnode, exists := c.Nodes[bridgeName]\n577: +\tif !exists {\n578: +\t\treturn nil, fmt.Errorf(\"in-container bridge %q not found in topology\", bridgeName)\n579: +\t}\n580: +\tparentName := networkModeContainerTarget(node.Config().NetworkMode)\n581: +\tif parentName == \"\" {\n582: +\t\treturn nil, fmt.Errorf(\n583: +\t\t\t\"in-container bridge %q has invalid network-mode: %s\",\n584: +\t\t\tbridgeName,\n585: +\t\t\tnode.Config().NetworkMode,\n586: +\t\t)\n587: +\t}\n588: +\tparentNode, exists := c.Nodes[parentName]\n589: +\tif !exists {\n590: +\t\treturn nil, fmt.Errorf(\n591: +\t\t\t\"in-container bridge %q: parent container %q not found\",\n592: +\t\t\tbridgeName,\n593: +\t\t\tparentName,\n594: +\t\t)\n595: +\t}\n596: +\treturn parentNode, nil\n597: +}\n598: +\n599: +// bridgeNSNameInNamespace strips the \"<bridge>|<node>\" suffix, yielding the\n600: +// kernel bridge interface name inside the parent container namespace.\n601: +func bridgeNSNameInNamespace(bridgeName string) string {\n602: +\tif idx := strings.Index(bridgeName, \"|\"); idx != -1 {\n603: +\t\treturn bridgeName[:idx]\n604: +\t}\n605: +\treturn bridgeName\n606: +}\n607: +\n608: +// discoverBridgeNSEndpoints discovers interfaces attached to an in-container\n609: +// bridge. Interfaces are discovered in the parent container's namespace and\n610: +// mapped to their logical endpoint names via ownership altnames, so no ordering\n611: +// dependency with the remote endpoints' discovery exists. Orphaned\n612: +// bridge-attached interfaces (owned but claimed by no desired endpoint) are\n613: +// keyed by their kernel names so stale-clean up can remove them.\n614: +func (c *CLab) discoverBridgeNSEndpoints(\n615: +\tctx context.Context,\n616: +\tplan *applyPlan,\n617: +\tbridgeName string,\n618: +\tnsNode clablinks.Node,\n619: +) error {\n620: +\tdesiredNames := make(map[string]struct{})\n621: +\tfor key := range plan.desiredEndpointSet {\n622: +\t\tif key.node == bridgeName && key.iface != \"\" {\n623: +\t\t\tdesiredNames[key.iface] = struct{}{}\n624: +\t\t}\n625: +\t}\n626: +\n627: +\tmatched, orphans, err := clablinks.DiscoverEndpointsForBridgeNS(\n628: +\t\tctx,\n629: +\t\tnsNode,\n630: +\t\tbridgeName,\n631: +\t\tbridgeNSNameInNamespace(bridgeName),\n632: +\t\tdesiredNames,\n633: +\t)\n634: +\tif err != nil {\n635: +\t\treturn err\n636: +\t}\n637: +\n638: +\tfor name, iface := range matched {\n639: +\t\tkey := applyEndpointKey{node: bridgeName, iface: name}\n640: +\t\tplan.liveEndpointSet[key] = struct{}{}\n641: +\t\tplan.liveEndpointInfo[key] = iface\n642: +\t}\n643: +\n644: +\tfor _, iface := range orphans {\n645: +\t\tkey := applyEndpointKey{node: bridgeName, iface: iface.Name}\n646: +\t\tplan.liveEndpointSet[key] = struct{}{}\n647: +\t\tplan.liveEndpointInfo[key] = iface\n648: +\t}\n649: +\n650: +\treturn nil\n651: +}\n652: +\n653:  func (c *CLab) validateDesiredEndpointOwnership(\n654:  \tctx context.Context,\n655:  \tplan *applyPlan,\n656:  ) error {\n657:  \tfor _, key := range sortedEndpointKeys(plan.desiredEndpointSet) {\n658: @@ -571,10 +803,23 @@ func (c *CLab) validateDesiredEndpointOwnership(\n659:  \t\t}\n660:  \t\tif !exists {\n661:  \t\t\tcontinue\n662:  \t\t}\n663:  \n664: +\t\t// Name-based ownership validation is invalid for BridgeNS endpoints:\n665: +\t\t// kernel iface names are sanitized versions of the logical names, and\n666: +\t\t// a plain LinkByName(logical) would miss or hit the wrong interface.\n667: +\t\t// BridgeNS matching is done at discovery time via ownership altnames.\n668: +\t\tisBridgeNSEndpoint := false\n669: +\t\tif bridgeNode, ok := c.Nodes[key.node]; ok {\n670: +\t\t\tisBridgeNSEndpoint = bridgeNode.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS\n671: +\t\t}\n672: +\n673: +\t\tif isBridgeNSEndpoint {\n674: +\t\t\tcontinue\n675: +\t\t}\n676: +\n677:  \t\tif err := clablinks.ValidateOwnedInterfaceFor(\n678:  \t\t\tctx,\n679:  \t\t\tnode,\n680:  \t\t\tkey.node,\n681:  \t\t\tkey.iface,\n682: @@ -928,16 +1173,32 @@ func (p *applyPlan) linkIntact(link clablinks.Link) bool {\n683:  // attached to a bridge other than the one the endpoint resolves to, e.g. after a\n684:  // mgmt-net link moved to another management network. mgmt-net endpoints whose\n685:  // management network bridge is not resolved are not checked.\n686:  func bridgeMasterMismatch(ep clablinks.Endpoint, live clablinks.OwnedInterface) bool {\n687:  \tnode := ep.GetNode()\n688: -\tif node.GetLinkEndpointType() != clablinks.LinkEndpointTypeBridge ||\n689: -\t\tclablinks.IsUnresolvedMgmtBridgeEndpoint(ep) {\n690: -\t\treturn false\n691: +\tendpointType := node.GetLinkEndpointType()\n692: +\n693: +\t// Handle regular bridge endpoints\n694: +\tif endpointType == clablinks.LinkEndpointTypeBridge {\n695: +\t\tif clablinks.IsUnresolvedMgmtBridgeEndpoint(ep) {\n696: +\t\t\treturn false\n697: +\t\t}\n698: +\t\treturn live.MasterName != node.GetShortName()\n699: +\t}\n700: +\n701: +\t// Handle in-container bridge (BridgeNS) endpoints\n702: +\tif endpointType == clablinks.LinkEndpointTypeBridgeNS {\n703: +\t\t// For BridgeNS, the bridge name in the container is the node name without the namespace\n704: +\t\t// suffix\n705: +\t\tbridgeName := node.GetShortName()\n706: +\t\tif idx := strings.Index(bridgeName, \"|\"); idx != -1 {\n707: +\t\t\tbridgeName = bridgeName[:idx]\n708: +\t\t}\n709: +\t\treturn live.MasterName != bridgeName\n710:  \t}\n711:  \n712: -\treturn live.MasterName != node.GetShortName()\n713: +\treturn false\n714:  }\n715:  \n716:  func (p *applyPlan) deployNodeNames() []string {\n717:  \tif p == nil {\n718:  \t\treturn nil\n719: @@ -958,14 +1219,41 @@ func (p *applyPlan) deployNodeNames() []string {\n720:  \treturn nodeNames\n721:  }\n722:  \n723:  func (c *CLab) deleteApplyEndpoints(\n724:  \tctx context.Context,\n725: -\trefs []applyEndpointRef,\n726: +\tplan *applyPlan,\n727:  ) error {\n728: +\trefs := plan.staleEndpoints\n729:  \tfor _, ref := range refs {\n730:  \t\tlog.Info(\"Deleting link endpoint\", \"endpoint\", ref.key.String())\n731: +\n732: +\t\t// For BridgeNS bridges, use RemoveInterface instead of RemoveOwnedInterface.\n733: +\t\t// BridgeNS interfaces are owned by the remote endpoint (the container\n734: +\t\t// connecting to the bridge), not by the bridge itself, so per-node\n735: +\t\t// ownership checks would always fail here.\n736: +\t\tif ref.node.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS {\n737: +\t\t\tif c.isBridgeNSMigrationPlanned(plan, ref.key) {\n738: +\t\t\t\t// Migrated endpoints are parked and restored later in apply\n739: +\t\t\t\t// instead of being deleted here.\n740: +\t\t\t\tlog.Info(\"Preserving bridge port for migration\", \"endpoint\", ref.key.String())\n741: +\t\t\t\tcontinue\n742: +\t\t\t}\n743: +\t\t\tparentNode, err := c.bridgeNSParentNode(ref.key.node)\n744: +\t\t\tif err != nil {\n745: +\t\t\t\treturn err\n746: +\t\t\t}\n747: +\t\t\tif err := clablinks.RemoveInterface(ctx, parentNode, ref.key.iface); err != nil {\n748: +\t\t\t\tif ref.bestEffort && errors.Is(err, clablinks.ErrInterfaceUnowned) {\n749: +\t\t\t\t\tlog.Debugf(\"skipping best-effort endpoint delete: %v\", err)\n750: +\t\t\t\t\tcontinue\n751: +\t\t\t\t}\n752: +\t\t\t\treturn err\n753: +\t\t\t}\n754: +\t\t\tcontinue\n755: +\t\t}\n756: +\n757:  \t\tif err := clablinks.RemoveOwnedInterface(ctx, ref.node, ref.key.iface); err != nil {\n758:  \t\t\tif ref.bestEffort && errors.Is(err, clablinks.ErrInterfaceUnowned) {\n759:  \t\t\t\tlog.Debugf(\"skipping best-effort endpoint delete: %v\", err)\n760:  \t\t\t\tcontinue\n761:  \t\t\t}\n762: diff --git a/links/apply.go b/links/apply.go\n763: index 858e670..83e1a9a 100644\n764: --- a/links/apply.go\n\n(Showing lines 365-764 of 2042. Use offset=765 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/core/topology_reconcile.go b/core/topology_reconcile.go\nindex f52788d..0facaec 100644\n--- a/core/topology_reconcile.go\n+++ b/core/topology_reconcile.go\n@@ -30,10 +30,21 @@ type applyEndpointRef struct {\n \tkey        applyEndpointKey\n \tnode       clablinks.Node\n \tbestEffort bool\n }\n \n+// bridgeNSMigration describes a bridge-side veth end whose owning in-container\n+// bridge node changed name (a parent move) while the client-side endpoint and\n+// the veth pair itself stay valid. Applying the migration moves the parked half\n+// into the new parent's namespace instead of destroying and recreating the\n+// pair, which preserves container-local configuration (addresses, MACs).\n+type bridgeNSMigration struct {\n+\tstaleRef   applyEndpointRef // bridge-side endpoint to be parked (not deleted)\n+\tnewKey     applyEndpointKey // replacement claim under a different bridge node\n+\trelocation *clablinks.BridgePortRelocation\n+}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/core/topology_reconcile.go b/core/topology_reconcile.go\nindex f52788d..0facaec 100644\n--- a/core/topology_reconcile.go\n+++ b/core/topology_reconcile.go\n@@ -30,10 +30,21 @@ type applyEndpointRef struct {\n \tkey        applyEndpointKey\n \tnode       clablinks.Node\n \tbestEffort bool\n }\n \n+// bridgeNSMigration describes a bridge-side veth end whose owning in-container\n+// bridge node changed name (a parent move) while the client-side endpoint and\n+// the veth pair itself stay valid. Applying the migration moves the parked half\n+// into the new parent's namespace instead of destroying and recreating the\n+// pair, which preserves container-local configuration (addresses, MACs).\n+type bridgeNSMigration struct {\n+\tstaleRef   applyEndpointRef // bridge-side endpoint to be parked (not deleted)\n+\tnewKey     applyEndpointKey // replacement claim under a different bridge node\n+\trelocation *clablinks.BridgePortRelocation\n+}\n+\n type applyPlan struct {\n \tcurrentNodes       map[string]*runtimeNodeGroup\n \taddedNodeSet       map[string]struct{}\n \tdeletedNodeSet     map[string]struct{}\n \trecreatedNodeSet   map[string]struct{}\n@@ -50,11 +61,12 @@ type applyPlan struct {\n \tstate              *LabState\n \tparkedNodeSet      map[string]struct{}\n \tstartNodeSet       map[string]struct{}\n \t// nodeChangeReasons explains per node why apply restarts or recreates it,\n \t// e.g. \"added link\" or \"config drift: image\".\n-\tnodeChangeReasons map[string]string\n+\tnodeChangeReasons  map[string]string\n+\tbridgeNSMigrations []bridgeNSMigration\n }\n \n func (p *applyPlan) empty() bool {\n \treturn len(p.addedNodeSet) == 0 &&\n \t\tlen(p.deletedNodeSet) == 0 &&\n@@ -407,10 +419,129 @@ func (c *CLab) planDeletedEndpoints(ctx context.Context, plan *applyPlan) {\n \t\tif _, exists := plan.desiredEndpointSet[key]; exists {\n \t\t\tcontinue\n \t\t}\n \t\tc.addStaleApplyEndpoint(ctx, plan, plannedEndpointSet, key)\n \t}\n+\n+\tc.planBridgeNSMigrations(ctx, plan)\n+}\n+\n+// planBridgeNSMigrations finds stale BridgeNS bridge-side endpoints that the\n+// desired topology re-claims under a different in-container bridge node (the\n+// bridge moved to another parent). Such veth ends are migrated (parked and\n+// restored into the new parent's namespace) instead of deleted, which keeps\n+// the pairwise integrity of the link and the client-side configuration.\n+//\n+// Detection runs on two sources: live-discovered stale endpoints (existing\n+// bridge nodes) and the stored old topology (deleted bridge nodes, whose\n+// ports are not discovered live).\n+func (c *CLab) planBridgeNSMigrations(ctx context.Context, plan *applyPlan) {\n+\tif plan == nil {\n+\t\treturn\n+\t}\n+\n+\t// Live-discovered stale bridge-side ends (the bridge node still exists).\n+\tfor _, ref := range plan.staleEndpoints {\n+\t\tif ref.node == nil ||\n+\t\t\tref.node.GetLinkEndpointType() != clablinks.LinkEndpointTypeBridgeNS {\n+\t\t\tcontinue\n+\t\t}\n+\t\tc.addBridgeNSMigrationCandidate(plan, ref.key, ref.node)\n+\t}\n+\n+\t// Deleted in-container bridge nodes are absent from the desired topology,\n+\t// so their ports are not discovered live; recover them from the old state.\n+\tif plan.state != nil && plan.state.Topology != nil {\n+\t\tfor _, link := range plan.state.Topology.Links {\n+\t\t\tif link == nil || link.Link == nil {\n+\t\t\t\tcontinue\n+\t\t\t}\n+\n+\t\t\tvar bridgeEndpointPoint *[2]string\n+\t\t\tfor _, point := range clablinks.RawLinkEndpoints(link.Link) {\n+\t\t\t\tif strings.Contains(point[0], \"|\") {\n+\t\t\t\t\tbridgePoint := point\n+\t\t\t\t\tbridgeEndpointPoint = &bridgePoint\n+\t\t\t\t}\n+\t\t\t}\n+\t\t\tif bridgeEndpointPoint == nil {\n+\t\t\t\tcontinue\n+\t\t\t}\n+\n+\t\t\tc.addBridgeNSMigrationCandidate(\n+\t\t\t\tplan,\n+\t\t\t\tapplyEndpointKey{node: bridgeEndpointPoint[0], iface: bridgeEndpointPoint[1]},\n+\t\t\t\tnil,\n+\t\t\t)\n+\t\t}\n+\t}\n+}\n+\n+// addBridgeNSMigrationCandidate registers a bridge NS migration when the\n+// desired topology re-claims the given bridge-side endpoint under a different\n+// in-container bridge node with the same logical port name.\n+func (c *CLab) addBridgeNSMigrationCandidate(\n+\tplan *applyPlan,\n+\tstaleKey applyEndpointKey,\n+\tstaleNode clablinks.Node,\n+) {\n+\tif staleKey.node == \"\" || staleKey.iface == \"\" {\n+\t\treturn\n+\t}\n+\tif _, desired := plan.desiredEndpointSet[staleKey]; desired {\n+\t\treturn\n+\t}\n+\tif c.isBridgeNSMigrationPlanned(plan, staleKey) {\n+\t\treturn\n+\t}\n+\n+\tfor candidate := range plan.desiredEndpointSet {\n+\t\tif candidate.iface != staleKey.iface || candidate.node == staleKey.node {\n+\t\t\tcontinue\n+\t\t}\n+\t\tif !c.isBridgeNSNode(candidate.node) {\n+\t\t\tcontinue\n+\t\t}\n+\n+\t\tplan.bridgeNSMigrations = append(plan.bridgeNSMigrations, bridgeNSMigration{\n+\t\t\tstaleRef: applyEndpointRef{key: staleKey, node: staleNode},\n+\t\t\tnewKey:   candidate,\n+\t\t})\n+\t\tlog.Info(\n+\t\t\t\"Planning bridge port migration\",\n+\t\t\t\"from\",\n+\t\t\tstaleKey.String(),\n+\t\t\t\"to\",\n+\t\t\tcandidate.String(),\n+\t\t)\n+\t\treturn\n+\t}\n+}\n+\n+// isBridgeNSMigrationPlanned reports whether the given bridge endpoint is\n+// already covered by a planned migration.\n+func (c *CLab) isBridgeNSMigrationPlanned(\n+\tplan *applyPlan,\n+\tkey applyEndpointKey,\n+) bool {\n+\tfor _, mig := range plan.bridgeNSMigrations {\n+\t\tif mig.staleRef.key == key {\n+\t\t\treturn true\n+\t\t}\n+\t}\n+\treturn false\n+}\n+\n+// isBridgeNSNode reports whether the node name refers to an in-container\n+// bridge node of the desired topology.\n+func (c *CLab) isBridgeNSNode(nodeName string) bool {\n+\tnode, exists := c.Nodes[nodeName]\n+\tif !exists {\n+\t\treturn false\n+\t}\n+\treturn node.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS ||\n+\t\tnode.Config().Kind == \"bridge\" && strings.Contains(nodeName, \"|\")\n }\n \n func (c *CLab) addStaleApplyEndpoint(\n \tctx context.Context,\n \tplan *applyPlan,\n@@ -530,10 +661,30 @@ func (c *CLab) discoverLiveApplyEndpoints(\n \t\t\t}\n \t\t}\n \n \t\tplan.setEndpointNode(nodeName, n)\n \n+\t\t// For in-container bridges (BridgeNS), discover interfaces attached to the\n+\t\t// bridge in the parent container's namespace. Matching is done inside the\n+\t\t// namespace callback via ownership altnames, so this is order-independent\n+\t\t// w.r.t. the remote endpoints' discovery.\n+\t\tif node, ok := c.Nodes[nodeName]; ok &&\n+\t\t\tnode.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS {\n+\t\t\tparentNode, err := c.bridgeNSParentNode(nodeName)\n+\t\t\tif err != nil {\n+\t\t\t\treturn err\n+\t\t\t}\n+\t\t\tif err := c.discoverBridgeNSEndpoints(ctx, plan, nodeName, parentNode); err != nil {\n+\t\t\t\treturn fmt.Errorf(\n+\t\t\t\t\t\"failed to discover runtime interfaces for in-container bridge %q: %w\",\n+\t\t\t\t\tnodeName,\n+\t\t\t\t\terr,\n+\t\t\t\t)\n+\t\t\t}\n+\t\t\tcontinue\n+\t\t}\n+\n \t\tinterfaces, err := clablinks.DiscoverOwnedInterfacesFor(\n \t\t\tctx,\n \t\t\tn,\n \t\t\tnodeName,\n \t\t\tc.applyKnownEndpointNames(plan, nodeName),\n@@ -554,10 +705,91 @@ func (c *CLab) discoverLiveApplyEndpoints(\n \t}\n \n \treturn nil\n }\n \n+// bridgeNSParentNode resolves the parent container node whose network namespace\n+// hosts the given BridgeNS bridge node. Shared by discovery, validation and\n+// deletion paths touching BridgeNS endpoint lifecycles.\n+func (c *CLab) bridgeNSParentNode(bridgeName string) (clablinks.Node, error) {\n+\tnode, exists := c.Nodes[bridgeName]\n+\tif !exists {\n+\t\treturn nil, fmt.Errorf(\"in-container bridge %q not found in topology\", bridgeName)\n+\t}\n+\tparentName := networkModeContainerTarget(node.Config().NetworkMode)\n+\tif parentName == \"\" {\n+\t\treturn nil, fmt.Errorf(\n+\t\t\t\"in-container bridge %q has invalid network-mode: %s\",\n+\t\t\tbridgeName,\n+\t\t\tnode.Config().NetworkMode,\n+\t\t)\n+\t}\n+\tparentNode, exists := c.Nodes[parentName]\n+\tif !exists {\n+\t\treturn nil, fmt.Errorf(\n+\t\t\t\"in-container bridge %q: parent container %q not found\",\n+\t\t\tbridgeName,\n+\t\t\tparentName,\n+\t\t)\n+\t}\n+\treturn parentNode, nil\n+}\n+\n+// bridgeNSNameInNamespace strips the \"<bridge>|<node>\" suffix, yielding the\n+// kernel bridge interface name inside the parent container namespace.\n+func bridgeNSNameInNamespace(bridgeName string) string {\n+\tif idx := strings.Index(bridgeName, \"|\"); idx != -1 {\n+\t\treturn bridgeName[:idx]\n+\t}\n+\treturn bridgeName\n+}\n+\n+// discoverBridgeNSEndpoints discovers interfaces attached to an in-container\n+// bridge. Interfaces are discovered in the parent container's namespace and\n+// mapped to their logical endpoint names via ownership altnames, so no ordering\n+// dependency with the remote endpoints' discovery exists. Orphaned\n+// bridge-attached interfaces (owned but claimed by no desired endpoint) are\n+// keyed by their kernel names so stale-clean up can remove them.\n+func (c *CLab) discoverBridgeNSEndpoints(\n+\tctx context.Context,\n+\tplan *applyPlan,\n+\tbridgeName string,\n+\tnsNode clablinks.Node,\n+) error {\n+\tdesiredNames := make(map[string]struct{})\n+\tfor key := range plan.desiredEndpointSet {\n+\t\tif key.node == bridgeName && key.iface != \"\" {\n+\t\t\tdesiredNames[key.iface] = struct{}{}\n+\t\t}\n+\t}\n+\n+\tmatched, orphans, err := clablinks.DiscoverEndpointsForBridgeNS(\n+\t\tctx,\n+\t\tnsNode,\n+\t\tbridgeName,\n+\t\tbridgeNSNameInNamespace(bridgeName),\n+\t\tdesiredNames,\n+\t)\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\n+\tfor name, iface := range matched {\n+\t\tkey := applyEndpointKey{node: bridgeName, iface: name}\n+\t\tplan.liveEndpointSet[key] = struct{}{}\n+\t\tplan.liveEndpointInfo[key] = iface\n+\t}\n+\n+\tfor _, iface := range orphans {\n+\t\tkey := applyEndpointKey{node: bridgeName, iface: iface.Name}\n+\t\tplan.liveEndpointSet[key] = struct{}{}\n+\t\tplan.liveEndpointInfo[key] = iface\n+\t}\n+\n+\treturn nil\n+}\n+\n func (c *CLab) validateDesiredEndpointOwnership(\n \tctx context.Context,\n \tplan *applyPlan,\n ) error {\n \tfor _, key := range sortedEndpointKeys(plan.desiredEndpointSet) {\n@@ -571,10 +803,23 @@ func (c *CLab) validateDesiredEndpointOwnership(\n \t\t}\n \t\tif !exists {\n \t\t\tcontinue\n \t\t}\n \n+\t\t// Name-based ownership validation is invalid for BridgeNS endpoints:\n+\t\t// kernel iface names are sanitized versions of the logical names, and\n+\t\t// a plain LinkByName(logical) would miss or hit the wrong interface.\n+\t\t// BridgeNS matching is done at discovery time via ownership altnames.\n+\t\tisBridgeNSEndpoint := false\n+\t\tif bridgeNode, ok := c.Nodes[key.node]; ok {\n+\t\t\tisBridgeNSEndpoint = bridgeNode.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS\n+\t\t}\n+\n+\t\tif isBridgeNSEndpoint {\n+\t\t\tcontinue\n+\t\t}\n+\n \t\tif err := clablinks.ValidateOwnedInterfaceFor(\n \t\t\tctx,\n \t\t\tnode,\n \t\t\tkey.node,\n \t\t\tkey.iface,\n@@ -928,16 +1173,32 @@ func (p *applyPlan) linkIntact(link clablinks.Link) bool {\n // attached to a bridge other than the one the endpoint resolves to, e.g. after a\n // mgmt-net link moved to another management network. mgmt-net endpoints whose\n // management network bridge is not resolved are not checked.\n func bridgeMasterMismatch(ep clablinks.Endpoint, live clablinks.OwnedInterface) bool {\n \tnode := ep.GetNode()\n-\tif node.GetLinkEndpointType() != clablinks.LinkEndpointTypeBridge ||\n-\t\tclablinks.IsUnresolvedMgmtBridgeEndpoint(ep) {\n-\t\treturn false\n+\tendpointType := node.GetLinkEndpointType()\n+\n+\t// Handle regular bridge endpoints\n+\tif endpointType == clablinks.LinkEndpointTypeBridge {\n+\t\tif clablinks.IsUnresolvedMgmtBridgeEndpoint(ep) {\n+\t\t\treturn false\n+\t\t}\n+\t\treturn live.MasterName != node.GetShortName()\n+\t}\n+\n+\t// Handle in-container bridge (BridgeNS) endpoints\n+\tif endpointType == clablinks.LinkEndpointTypeBridgeNS {\n+\t\t// For BridgeNS, the bridge name in the container is the node name without the namespace\n+\t\t// suffix\n+\t\tbridgeName := node.GetShortName()\n+\t\tif idx := strings.Index(bridgeName, \"|\"); idx != -1 {\n+\t\t\tbridgeName = bridgeName[:idx]\n+\t\t}\n+\t\treturn live.MasterName != bridgeName\n \t}\n \n-\treturn live.MasterName != node.GetShortName()\n+\treturn false\n }\n \n func (p *applyPlan) deployNodeNames() []string {\n \tif p == nil {\n \t\treturn nil\n@@ -958,14 +1219,41 @@ func (p *applyPlan) deployNodeNames() []string {\n \treturn nodeNames\n }\n \n func (c *CLab) deleteApplyEndpoints(\n \tctx context.Context,\n-\trefs []applyEndpointRef,\n+\tplan *applyPlan,\n ) error {\n+\trefs := plan.staleEndpoints\n \tfor _, ref := range refs {\n \t\tlog.Info(\"Deleting link endpoint\", \"endpoint\", ref.key.String())\n+\n+\t\t// For BridgeNS bridges, use RemoveInterface instead of RemoveOwnedInterface.\n+\t\t// BridgeNS interfaces are owned by the remote endpoint (the container\n+\t\t// connecting to the bridge), not by the bridge itself, so per-node\n+\t\t// ownership checks would always fail here.\n+\t\tif ref.node.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS {\n+\t\t\tif c.isBridgeNSMigrationPlanned(plan, ref.key) {\n+\t\t\t\t// Migrated endpoints are parked and restored later in apply\n+\t\t\t\t// instead of being deleted here.\n+\t\t\t\tlog.Info(\"Preserving bridge port for migration\", \"endpoint\", ref.key.String())\n+\t\t\t\tcontinue\n+\t\t\t}\n+\t\t\tparentNode, err := c.bridgeNSParentNode(ref.key.node)\n+\t\t\tif err != nil {\n+\t\t\t\treturn err\n+\t\t\t}\n+\t\t\tif err := clablinks.RemoveInterface(ctx, parentNode, ref.key.iface); err != nil {\n+\t\t\t\tif ref.bestEffort && errors.Is(err, clablinks.ErrInterfaceUnowned) {\n+\t\t\t\t\tlog.Debugf(\"skipping best-effort endpoint delete: %v\", err)\n+\t\t\t\t\tcontinue\n+\t\t\t\t}\n+\t\t\t\treturn err\n+\t\t\t}\n+\t\t\tcontinue\n+\t\t}\n+\n \t\tif err := clablinks.RemoveOwnedInterface(ctx, ref.node, ref.key.iface); err != nil {\n \t\t\tif ref.bestEffort && errors.Is(err, clablinks.ErrInterfaceUnowned) {\n \t\t\t\tlog.Debugf(\"skipping best-effort endpoint delete: %v\", err)\n \t\t\t\tcontinue\n \t\t\t}\ndiff --git a/links/apply.go b/links/apply.go\nindex 858e670..83e1a9a 100644\n--- a/links/apply.go",
+                "lineStart": 365,
+                "lineEnd": 764,
+                "totalLines": 2042,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190825473,
+              "end": 1795190825490
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b62215001JQmp5a6tP71ydG",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b5e0c6001DKUryZSDeJjInj",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 62932,
+            "input": 1392,
+            "output": 25,
+            "reasoning": 1547,
+            "cache": {
+              "read": 59968,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b62226001Yhd5SfMPReba6z",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190825510,
+          "completed": 1795190833062
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 68535,
+          "input": 5129,
+          "output": 60,
+          "reasoning": 626,
+          "cache": {
+            "read": 62720,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b629f2001GBUx4WEUmdiWOP",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b62226001Yhd5SfMPReba6z"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b629f40017sQaUn41pPhHnE",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b62226001Yhd5SfMPReba6z",
+          "text": "Now I've seen the core diff. Also note: `checkApplyNetworkModeTargets` — where is it? It wasn't in this diff section. Maybe it's in network_mode.go (unchanged file?) — the summary said \"checkApplyNetworkModeTargets guards deleted network-mode targets\". Let me grep quickly. Actually it may be pre-existing. Not critical.\n\nAlso the `bridgeMasterMismatch` change: for BridgeNS endpoints, `live.MasterName != bridgeName` — fine.\n\nNow, another thing to verify: `bridgeNSMigration` doc comment says \"the client-side endpoint and the veth pair itself stay valid\" — the assumption baked into the comment is exactly what's violated in my finding scenarios. Good supporting evidence.\n\nNow let me also verify the restoreMigratedBridgeNSPorts filtering uses `mig.newKey` — and note: the filter runs per-migration inside the loop, filtering plan.addedLinks in place. Fine.\n\nOne more check on the P2 finding #1 trigger (old parent removed): In parkMigratedBridgeNSPorts, `bridgeNSMigParentNode` fallback requires c.Nodes[parts[1]] — c.Nodes is the DESIRED topology nodes. Old parent removed → error → apply aborts. Also note: this error happens AFTER deleteApplyEndpoints. Could deleteApplyEndpoints have already deleted something? The stale bridge port is skipped for migration. The client ends: if the client link still desired (c1 stays), c1:eth1 is in desiredEndpointSet → not stale. So nothing deleted → lab intact, error persistent on retry. P2 (reliability).\n\nWait, actually — I should double check one thing about the old-parent scenario: is the migration even planned in that case? The old bridge br01|bp1 is removed from desired; candidate match requires a desired BridgeNS endpoint with the same iface name under a different node — br02|bp2:c1eth1. Yes → planned → park fails. Confirmed.\n\nNow, the third P2: netns leak. Solid.\n\nFourth: dead code + misleading comment. P4.\n\nFifth potential: `isBridgeNSNode` operator precedence: `node.GetLinkEndpointType() == clablinks.LinkEndpointTypeBridgeNS || node.Config().Kind == \"bridge\" && strings.Contains(nodeName, \"|\")` — Go precedence: && binds tighter than ||, so it's `A || (B && C)` — intended. Fine.\n\nSixth: `RuntimeEndpointsContainEndpoint` filter in restoreMigratedBridgeNSPorts filters links where ANY endpoint matches (node, iface). OK.\n\nNow let me check the remaining changed files I haven't reviewed in head form: links/link_veth.go changes (diff 852-872), and confirm what changed there. Also verify the `SetDeploymentState` addition and whether `LinkVEth` gets an altname on both ends (to confirm client-end discovery). Let me read the diff section 852-872 and check link_veth.go Deploy for altname setting.",
+          "time": {
+            "start": 1795190827508,
+            "end": 1795190832845
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b63ed00012eAqafvg4320nZ",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b62226001Yhd5SfMPReba6z",
+          "callID": "call_ff96d2f73d054df1ab70f776",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 22,
+              "offset": 851
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n851: +}\n852: diff --git a/links/link_veth.go b/links/link_veth.go\n853: index e73d581..cb08018 100644\n854: --- a/links/link_veth.go\n855: +++ b/links/link_veth.go\n856: @@ -151,10 +151,15 @@ type LinkVEth struct {\n857:  \tEndpoints []Endpoint\n858:  \n859:  \tdeployMutex sync.Mutex\n860:  }\n861:  \n862: +// SetDeploymentState implements LinkDeploymentStateSetter.\n863: +func (l *LinkVEth) SetDeploymentState(state LinkDeploymentState) {\n864: +\tl.DeploymentState = state\n865: +}\n866: +\n867:  func NewLinkVEth() *LinkVEth {\n868:  \treturn &LinkVEth{\n869:  \t\tEndpoints: make([]Endpoint, 0, 2),\n870:  \t}\n871:  }\n872: diff --git a/links/migration.go b/links/migration.go\n\n(Showing lines 851-872 of 2042. Use offset=873 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "+}\ndiff --git a/links/link_veth.go b/links/link_veth.go\nindex e73d581..cb08018 100644\n--- a/links/link_veth.go\n+++ b/links/link_veth.go\n@@ -151,10 +151,15 @@ type LinkVEth struct {\n \tEndpoints []Endpoint\n \n \tdeployMutex sync.Mutex\n }\n \n+// SetDeploymentState implements LinkDeploymentStateSetter.\n+func (l *LinkVEth) SetDeploymentState(state LinkDeploymentState) {\n+\tl.DeploymentState = state\n+}\n+\n func NewLinkVEth() *LinkVEth {\n \treturn &LinkVEth{\n \t\tEndpoints: make([]Endpoint, 0, 2),\n \t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "+}\ndiff --git a/links/link_veth.go b/links/link_veth.go\nindex e73d581..cb08018 100644\n--- a/links/link_veth.go\n+++ b/links/link_veth.go\n@@ -151,10 +151,15 @@ type LinkVEth struct {\n \tEndpoints []Endpoint\n \n \tdeployMutex sync.Mutex\n }\n \n+// SetDeploymentState implements LinkDeploymentStateSetter.\n+func (l *LinkVEth) SetDeploymentState(state LinkDeploymentState) {\n+\tl.DeploymentState = state\n+}\n+\n func NewLinkVEth() *LinkVEth {\n \treturn &LinkVEth{\n \t\tEndpoints: make([]Endpoint, 0, 2),\n \t}\n }\ndiff --git a/links/migration.go b/links/migration.go",
+                "lineStart": 851,
+                "lineEnd": 872,
+                "totalLines": 2042,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190832852,
+              "end": 1795190832863
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b63f86001hMKdIpHxmmmHNh",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b62226001Yhd5SfMPReba6z",
+          "callID": "call_614e216a70d84865a31f909c",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/links/link_veth.go",
+              "pattern": "AddAltName|ownershipAltNameFor|AddOwnershipAltName"
+            },
+            "output": "Found 23 matches\n/source/head/links/apply_test.go:\n  Line 84: \t\t\t\townershipAltNameFor(\"bridge-a\", \"eth1\"),\n\n  Line 85: \t\t\t\townershipAltNameFor(\"bridge-b\", \"eth2\"),\n\n  Line 170: \twant := ownershipAltNameFor(mgmtNetOwnerName, \"srl1_e1-1\")\n\n  Line 189: \t\t\taltName: ownershipAltNameFor(mgmtNetOwnerName, \"srl1_e1-1\"),\n\n  Line 193: \t\t\taltName: ownershipAltNameFor(\"br-lab\", \"srl1_e1-1\"),\n\n  Line 197: \t\t\taltName: ownershipAltNameFor(\"br-other\", \"srl1_e1-1\"),\n\n  Line 201: \t\t\taltName: ownershipAltNameFor(mgmtNetOwnerName, \"srl1_e1-2\"),\n\n  Line 231: \t\t\tAltNames: []string{ownershipAltNameFor(\"n1\", \"eth1\")},\n\n\n/source/head/links/link_veth_stitched.go:\n  Line 230: \tif err := netlink.LinkAddAltName(l, altName); err != nil && !isAltNameNotSupportedErr(err) {\n\n\n/source/head/links/migration.go:\n  Line 143: \t\tif addErr := linkAddAltName(\n\n  Line 145: \t\t\townershipAltNameFor(newOwnerName, r.IfaceName),\n\n  Line 234: \t\treturn linkAddAltName(link, ownershipAltNameFor(newOwnerName, ifaceName))\n\n\n/source/head/links/link_test.go:\n  Line 793: func TestAddOwnershipAltNameAllowsUnsupportedAltName(t *testing.T) {\n\n  Line 799: \torigLinkAddAltName := linkAddAltName\n\n  Line 801: \t\tlinkAddAltName = origLinkAddAltName\n\n  Line 805: \tlinkAddAltName = func(_ netlink.Link, name string) error {\n\n\n/source/head/links/link.go:\n  Line 40: var linkAddAltName = netlink.LinkAddAltName\n\n  Line 581: \t\t\terr := netlink.LinkAddAltName(l, sanitizedIfaceName)\n\n  Line 603: \t\t\terr = netlink.LinkAddAltName(l, sanitizedIfaceName)\n\n  Line 624: \treturn ownershipAltNameFor(ownershipName(endpt.GetNode()), endpt.GetIfaceName())\n\n  Line 638: func ownershipAltNameFor(nodeName, ifaceName string) string {\n\n  Line 665: \twant := ownershipAltNameFor(nodeName, ifaceName)\n\n  Line 681: \tif err := linkAddAltName(link, altName); err != nil {\n",
+            "title": "AddAltName|ownershipAltNameFor|AddOwnershipAltName",
+            "metadata": {
+              "matches": 23,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795190833035,
+              "end": 1795190833054
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b63fa10018cI27mKB2MYYdz",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b62226001Yhd5SfMPReba6z",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 68535,
+            "input": 5129,
+            "output": 60,
+            "reasoning": 626,
+            "cache": {
+              "read": 62720,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b63fb20019HzMhtkhQY3vmY",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190833074,
+          "completed": 1795190835479
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69486,
+          "input": 1063,
+          "output": 28,
+          "reasoning": 43,
+          "cache": {
+            "read": 68352,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b64770001cL5lohhiR4DqR5",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b63fb20019HzMhtkhQY3vmY"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b64772001DJwMljrWOHnaNA",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b63fb20019HzMhtkhQY3vmY",
+          "text": "Confirmed: `LinkVEth.SetDeploymentState` added in this PR, dead code. Let me check link.go around 570-640 to see which ends get ownership altnames (both ends?).",
+          "time": {
+            "start": 1795190835058,
+            "end": 1795190835456
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b649030016ASqrMZhUkT69e",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b63fb20019HzMhtkhQY3vmY",
+          "callID": "call_3ce6898d52a0443ebddc6c01",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/links/link.go",
+              "limit": 80,
+              "offset": 560
+            },
+            "output": "<path>/source/head/links/link.go</path>\n<type>file</type>\n<content>\n560: const (\n561: \tLinkEndpointTypeVeth     = \"veth\"\n562: \tLinkEndpointTypeBridge   = \"bridge\"\n563: \tLinkEndpointTypeBridgeNS = \"bridge-ns\"\n564: \tLinkEndpointTypeHost     = \"host\"\n565: )\n566: \n567: // SetNameMACAndUpInterface is a helper function that will bind interface name and Mac\n568: // and return a function that can run in the netns.Do() call for execution in a network namespace.\n569: func SetNameMACAndUpInterface(l netlink.Link, endpt Endpoint) func(ns.NetNS) error {\n570: \treturn func(_ ns.NetNS) error {\n571: \t\t// rename the link created with random name if its length is acceptable by linux\n572: \t\tif IsValidInterfaceName(endpt.GetIfaceName()) {\n573: \t\t\terr := netlink.LinkSetName(l, endpt.GetIfaceName())\n574: \t\t\tif err != nil {\n575: \t\t\t\treturn fmt.Errorf(\n576: \t\t\t\t\t\"failed to rename link: %v\", err)\n577: \t\t\t}\n578: \t\t} else {\n579: \t\t\t// when the name is too long, we add a sanitized interface name as AltName\n580: \t\t\tsanitizedIfaceName := clabutils.SanitizeInterfaceName(endpt.GetIfaceName())\n581: \t\t\terr := netlink.LinkAddAltName(l, sanitizedIfaceName)\n582: \t\t\tif err != nil {\n583: \t\t\t\treturn fmt.Errorf(\n584: \t\t\t\t\t\"failed to add altname: %v\", err)\n585: \t\t\t}\n586: \t\t}\n587: \n588: \t\t// lets set the MAC address if provided\n589: \t\tif len(endpt.GetMac()) == 6 {\n590: \t\t\terr := netlink.LinkSetHardwareAddr(l, endpt.GetMac())\n591: \t\t\tif err != nil {\n592: \t\t\t\treturn err\n593: \t\t\t}\n594: \t\t}\n595: \n596: \t\tif endpt.GetIfaceAlias() != \"\" {\n597: \t\t\terr := netlink.LinkSetAlias(l, endpt.GetIfaceAlias())\n598: \t\t\tif err != nil {\n599: \t\t\t\treturn err\n600: \t\t\t}\n601: \t\t\t// Set a sanitized altname for ease of access. '/', and ' ' are changed to '-'\n602: \t\t\tsanitizedIfaceName := clabutils.SanitizeInterfaceName(endpt.GetIfaceAlias())\n603: \t\t\terr = netlink.LinkAddAltName(l, sanitizedIfaceName)\n604: \t\t\tif err != nil {\n605: \t\t\t\treturn err\n606: \t\t\t}\n607: \t\t}\n608: \n609: \t\tif err := addOwnershipAltName(l, endpt); err != nil {\n610: \t\t\treturn err\n611: \t\t}\n612: \n613: \t\t// bring the given link up\n614: \t\tif err := netlink.LinkSetUp(l); err != nil {\n615: \t\t\treturn fmt.Errorf(\"failed to set %q up: %v\",\n616: \t\t\t\tendpt.GetIfaceName(), err)\n617: \t\t}\n618: \n619: \t\treturn nil\n620: \t}\n621: }\n622: \n623: func ownershipAltName(endpt Endpoint) string {\n624: \treturn ownershipAltNameFor(ownershipName(endpt.GetNode()), endpt.GetIfaceName())\n625: }\n626: \n627: // ownershipName returns the logical owner name recorded in the ownership marker\n628: // of node's interfaces. mgmt-net link nodes use a stable name rather than the\n629: // bridge they resolve to, so the marker of a mgmt-net endpoint does not depend\n630: // on the management network it attaches to.\n631: func ownershipName(node Node) string {\n632: \tif _, ok := node.(*mgmtBridgeLinkNode); ok {\n633: \t\treturn mgmtNetOwnerName\n634: \t}\n635: \treturn node.GetShortName()\n636: }\n637: \n638: func ownershipAltNameFor(nodeName, ifaceName string) string {\n639: \tsum := sha1.Sum([]byte(nodeName + \"\\x00\" + ifaceName))\n\n(Showing lines 560-639 of 804. Use offset=640 to continue.)\n</content>",
+            "title": "source/head/links/link.go",
+            "metadata": {
+              "preview": "const (\n\tLinkEndpointTypeVeth     = \"veth\"\n\tLinkEndpointTypeBridge   = \"bridge\"\n\tLinkEndpointTypeBridgeNS = \"bridge-ns\"\n\tLinkEndpointTypeHost     = \"host\"\n)\n\n// SetNameMACAndUpInterface is a helper function that will bind interface name and Mac\n// and return a function that can run in the netns.Do() call for execution in a network namespace.\nfunc SetNameMACAndUpInterface(l netlink.Link, endpt Endpoint) func(ns.NetNS) error {\n\treturn func(_ ns.NetNS) error {\n\t\t// rename the link created with random name if its length is acceptable by linux\n\t\tif IsValidInterfaceName(endpt.GetIfaceName()) {\n\t\t\terr := netlink.LinkSetName(l, endpt.GetIfaceName())\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\n\t\t\t\t\t\"failed to rename link: %v\", err)\n\t\t\t}\n\t\t} else {\n\t\t\t// when the name is too long, we add a sanitized interface name as AltName",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/links/link.go",
+                "text": "const (\n\tLinkEndpointTypeVeth     = \"veth\"\n\tLinkEndpointTypeBridge   = \"bridge\"\n\tLinkEndpointTypeBridgeNS = \"bridge-ns\"\n\tLinkEndpointTypeHost     = \"host\"\n)\n\n// SetNameMACAndUpInterface is a helper function that will bind interface name and Mac\n// and return a function that can run in the netns.Do() call for execution in a network namespace.\nfunc SetNameMACAndUpInterface(l netlink.Link, endpt Endpoint) func(ns.NetNS) error {\n\treturn func(_ ns.NetNS) error {\n\t\t// rename the link created with random name if its length is acceptable by linux\n\t\tif IsValidInterfaceName(endpt.GetIfaceName()) {\n\t\t\terr := netlink.LinkSetName(l, endpt.GetIfaceName())\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\n\t\t\t\t\t\"failed to rename link: %v\", err)\n\t\t\t}\n\t\t} else {\n\t\t\t// when the name is too long, we add a sanitized interface name as AltName\n\t\t\tsanitizedIfaceName := clabutils.SanitizeInterfaceName(endpt.GetIfaceName())\n\t\t\terr := netlink.LinkAddAltName(l, sanitizedIfaceName)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\n\t\t\t\t\t\"failed to add altname: %v\", err)\n\t\t\t}\n\t\t}\n\n\t\t// lets set the MAC address if provided\n\t\tif len(endpt.GetMac()) == 6 {\n\t\t\terr := netlink.LinkSetHardwareAddr(l, endpt.GetMac())\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\n\t\tif endpt.GetIfaceAlias() != \"\" {\n\t\t\terr := netlink.LinkSetAlias(l, endpt.GetIfaceAlias())\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\t// Set a sanitized altname for ease of access. '/', and ' ' are changed to '-'\n\t\t\tsanitizedIfaceName := clabutils.SanitizeInterfaceName(endpt.GetIfaceAlias())\n\t\t\terr = netlink.LinkAddAltName(l, sanitizedIfaceName)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\n\t\tif err := addOwnershipAltName(l, endpt); err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\t// bring the given link up\n\t\tif err := netlink.LinkSetUp(l); err != nil {\n\t\t\treturn fmt.Errorf(\"failed to set %q up: %v\",\n\t\t\t\tendpt.GetIfaceName(), err)\n\t\t}\n\n\t\treturn nil\n\t}\n}\n\nfunc ownershipAltName(endpt Endpoint) string {\n\treturn ownershipAltNameFor(ownershipName(endpt.GetNode()), endpt.GetIfaceName())\n}\n\n// ownershipName returns the logical owner name recorded in the ownership marker\n// of node's interfaces. mgmt-net link nodes use a stable name rather than the\n// bridge they resolve to, so the marker of a mgmt-net endpoint does not depend\n// on the management network it attaches to.\nfunc ownershipName(node Node) string {\n\tif _, ok := node.(*mgmtBridgeLinkNode); ok {\n\t\treturn mgmtNetOwnerName\n\t}\n\treturn node.GetShortName()\n}\n\nfunc ownershipAltNameFor(nodeName, ifaceName string) string {\n\tsum := sha1.Sum([]byte(nodeName + \"\\x00\" + ifaceName))",
+                "lineStart": 560,
+                "lineEnd": 639,
+                "totalLines": 804,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190835464,
+              "end": 1795190835473
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b64914001MEeXwtmxbJjbm2",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b63fb20019HzMhtkhQY3vmY",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69486,
+            "input": 1063,
+            "output": 28,
+            "reasoning": 43,
+            "cache": {
+              "read": 68352,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b649220016aaZKFv2BgZvzM",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190835490,
+          "completed": 1795190841348
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 70743,
+          "input": 70501,
+          "output": 42,
+          "reasoning": 200,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b65ab7001hP7LnDKBGLnN6K",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b649220016aaZKFv2BgZvzM"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b65ab9001HKpAdoRy2URUI8",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b649220016aaZKFv2BgZvzM",
+          "text": "`addOwnershipAltName(l, endpt)` is applied to BOTH ends of a veth (SetNameMACAndUpInterface is executed per endpoint). So the client-side end also carries an ownership altname. Good.\n\nSo in the rewire scenario (c1 stays, link endpoint moves from eth1 to eth2, bridge moves): discovery of c1: c1 is desired; `c.applyKnownEndpointNames(plan, c1)` — let me check what that returns. If it returns only DESIRED endpoint ifaces for c1 ({eth2}), then eth1 is filtered out by knownIfaceNames. But wait — the knownIfaceNames filter skips ifaces NOT in known names (line 60-64: `if _, known := knownIfaceNames[name]; !known { continue }`). Let me check applyKnownEndpointNames — does it include discovered/live names from state (i.e., known from previous state) or only desired? Let me check.",
+          "time": {
+            "start": 1795190839993,
+            "end": 1795190841323
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b65fed001IYGL7N0w1zHUCe",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b649220016aaZKFv2BgZvzM",
+          "callID": "call_2596cf8f6ca54192a5a82c78",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/core/topology_reconcile.go",
+              "pattern": "func (c \\*CLab) applyKnownEndpointNames|applyKnownEndpointNames\\(plan"
+            },
+            "output": "Found 1 matches\n/source/head/core/topology_reconcile.go:\n  Line 690: \t\t\tc.applyKnownEndpointNames(plan, nodeName),\n",
+            "title": "func (c \\*CLab) applyKnownEndpointNames|applyKnownEndpointNames\\(plan",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795190841330,
+              "end": 1795190841342
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b66000001XFlO7xvweOSTtN",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b649220016aaZKFv2BgZvzM",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 70743,
+            "input": 70501,
+            "output": 42,
+            "reasoning": 200,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b6600f001CBYNQ3LHbamXzX",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190841359,
+          "completed": 1795190843502
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 70799,
+          "input": 122,
+          "output": 20,
+          "reasoning": 1,
+          "cache": {
+            "read": 70656,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b66806001mV9fEWJSUkAKVg",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6600f001CBYNQ3LHbamXzX"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b66845001RwFL83H2FcF3Lf",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6600f001CBYNQ3LHbamXzX",
+          "callID": "call_0a6d35d70a764fe49af1dd1c",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "applyKnownEndpointNames"
+            },
+            "output": "Found 2 matches\n/source/head/core/topology_reconcile.go:\n  Line 690: \t\t\tc.applyKnownEndpointNames(plan, nodeName),\n\n  Line 854: func (c *CLab) applyKnownEndpointNames(\n",
+            "title": "applyKnownEndpointNames",
+            "metadata": {
+              "matches": 2,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795190843465,
+              "end": 1795190843497
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b6686b001zcRZSvdhwqRmYD",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6600f001CBYNQ3LHbamXzX",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 70799,
+            "input": 122,
+            "output": 20,
+            "reasoning": 1,
+            "cache": {
+              "read": 70656,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b66877001DnChCC0Mgz15j6",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190843511,
+          "completed": 1795190845521
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 70884,
+          "input": 132,
+          "output": 31,
+          "reasoning": 1,
+          "cache": {
+            "read": 70720,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b66ff00012LFYoFFYQvMHEB",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b66877001DnChCC0Mgz15j6"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b67040001KESDYRmtoVCmhm",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b66877001DnChCC0Mgz15j6",
+          "callID": "call_b057075a3c45473db85fa149",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/topology_reconcile.go",
+              "limit": 75,
+              "offset": 840
+            },
+            "output": "<path>/source/head/core/topology_reconcile.go</path>\n<type>file</type>\n<content>\n840: \tif !exists || node.Config() == nil || node.Config().LongName == \"\" {\n841: \t\treturn nil, false\n842: \t}\n843: \n844: \tparkPath, err := clabutils.GetNamedNetNS(\n845: \t\tclabutils.ParkingNetnsName(node.Config().LongName),\n846: \t)\n847: \tif err != nil {\n848: \t\treturn nil, false\n849: \t}\n850: \n851: \treturn clablinks.NewParkingNode(node.Config().LongName, parkPath), true\n852: }\n853: \n854: func (c *CLab) applyKnownEndpointNames(\n855: \tplan *applyPlan,\n856: \tnodeName string,\n857: ) map[string]struct{} {\n858: \tif !isApplySpecialNode(nodeName) {\n859: \t\treturn nil\n860: \t}\n861: \n862: \tnames := map[string]struct{}{}\n863: \tfor key := range plan.desiredEndpointSet {\n864: \t\tif key.node == nodeName {\n865: \t\t\tnames[key.iface] = struct{}{}\n866: \t\t}\n867: \t}\n868: \n869: \treturn names\n870: }\n871: \n872: func (c *CLab) applyEndpointDiscoveryNodes(plan *applyPlan) map[string]clablinks.Node {\n873: \tnodes := make(map[string]clablinks.Node, len(c.Nodes)+2)\n874: \tfor nodeName, node := range c.Nodes {\n875: \t\tnodes[nodeName] = node\n876: \t}\n877: \n878: \tfor _, key := range sortedEndpointKeys(plan.desiredEndpointSet) {\n879: \t\tif _, exists := nodes[key.node]; exists {\n880: \t\t\tcontinue\n881: \t\t}\n882: \t\tif node, exists := c.applyLinkNode(key.node); exists {\n883: \t\t\tnodes[key.node] = node\n884: \t\t}\n885: \t}\n886: \n887: \treturn nodes\n888: }\n889: \n890: func (c *CLab) applyLinkNode(nodeName string) (clablinks.Node, bool) {\n891: \tif node, exists := c.Nodes[nodeName]; exists {\n892: \t\treturn node, true\n893: \t}\n894: \tnode, exists := c.getSpecialLinkNodes()[nodeName]\n895: \treturn node, exists\n896: }\n897: \n898: func isApplySpecialNode(nodeName string) bool {\n899: \treturn nodeName == \"host\" || nodeName == \"mgmt-net\"\n900: }\n901: \n902: func (c *CLab) planAffectedApplyNode(\n903: \tctx context.Context,\n904: \tplan *applyPlan,\n905: \tnodeName string,\n906: \tchange string,\n907: ) {\n908: \tif nodeName == \"\" {\n909: \t\treturn\n910: \t}\n911: \tif _, planned := plan.linkRestartNodeSet[nodeName]; planned {\n912: \t\treturn\n913: \t}\n914: \tif _, planned := plan.recreatedNodeSet[nodeName]; planned {\n\n(Showing lines 840-914 of 1385. Use offset=915 to continue.)\n</content>",
+            "title": "source/head/core/topology_reconcile.go",
+            "metadata": {
+              "preview": "\tif !exists || node.Config() == nil || node.Config().LongName == \"\" {\n\t\treturn nil, false\n\t}\n\n\tparkPath, err := clabutils.GetNamedNetNS(\n\t\tclabutils.ParkingNetnsName(node.Config().LongName),\n\t)\n\tif err != nil {\n\t\treturn nil, false\n\t}\n\n\treturn clablinks.NewParkingNode(node.Config().LongName, parkPath), true\n}\n\nfunc (c *CLab) applyKnownEndpointNames(\n\tplan *applyPlan,\n\tnodeName string,\n) map[string]struct{} {\n\tif !isApplySpecialNode(nodeName) {\n\t\treturn nil",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/topology_reconcile.go",
+                "text": "\tif !exists || node.Config() == nil || node.Config().LongName == \"\" {\n\t\treturn nil, false\n\t}\n\n\tparkPath, err := clabutils.GetNamedNetNS(\n\t\tclabutils.ParkingNetnsName(node.Config().LongName),\n\t)\n\tif err != nil {\n\t\treturn nil, false\n\t}\n\n\treturn clablinks.NewParkingNode(node.Config().LongName, parkPath), true\n}\n\nfunc (c *CLab) applyKnownEndpointNames(\n\tplan *applyPlan,\n\tnodeName string,\n) map[string]struct{} {\n\tif !isApplySpecialNode(nodeName) {\n\t\treturn nil\n\t}\n\n\tnames := map[string]struct{}{}\n\tfor key := range plan.desiredEndpointSet {\n\t\tif key.node == nodeName {\n\t\t\tnames[key.iface] = struct{}{}\n\t\t}\n\t}\n\n\treturn names\n}\n\nfunc (c *CLab) applyEndpointDiscoveryNodes(plan *applyPlan) map[string]clablinks.Node {\n\tnodes := make(map[string]clablinks.Node, len(c.Nodes)+2)\n\tfor nodeName, node := range c.Nodes {\n\t\tnodes[nodeName] = node\n\t}\n\n\tfor _, key := range sortedEndpointKeys(plan.desiredEndpointSet) {\n\t\tif _, exists := nodes[key.node]; exists {\n\t\t\tcontinue\n\t\t}\n\t\tif node, exists := c.applyLinkNode(key.node); exists {\n\t\t\tnodes[key.node] = node\n\t\t}\n\t}\n\n\treturn nodes\n}\n\nfunc (c *CLab) applyLinkNode(nodeName string) (clablinks.Node, bool) {\n\tif node, exists := c.Nodes[nodeName]; exists {\n\t\treturn node, true\n\t}\n\tnode, exists := c.getSpecialLinkNodes()[nodeName]\n\treturn node, exists\n}\n\nfunc isApplySpecialNode(nodeName string) bool {\n\treturn nodeName == \"host\" || nodeName == \"mgmt-net\"\n}\n\nfunc (c *CLab) planAffectedApplyNode(\n\tctx context.Context,\n\tplan *applyPlan,\n\tnodeName string,\n\tchange string,\n) {\n\tif nodeName == \"\" {\n\t\treturn\n\t}\n\tif _, planned := plan.linkRestartNodeSet[nodeName]; planned {\n\t\treturn\n\t}\n\tif _, planned := plan.recreatedNodeSet[nodeName]; planned {",
+                "lineStart": 840,
+                "lineEnd": 914,
+                "totalLines": 1385,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190845509,
+              "end": 1795190845516
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b6704e001Jro9N2XnPFltqd",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b66877001DnChCC0Mgz15j6",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 70884,
+            "input": 132,
+            "output": 31,
+            "reasoning": 1,
+            "cache": {
+              "read": 70720,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b6705b001dzXok3R3Z2eXzI",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190845531,
+          "completed": 1795190869051
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 73203,
+          "input": 820,
+          "output": 63,
+          "reasoning": 1472,
+          "cache": {
+            "read": 70848,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b6792a0010nKpYndpFUbpF7",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6705b001dzXok3R3Z2eXzI"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b6792c001I8TtfW0BB5eEH1",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6705b001dzXok3R3Z2eXzI",
+          "text": "`applyKnownEndpointNames` returns `nil` for non-special nodes (regular nodes like c1)! So for c1, `knownIfaceNames` is nil → the filter is skipped (line 60: `if knownIfaceNames != nil`) → ALL owned ifaces (lo/eth0 excluded) are discovered, including stale eth1. So in the rewire scenario, c1:eth1 IS discovered → stale → deleted at step 1 (RemoveOwnedInterface deletes the veth end → pair destroyed → bridge port destroyed) → then parking (step 2) fails to find the port by altname → apply ERROR, persistent (port gone; next apply re-plans migration from unchanged state → parking fails again). Hard persistent failure.\n\nWait — but hold on: `discoverLiveApplyEndpoints` for c1 — is c1 in `plan.currentNodes` and not skipped? c1 stays (not deleted/recreated) → discovered. Discovery uses `n` = c1 node. DiscoverOwnedInterfacesFor with ownerName = ownershipName(c1) — scans c1's netns, finds eth1 (owned, has altname) → discovered → liveEndpointSet has c1:eth1 → not desired → stale → deleteApplyEndpoints → RemoveOwnedInterface(c1, eth1) → LinkDel on eth1 → veth pair destroyed → bridge port c1eth1 GONE.\n\nThen parkMigratedBridgeNSPorts: ParkBridgePortByOwnership → findLinkByOwnershipAltName(\"br01|bp1\", \"c1eth1\") in bp1's netns → not found → ERROR → apply aborts. Persistent on retry (state unchanged, migration replanned, port still gone). The lab becomes unusable until `destroy`. \n\nHmm wait — but actually is the stale deletion really of the whole pair? RemoveOwnedInterface → LinkDel on the client end eth1 → both ends destroyed. Yes.\n\nBut wait, one nuance: the stale endpoint c1:eth1 — the ref.node is c1, LinkEndpointType veth → the non-BridgeNS branch → RemoveOwnedInterface. Yes.\n\nSo BOTH the rewire case and the client-removed case end in hard, persistent apply failure (the rewire case because the pair is destroyed by stale-endpoint deletion before parking; the client-removed case because the container teardown destroys the peer after parking). Plus the silent-miswiring variant I hypothesized earlier doesn't apply since knownIfaceNames is nil for regular nodes → the rewire case errors instead of silently mis-wiring. Good — that simplifies the finding: same root cause, hard persistent failure.\n\nHmm, but wait: one more scenario for the rewire case — what if the client end is NOT discovered because c1 is recreated (parked)? Then parkRecreatedNodes handles it and both ends survive. Fine.\n\nAlso — what if the bridge moves but the port is claimed by a link whose client is a node that is being ADDED (not existing yet)? E.g., new link c2:eth1–br02|bp1:c1eth1, c2 is a new node. c1 removed. Old state loop plans migration (stale br01|bp1:c1eth1, new claim br02|bp1:c1eth1). Parking: port parked. c1 container deleted → peer destroyed → parked end destroyed. Restore fails. Same as before. Yes.\n\nSo the P2 finding stands: `addBridgeNSMigrationCandidate` matches candidates by bridge-side port name only, without verifying the client-side peer is preserved. When the old port's peer end is destroyed during the same apply (stale client endpoint deletion, or client node removal), the migration fails at parking or restore and — because a failed apply never persists the new state — every subsequent apply fails identically until the lab is destroyed.\n\nWait, one more check on the persistence claim: on retry, does parking fail? On retry, the live discovery: c1:eth1 gone (c1 removed or stale-deleted); bridge port c1eth1 gone (pair destroyed). Old state still has br01|bp1 link. Migration planned again (same logic). parkMigratedBridgeNSPorts → ParkBridgePortByOwnership → findLinkByOwnershipAltName fails → error. Yes, persistent. UNLESS the user manually destroys.\n\nAlso the old-parent-removed abort: persistent too (nothing mutated). Combine as same finding? They're distinct triggers of one root cause: migration planned without validating feasibility. I'll merge into one finding with both trigger variants. Actually, hmm, let me reconsider: the instruction says one finding per root cause. Root cause = planning doesn't validate that the migration is safe/possible (parent resolvable + client peer preserved). Yes, one finding.\n\nSeverity: P2 (reliability defect with persistent failure on a plausible user operation). Could argue P1 since it bricks the lab's apply. The prior summary called it P2. Keep P2.\n\nNow let me also double-check the claim \"failed apply never persists new state\": apply returns error before finalize/writeState → state file unchanged. Yes (apply.go: if any step errors → return nil, err before finalize). Confirmed at lines 207-241: each returns on error, finalize at 261 only on success path.\n\nNow the remaining checks:\n1. Docs: check docs/manual/kinds/bridge.md — does it document BridgeNS (network-mode container:)? And does the PR need to document the new reconcile/migration behavior? The changed paths don't include docs. Let me look at the docs file (head) to see if BridgeNS is documented. Also check if there's an \"apply\" doc mentioning migrations. If BridgeNS is already documented (pre-existing), then migration behavior is an internal improvement — doc obligation is low. Let me quickly check.\n2. Schema: no schema changes; BridgeNS uses existing properties. Fine.\n3. Check remaining head files fully reviewed? links/migration.go fully read. utils/netlink.go diff read. core/apply.go read (relevant). core/runtime_state.go diff read. core/config.go diff read. nodes/node.go diff read. nodes/bridge/bridge.go — partially; let me check the CheckDeploymentConditions in head (350+) to compare with base (pre-existing slice risk). And waitForParentContainer.\n4. Also the `bridgeNSMigParentNode` error path: note that `bridgeNSParentNode` first checks c.Nodes[ref.key.node] — for the normal live case ref.key.node is a desired bridge. Fine.\n5. Check apply_test.go new tests: do they cover migration? Let me check the new tests in core (TestPlanApply...?). grep test names in apply_test diff — the diff showed only mock additions. So unit tests don't cover migration; robot tests cover move/drift/add/remove. The defect scenarios (client rewire/remove during move) are NOT covered → recommend smallest check: a unit test on planBridgeNSMigrations/addBridgeNSMigrationCandidate guard.\n\nLet me check docs and the head CheckDeploymentConditions quickly, then wrap up.",
+          "time": {
+            "start": 1795190847788,
+            "end": 1795190868858
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b6cb7d001dyf0TCETNcMYA2",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6705b001dzXok3R3Z2eXzI",
+          "callID": "call_a0996d4d57224f9fbe1e8291",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/bridge/bridge.go",
+              "limit": 50,
+              "offset": 350
+            },
+            "output": "<path>/source/head/nodes/bridge/bridge.go</path>\n<type>file</type>\n<content>\n350: func (b *bridge) CheckDeploymentConditions(ctx context.Context) error {\n351: \terr := b.VerifyHostRequirements()\n352: \tif err != nil {\n353: \t\treturn err\n354: \t}\n355: \n356: \tif strings.HasPrefix(b.Cfg.NetworkMode, \"container:\") {\n357: \t\tif b.Cfg.NetworkMode[10:] != b.GetShortName()[len(b.nameWithoutSeparatorSuffix())+1:] {\n358: \t\t\treturn fmt.Errorf(\"container based bridge requires container name as suffix %s != %s\",\n359: \t\t\t\tb.Cfg.NetworkMode[10:], b.GetShortName()[len(b.nameWithoutSeparatorSuffix())+1:])\n360: \t\t}\n361: \t}\n362: \n363: \t// check bridge exists only if host ns\n364: \tif b.containerNs == \"\" {\n365: \t\terr = b.ExecFunction(ctx, func(nn ns.NetNS) error {\n366: \t\t\t// check bridge exists\n367: \t\t\t_, err = clabutils.BridgeByName(b.nameWithoutSeparatorSuffix())\n368: \t\t\tif err != nil {\n369: \t\t\t\treturn err\n370: \t\t\t}\n371: \t\t\treturn nil\n372: \t\t})\n373: \t}\n374: \n375: \treturn err\n376: }\n377: \n378: func (*bridge) PullImage(_ context.Context) error { return nil }\n379: \n380: // LinkApplyMode returns live: bridge enslaving/enslave-detach is hot-swappable\n381: // netlink work, so adding/removing/retargeting bridge ports must not restart or\n382: // recreate the bridge node. Intact links keep their endpoints untouched.\n383: func (*bridge) LinkApplyMode(context.Context) clabnodes.LinkApplyMode {\n384: \treturn clabnodes.LinkApplyModeLive\n385: }\n386: \n387: // UpdateConfigWithRuntimeInfo is a noop for bridges.\n388: func (*bridge) UpdateConfigWithRuntimeInfo(_ context.Context) error { return nil }\n389: \n390: // GetContainers is a noop for bridges.\n391: func (*bridge) GetContainers(_ context.Context) ([]clabruntime.GenericContainer, error) {\n392: \treturn nil, nil\n393: }\n394: \n395: // RunExec is a noop for bridge kind.\n396: func (b *bridge) RunExec(_ context.Context, _ *clabexec.ExecCmd) (*clabexec.ExecResult, error) {\n397: \tlog.Warnf(\"Exec operation is not implemented for kind %q\", b.Config().Kind)\n398: \treturn nil, clabexec.ErrRunExecNotSupported\n399: }\n\n(Showing lines 350-399 of 507. Use offset=400 to continue.)\n</content>",
+            "title": "source/head/nodes/bridge/bridge.go",
+            "metadata": {
+              "preview": "func (b *bridge) CheckDeploymentConditions(ctx context.Context) error {\n\terr := b.VerifyHostRequirements()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif strings.HasPrefix(b.Cfg.NetworkMode, \"container:\") {\n\t\tif b.Cfg.NetworkMode[10:] != b.GetShortName()[len(b.nameWithoutSeparatorSuffix())+1:] {\n\t\t\treturn fmt.Errorf(\"container based bridge requires container name as suffix %s != %s\",\n\t\t\t\tb.Cfg.NetworkMode[10:], b.GetShortName()[len(b.nameWithoutSeparatorSuffix())+1:])\n\t\t}\n\t}\n\n\t// check bridge exists only if host ns\n\tif b.containerNs == \"\" {\n\t\terr = b.ExecFunction(ctx, func(nn ns.NetNS) error {\n\t\t\t// check bridge exists\n\t\t\t_, err = clabutils.BridgeByName(b.nameWithoutSeparatorSuffix())\n\t\t\tif err != nil {\n\t\t\t\treturn err",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/bridge/bridge.go",
+                "text": "func (b *bridge) CheckDeploymentConditions(ctx context.Context) error {\n\terr := b.VerifyHostRequirements()\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tif strings.HasPrefix(b.Cfg.NetworkMode, \"container:\") {\n\t\tif b.Cfg.NetworkMode[10:] != b.GetShortName()[len(b.nameWithoutSeparatorSuffix())+1:] {\n\t\t\treturn fmt.Errorf(\"container based bridge requires container name as suffix %s != %s\",\n\t\t\t\tb.Cfg.NetworkMode[10:], b.GetShortName()[len(b.nameWithoutSeparatorSuffix())+1:])\n\t\t}\n\t}\n\n\t// check bridge exists only if host ns\n\tif b.containerNs == \"\" {\n\t\terr = b.ExecFunction(ctx, func(nn ns.NetNS) error {\n\t\t\t// check bridge exists\n\t\t\t_, err = clabutils.BridgeByName(b.nameWithoutSeparatorSuffix())\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\treturn nil\n\t\t})\n\t}\n\n\treturn err\n}\n\nfunc (*bridge) PullImage(_ context.Context) error { return nil }\n\n// LinkApplyMode returns live: bridge enslaving/enslave-detach is hot-swappable\n// netlink work, so adding/removing/retargeting bridge ports must not restart or\n// recreate the bridge node. Intact links keep their endpoints untouched.\nfunc (*bridge) LinkApplyMode(context.Context) clabnodes.LinkApplyMode {\n\treturn clabnodes.LinkApplyModeLive\n}\n\n// UpdateConfigWithRuntimeInfo is a noop for bridges.\nfunc (*bridge) UpdateConfigWithRuntimeInfo(_ context.Context) error { return nil }\n\n// GetContainers is a noop for bridges.\nfunc (*bridge) GetContainers(_ context.Context) ([]clabruntime.GenericContainer, error) {\n\treturn nil, nil\n}\n\n// RunExec is a noop for bridge kind.\nfunc (b *bridge) RunExec(_ context.Context, _ *clabexec.ExecCmd) (*clabexec.ExecResult, error) {\n\tlog.Warnf(\"Exec operation is not implemented for kind %q\", b.Config().Kind)\n\treturn nil, clabexec.ErrRunExecNotSupported\n}",
+                "lineStart": 350,
+                "lineEnd": 399,
+                "totalLines": 507,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190868866,
+              "end": 1795190868873
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b6cc170015o8qVceXsStrI3",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6705b001dzXok3R3Z2eXzI",
+          "callID": "call_0594d2040e85475eb719b821",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/manual/kinds/bridge.md",
+              "pattern": "network-mode|container:|apply|reconcil"
+            },
+            "output": "Found 100 matches (more matches available)\n/source/head/docs/manual/kinds/huawei_vrp.md:\n  Line 33: to connect to a `bash` shell of a running -{{ kind_display_name }}- container:\n\n  Line 88: When startup config is provided the node will undergo a reboot cycle after applying the bootstrap config, thus the startup time will be twice as long as the node boots up without a config.\n\n\n/source/head/docs/manual/kinds/vr-vsrx.md:\n  Line 20:     to connect to a `bash` shell of a running Juniper vSRX container:\n\n\n/source/head/docs/manual/kinds/fdio_vpp.md:\n  Line 139: reconciles a running VPP dataplane with its configuration. It is meant to be re-entrant and\n\n\n/source/head/docs/manual/kinds/vr-ros.md:\n  Line 16:     to connect to a `bash` shell of a running MikroTik RouterOS container:\n\n\n/source/head/docs/manual/kinds/f5_bigipve.md:\n  Line 55: 2026-01-02 03:21:13,917: launch         INFO console apply: echo READY\n\n  Line 67: 2026-01-02 03:22:05,754: launch         INFO console apply: tmsh -c 'modify sys global-settings mgmt-dhcp disabled'\n\n  Line 68: 2026-01-02 03:22:06,808: launch         INFO console apply: tmsh -c 'create sys management-ip 172.20.20.3/24'\n\n  Line 69: 2026-01-02 03:22:07,373: launch         INFO console apply: tmsh -c 'delete sys management-route default'\n\n  Line 70: 2026-01-02 03:22:07,656: launch         INFO console apply: tmsh -c 'modify sys management-route default gateway 172.20.20.1'\n\n  Line 71: 2026-01-02 03:22:07,906: launch         INFO console apply: tmsh -c 'create sys management-route default gateway 172.20.20.1'\n\n  Line 72: 2026-01-02 03:22:08,272: launch         INFO console apply: tmsh -c 'modify auth user admin password TestL@b!234'\n\n  Line 73: 2026-01-02 03:22:09,938: launch         INFO console apply: tmsh -c 'save sys config'\n\n  Line 83: to connect to a `bash` shell of a running BIG-IP VE container:\n\n  Line 220: - If you override `PASSWORD` but it does not apply, ensure the value meets BIG-IP password complexity requirements; otherwise day-0 automation may reject it.\n\n\n/source/head/docs/manual/kinds/cisco_vios.md:\n  Line 41:     to connect to a `bash` shell of a running Cisco vIOS container:\n\n\n/source/head/docs/manual/kinds/vr-xrv9k.md:\n  Line 36:     to connect to a `bash` shell of a running Cisco XRv9k container:\n\n\n/source/head/docs/manual/kinds/vr-vjunosswitch.md:\n  Line 26:     to connect to a `bash` shell of a running Juniper vJunos-switch container:\n\n  Line 65: The following mapping rules apply to the interfaces:\n\n\n/source/head/docs/manual/kinds/vr-csr.md:\n  Line 22:     to connect to a `bash` shell of a running Cisco CSR1000v container:\n\n\n/source/head/docs/manual/kinds/ceos.md:\n  Line 38: to connect to a `bash` shell of a running ceos container:\n\n  Line 195: In order to align interfaces in this manner, the `INTFTYPE` environment variable must be set to `et` in the topology definition file and the links which are defined must be named `et`, as opposed to `eth`. This naming requirement does not apply to the `eth0` interface automatically created by containerlab. This is only required for links that are used for interconnection with other elements in a topology.\n\n  Line 374: `container:docker`  \n\n  Line 502: When running under WSL2 ceos datapath might appear not working. As of Feb 2022 users would need to manually enter the following iptables rules inside ceos container:\n\n\n/source/head/docs/manual/kinds/cisco_iol.md:\n  Line 48: to connect to a `bash` shell of a running -{{ kind_short_display_name }}- container:\n\n\n/source/head/docs/manual/kinds/vr-n9kv.md:\n  Line 43: to connect to a `bash` shell of a running -{{ kind_display_name }}- container:\n\n\n/source/head/docs/manual/kinds/checkpoint_cloudguard.md:\n  Line 27:     to connect to a `bash` shell of a running checkpoint_cloudguard container:\n\n\n/source/head/docs/manual/kinds/csrx.md:\n  Line 26: to connect to a `bash` shell of a running cSRX container:\n\n  Line 155: When a user starts a lab, containerlab creates a node directory for storing [configuration artifacts](../conf-artifacts.md). For `-{{ kind_code_name }}-` the following files and directories are created in the node directory and mounted into the container:\n\n\n/source/head/docs/manual/kinds/openbsd.md:\n  Line 26:     to connect to a `bash` shell of a running OpenBSD container:\n\n  Line 89: If the backup file is present upon the node's boot, it will be transferred to the node and extracted.The node will then reboot to apply the restored configuration.\n\n\n/source/head/docs/manual/kinds/frr.md:\n  Line 58: FRR's integrated shell is available in the container:\n\n\n/source/head/docs/manual/kinds/c8000.md:\n  Line 69:     to connect to a `bash` shell of a running c8000 container:\n\n  Line 131: To provide a user-defined config, take the [default configuration template](https://github.com/srl-labs/containerlab/blob/main/nodes/c8000/c8000.cfg) and add the necessary configuration commands without changing the rest of the file. This will result in proper automatic assignment of IP addresses to the management interface, as well as applying user-defined commands.\n\n\n/source/head/docs/manual/kinds/6wind_vsr.md:\n  Line 156: It is possible to make 6WIND VSR nodes to boot up with a user-defined startup config. With a [`startup-config`](../nodes.md#startup-config) property of the node/kind a user sets the path to the config file that will be mounted to a container:\n\n\n/source/head/docs/manual/kinds/vr-ftdv.md:\n  Line 20:     to connect to a `bash` shell of a running FTDv container:\n\n\n/source/head/docs/manual/kinds/vr-cat9kv.md:\n  Line 38: to connect to a `bash` shell of a running -{{ kind_display_name }}- container:\n\n\n/source/head/docs/manual/kinds/crpd.md:\n  Line 25:     to connect to a `bash` shell of a running cRPD container:\n\n  Line 134: It is possible to make cRPD nodes to boot up with a user-defined config instead of a built-in one. With a [`startup-config`](../nodes.md#startup-config) property of the node/kind a user sets the path to the config file that will be mounted to a container:\n\n\n/source/head/docs/manual/kinds/ciena_saos.md:\n  Line 84: The ports above are mapped to the following Linux interfaces inside the container:\n\n  Line 141: `rpc-error`, `access-denied`) fail the apply instead of being treated as success.\n\n  Line 142: The apply result is recorded in the container's `/state.json` — see\n\n  Line 157: Older SAOS 10.11 images may need longer apply timeouts. These can be set per\n\n  Line 165: The launcher records boot and config-apply progress in `/state.json` inside the\n\n  Line 178: * `meta` - extra detail, including the partial-config apply result\n\n  Line 188: The partial-config apply outcome is recorded under `meta`:\n\n  Line 193: | Skipped | `startup_partial_apply_status: \"skipped\"` with a `startup_partial_apply_warning` |\n\n  Line 194: | Failed | `startup_partial_apply_failed: true` and `startup_partial_apply_error: \"<reason>\"` |\n\n  Line 201: * Partial-config apply is **not supported when management passthrough is\n\n  Line 202:   enabled**. In that mode the launcher does not apply the partial config — it\n\n  Line 203:   records `startup_partial_apply_status=skipped` in `/state.json` (see\n\n  Line 242: apply configuration over NETCONF instead, provide an XML partial (for example\n\n\n/source/head/docs/manual/kinds/bridge.md:\n  Line 101: 1. use a namespace of another node using the `network-mode` field\n\n  Line 102: 2. use a special naming convention for the namespaced bridge, which includes the parent node name in the bridge after the `|` character. The bridge nodes name must be `<bridge-name>|<node-name>` whilst `<node-name>` must match the `network-mode: container:<node-name>`.\n\n  Line 110:        network-mode: container:bp1\n\n\n/source/head/docs/manual/kinds/cisco_asav.md:\n  Line 19: To connect to a `bash` shell of a running ASAv container:\n\n\n/source/head/docs/manual/kinds/vr-xrv.md:\n  Line 26:     to connect to a `bash` shell of a running Cisco XRv container:\n\n\n/source/head/docs/manual/kinds/freebsd.md:\n  Line 26:     to connect to a `bash` shell of a running FreeBSD container:\n\n  Line 89: If the backup file is present upon the node's boot, it will be transferred to the node and extracted. The node will then reboot to apply the restored configuration.\n\n\n/source/head/docs/manual/kinds/rare-freertr.md:\n  Line 34:     to connect to a `bash` shell of a running RARE/freeRtr container:\n\n\n/source/head/docs/manual/kinds/ext-container.md:\n  Line 41: `containerlab apply` can add and remove containerlab-owned interfaces on an external container.\n\n  Line 44: containerlab before running `apply`.\n\n\n/source/head/docs/manual/kinds/dell_sonic.md:\n  Line 92: When the startup config is provided, the default containerlab config is overridden and the startup config is used instead. The user-provided startup config file is copied over to the VM's `/etc/sonic/config_db.json` path and `sudo config load -y` command is executed to apply it.\n\n\n/source/head/docs/manual/kinds/vr-sros.md:\n  Line 31: to connect to a `bash` shell of a running Nokia SR OS container:\n\n  Line 53: or using [netconf-console2](https://github.com/hellt/netconf-console2-container) container:\n\n  Line 285: Since this initial configuration is meant to provide a bare minimum configuration to make the node operational, users will likely want to apply their own configuration to the node to enable some features or to configure some interfaces. This can be done by providing a user-defined configuration file using [`startup-config`](../nodes.md#startup-config) property of the node/kind.\n\n  Line 478: Nokia SR OS supports both MD-CLI (model-driven) and classic CLI modes. By default, containerlab uses the MD-CLI scrapligo platform (`nokia_sros`) to interact with vr-sros nodes for operations such as partial config apply and `save-config`.\n\n\n/source/head/docs/manual/kinds/vr-pan.md:\n  Line 22:     to connect to a `bash` shell of a running Palo Alto PA-VM container:\n\n\n/source/head/docs/manual/kinds/sros.md:\n  Line 271: 1. Containers must all run in the same Linux namespace. This is currently achieved using the `network-mode` directive in Containerlab[^2].\n\n  Line 500: 4. For a particular SR-SIM node, all its containers must be attached to the same Linux namespace using the `network-mode: container:<container-name>` directive. In the below examples, the container associated with the CPM-A is used.\n\n  Line 521:       network-mode: container:sr-sim\n\n  Line 547:       network-mode: container:sr-14s-a\n\n  Line 554:       network-mode: container:sr-14s-a\n\n  Line 560:       network-mode: container:sr-14s-a\n\n  Line 595:       network-mode: container:sr-2se-a\n\n  Line 614: Since this configuration is intended to provide the bare minimum to make the node operational, users will usually want to apply their own configuration to add features or configure interfaces. This can be done by providing a user-defined configuration file using [`startup-config`](../nodes.md#startup-config) property of the node/kind.\n\n  Line 770:       network-mode: container:sr-sim10\n\n  Line 773:       network-mode: container:sr-sim11\n\n  Line 901: [^2]: There are some caveats to this, for instance, if the container referred by the `network-mode` directive is stopped for any reason, all the other depending containers will stop working properly.\n\n\n/source/head/docs/manual/kinds/sonic-vs.md:\n  Line 45: to connect to a `bash` shell of a running sonic-vs container:\n\n\n/source/head/docs/manual/kinds/ale_vaos.md:\n  Line 18:     Containers with vAOS inside take about 3 minutes to boot and apply their configuration.\n\n\n/source/head/docs/manual/kinds/vr-aoscx.md:\n  Line 20:     to connect to a `bash` shell of a running vr-aoscx container:\n\n\n/source/head/docs/manual/kinds/vr-vqfx.md:\n  Line 23:     to connect to a `bash` shell of a running Juniper vQFX container:\n\n\n/source/head/docs/manual/kinds/vr-c8000v.md:\n  Line 35: to connect to a `bash` shell of a running c8000v container:\n\n  Line 62: A node with `network-mode: none` has no management interface, so data port numbering is shifted by 1 and starts at `1` and `eth1` is `Gi1`. See [ZTP mode](#ztp-mode).\n\n  Line 112: For **in-band** ZTP start the node with `network-mode: none`. The container is not attached to the management network (no `eth0`), however endpoint links for data interfaces may still be added by containerlab directly.\n\n  Line 121:       network-mode: none   # no management interface -> ZTP runs in-band\n\n\n/source/head/docs/manual/kinds/ipinfusion-ocnos.md:\n  Line 36:     to connect to a `bash` shell of a running ipinfusion_ocnos container:\n\n\n/source/head/docs/manual/kinds/vr-vjunosevolved.md:\n  Line 31:     to connect to a `bash` shell of a running Juniper vJunosEvolved container:\n\n\n/source/head/docs/manual/kinds/mikrotik_chr.md:\n  Line 41: The serial console is on port 5000 inside the container:\n\n\n/source/head/docs/manual/kinds/fortinet_fortigate.md:\n  Line 29: to connect to a `bash` shell of a running fortigate container:\n\n\n/source/head/docs/manual/kinds/xrd.md:\n  Line 58:     to connect to a XR CLI shell of a running XRd container:\n\n  Line 63:     to connect to a `bash` shell of a running XRd container:\n\n  Line 152: To provide a user-defined config, take the [default configuration template](https://github.com/srl-labs/containerlab/blob/main/nodes/xrd/xrd.cfg) and add the necessary configuration commands without changing the rest of the file. This will result in proper automatic assignment of IP addresses to the management interface, as well as applying user-defined commands.\n\n\n/source/head/docs/manual/kinds/vr-vmx.md:\n  Line 22:     to connect to a `bash` shell of a running Juniper vMX container:\n\n  Line 102: Note that startup-config file myconfig.txt must be in the flat \"set\" config format because the \"launch.py\" script within the Docker container use this format to apply the startup-config file. So the seed startup-config must be converted to the flat format. \n\n\n/source/head/docs/manual/kinds/vr-ftosv.md:\n  Line 23:     to connect to a `bash` shell of a running Dell FTOSv container:\n\n\n/source/head/docs/manual/kinds/k8s-kind.md:\n  Line 107: - [startup-config](../nodes.md#startup-config) - to provide a kind cluster configuration (optional, kind defaults apply otherwise)\n\n\n/source/head/docs/manual/kinds/srl.md:\n  Line 41: to connect to a `bash` shell of a running SR Linux container:\n\n  Line 477: Nodes with a user-defined [`network-mode`](../nodes.md#network-mode) do not use the internal container.\n\n\n(Results truncated. Consider using a more specific path or pattern.)",
+            "title": "network-mode|container:|apply|reconcil",
+            "metadata": {
+              "matches": 100,
+              "truncated": true
+            },
+            "time": {
+              "start": 1795190869022,
+              "end": 1795190869044
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b6cc37001yhWNg4B3yb2won",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6705b001dzXok3R3Z2eXzI",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 73203,
+            "input": 820,
+            "output": 63,
+            "reasoning": 1472,
+            "cache": {
+              "read": 70848,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b6cc47001AisVZp3fWcuU77",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190869063,
+          "completed": 1795190878381
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 78759,
+          "input": 4610,
+          "output": 43,
+          "reasoning": 1146,
+          "cache": {
+            "read": 72960,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b6d4f7001wTW1wdVzz4xsGE",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6cc47001AisVZp3fWcuU77"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b6d4f8001sof9yx0UpIvWIN",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6cc47001AisVZp3fWcuU77",
+          "text": "The bridge.md docs (head/docs/manual/kinds/bridge.md:101-110) document the BridgeNS feature (network-mode container: + `<bridge>|<node>` naming) — so the feature is documented (pre-existing doc, unchanged). Migration behavior is internal to apply — no doc obligation. Good, no docs finding.\n\nNow let me quickly double-check the `bridgeNSMigParentNode` behavior once more for the \"live bridge still desired\" case — fine.\n\nOne more potential issue I noted earlier: `restoreMigratedBridgeNSPorts` filters `plan.addedLinks` only when `mig.relocation != nil`. In the failed-abort scenario this doesn't matter.\n\nAlso `parkMigratedBridgeNSPorts`: for migrations from live-discovered stale endpoints (bridge node still desired, e.g. bridge recreated due to... hmm, when is a live-discovered stale BridgeNS endpoint re-claimed under a different bridge node? E.g., port moved from br01|bp1 to br02|bp1 while br01|bp1 is ALSO still desired (both bridges exist)? E.g., user re-cables c1 from br01 to br02 keeping port name c1eth1 on both? Old: c1:eth1–br01|bp1:c1eth1; new: c1:eth1–br02|bp1:c1eth1. Then: br01|bp1:c1eth1 is stale (live-discovered, node=br01|bp1 present in desired). Migration candidate: br02|bp1:c1eth1. Planned. deleteApplyEndpoints skips the bridge port (migration). c1:eth1 is desired (new link) → not stale. Parking: from bp1's netns by altname (br01|bp1, c1eth1) → parked. New bridge br02|bp1 created if needed... br02|bp1 may already exist. restore: moves port into bp1's netns, relabels to br02|bp1-c1eth1, re-enslaves to br02. Client c1:eth1 intact. Filter the new link from addedLinks. Result: correct! This is the single-bridge-port-move case — works. Good, this is the primary supported scenario and it works.\n\nBut note: the OLD bridge br01 remains in bp1's netns with no ports (leftover, pre-existing noop Delete). OK.\n\nNow — one more important scenario for the P2 finding: what if the OLD client end is stale and deleted but the pair is NOT destroyed because the bridge port was parked BEFORE deletion? No — deleteApplyEndpoints runs BEFORE parking. So the deletion destroys the pair before parking. Yes.\n\nHmm, wait — actually let me re-examine: is that true even in the primary supported scenario (bridge move, client same)? There, the client end c1:eth1 is DESIRED (the new link has the same client) → not stale → not deleted. Port parked at step 2. Fine.\n\nNow, one more check on finding #1's first variant (client removed): deleteApplyEndpoints — c1 removed from topology. Is c1:eth1 discovered? Discovery scans `desiredNodes` = c.applyEndpointDiscoveryNodes(plan) — desired nodes only + special link nodes. c1 not desired → not scanned. So c1:eth1 NOT stale-deleted. Container deletion (deleteApplyNodes) destroys the peer → parked end destroyed → restore fails \"parked interface %q not found in parking ns\". Persistent. Confirmed.\n\nActually hold on, let me also double-check `parkMigratedBridgeNSPorts` for this variant: the port IS found at parking time (before c1 deletion) → parked OK. Then deleteApplyNodes deletes c1's container. Then restore fails. Yes.\n\nHmm, and one more subtle thing: could `deleteApplyNodes` also fail because c1's container has interfaces with altnames? No, it just deletes the container.\n\nOK. Now let me also check the `enslaveBridgePortsInNamespace` PostDeploy interplay: after restore, bridge PostDeploy re-enslaves ports (already done in RestoreBridgePort). Fine.\n\nLet me also verify the claim about `CreateOrGetNamedNetNS` reuse: the parking netns name is `ParkingNetnsName(longName)` — per bridge longName. On the FIRST migration, CreateNamedNetNS creates /run/netns/<name> (bind mount). On restore success, UnlinkNamedNetNS → os.Remove fails EBUSY (ignored) → leak. On the SECOND migration, CreateOrGetNamedNetNS → GetNamedNetNS finds it → reuse. So the leak is bounded per bridge longName but persists after lab destroy (destroy doesn't clean parking netns of bridge migrations — check: does destroy clean up? `nodes/default_node.go` parkingNetNS cleanup uses netns.DeleteNamed for node parking; bridge parking netns named ParkingNetnsName(longName) — hmm, actually default_node.go:469 `netns.DeleteNamed(d.parkingNetNSName())` — what is parkingNetNSName? Let me check: it might be the same ParkingNetnsName(longName)! If the bridge uses ParkingNetnsName(longName) and default_node's parking netns uses the same name... For bridge nodes, DeleteNetnsSymlink is noop and bridge has no DefaultNode? bridge embeds DefaultNode? Let me check ParkingNetnsName and parkingNetNSName.",
+          "time": {
+            "start": 1795190871288,
+            "end": 1795190878310
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b6f06c00184TKyNqF0lYpKv",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6cc47001AisVZp3fWcuU77",
+          "callID": "call_edb53e2c84fb4b4582241c83",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head",
+              "pattern": "func ParkingNetnsName|func \\(d \\*DefaultNode\\) parkingNetNSName|parkingNetNSName\\(\\)"
+            },
+            "output": "Found 5 matches\n/source/head/utils/netlink.go:\n  Line 93: func ParkingNetnsName(containerName string) string {\n\n\n/source/head/nodes/default_node.go:\n  Line 455: func (d *DefaultNode) parkingNetNSName() string {\n\n  Line 460: \treturn clabutils.GetNamedNetNS(d.parkingNetNSName())\n\n  Line 469: \treturn netns.DeleteNamed(d.parkingNetNSName())\n\n  Line 1174: \tparkPath, err := clabutils.CreateOrGetNamedNetNS(d.parkingNetNSName())\n",
+            "title": "func ParkingNetnsName|func \\(d \\*DefaultNode\\) parkingNetNSName|parkingNetNSName\\(\\)",
+            "metadata": {
+              "matches": 5,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795190878328,
+              "end": 1795190878375
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b6f0aa001b4amuZZTIhd5Av",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6cc47001AisVZp3fWcuU77",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 78759,
+            "input": 4610,
+            "output": 43,
+            "reasoning": 1146,
+            "cache": {
+              "read": 72960,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b6f0b9001y6mtuFv29DmPeT",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190878393,
+          "completed": 1795190880521
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 78945,
+          "input": 1322,
+          "output": 54,
+          "reasoning": 1,
+          "cache": {
+            "read": 77568,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b6f857001XgfsYTdNM2hucf",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f0b9001y6mtuFv29DmPeT"
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b6f8a3001BxkEd9zyrPW631",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f0b9001y6mtuFv29DmPeT",
+          "callID": "call_cbdf8d67095040159c1297f5",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/utils/netlink.go",
+              "limit": 20,
+              "offset": 88
+            },
+            "output": "<path>/source/head/utils/netlink.go</path>\n<type>file</type>\n<content>\n88: \treturn nil\n89: }\n90: \n91: // ParkingNetnsName returns the deterministic named-netns identifier used to park\n92: // a container's dataplane interfaces while the container is stopped.\n93: func ParkingNetnsName(containerName string) string {\n94: \tname := parkingNetnsPrefix + containerName\n95: \tif len(name) <= maxParkingNetnsNameLen {\n96: \t\treturn name\n97: \t}\n98: \n99: \tsum := sha1.Sum([]byte(containerName))\n100: \tsuffix := hex.EncodeToString(sum[:])[:10]\n101: \n102: \t// leave room for \"-\" + suffix\n103: \tmaxBaseLen := maxParkingNetnsNameLen - 1 - len(suffix)\n104: \tif maxBaseLen < 1 {\n105: \t\treturn suffix\n106: \t}\n107: \n\n(Showing lines 88-107 of 258. Use offset=108 to continue.)\n</content>",
+            "title": "source/head/utils/netlink.go",
+            "metadata": {
+              "preview": "\treturn nil\n}\n\n// ParkingNetnsName returns the deterministic named-netns identifier used to park\n// a container's dataplane interfaces while the container is stopped.\nfunc ParkingNetnsName(containerName string) string {\n\tname := parkingNetnsPrefix + containerName\n\tif len(name) <= maxParkingNetnsNameLen {\n\t\treturn name\n\t}\n\n\tsum := sha1.Sum([]byte(containerName))\n\tsuffix := hex.EncodeToString(sum[:])[:10]\n\n\t// leave room for \"-\" + suffix\n\tmaxBaseLen := maxParkingNetnsNameLen - 1 - len(suffix)\n\tif maxBaseLen < 1 {\n\t\treturn suffix\n\t}\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/utils/netlink.go",
+                "text": "\treturn nil\n}\n\n// ParkingNetnsName returns the deterministic named-netns identifier used to park\n// a container's dataplane interfaces while the container is stopped.\nfunc ParkingNetnsName(containerName string) string {\n\tname := parkingNetnsPrefix + containerName\n\tif len(name) <= maxParkingNetnsNameLen {\n\t\treturn name\n\t}\n\n\tsum := sha1.Sum([]byte(containerName))\n\tsuffix := hex.EncodeToString(sum[:])[:10]\n\n\t// leave room for \"-\" + suffix\n\tmaxBaseLen := maxParkingNetnsNameLen - 1 - len(suffix)\n\tif maxBaseLen < 1 {\n\t\treturn suffix\n\t}\n",
+                "lineStart": 88,
+                "lineEnd": 107,
+                "totalLines": 258,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190880424,
+              "end": 1795190880429
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_1f9b6f8f8001iAdUzZeOLLRTkU",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f0b9001y6mtuFv29DmPeT",
+          "callID": "call_5878658e91c84cce9adf0a95",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/default_node.go",
+              "limit": 25,
+              "offset": 450
+            },
+            "output": "<path>/source/head/nodes/default_node.go</path>\n<type>file</type>\n<content>\n450: \t}\n451: \n452: \treturn result, nil\n453: }\n454: \n455: func (d *DefaultNode) parkingNetNSName() string {\n456: \treturn clabutils.ParkingNetnsName(d.Cfg.LongName)\n457: }\n458: \n459: func (d *DefaultNode) parkingNetNSPath() (string, error) {\n460: \treturn clabutils.GetNamedNetNS(d.parkingNetNSName())\n461: }\n462: \n463: // cleanupParkingNetNS removes the node-owned parking namespace if it exists.\n464: func (d *DefaultNode) cleanupParkingNetNS() error {\n465: \tif _, err := d.parkingNetNSPath(); err != nil {\n466: \t\treturn nil\n467: \t}\n468: \n469: \treturn netns.DeleteNamed(d.parkingNetNSName())\n470: }\n471: \n472: func (d *DefaultNode) Delete(ctx context.Context) error {\n473: \tfor _, e := range d.Endpoints {\n474: \t\terr := e.GetLink().Remove(ctx)\n\n(Showing lines 450-474 of 1334. Use offset=475 to continue.)\n</content>",
+            "title": "source/head/nodes/default_node.go",
+            "metadata": {
+              "preview": "\t}\n\n\treturn result, nil\n}\n\nfunc (d *DefaultNode) parkingNetNSName() string {\n\treturn clabutils.ParkingNetnsName(d.Cfg.LongName)\n}\n\nfunc (d *DefaultNode) parkingNetNSPath() (string, error) {\n\treturn clabutils.GetNamedNetNS(d.parkingNetNSName())\n}\n\n// cleanupParkingNetNS removes the node-owned parking namespace if it exists.\nfunc (d *DefaultNode) cleanupParkingNetNS() error {\n\tif _, err := d.parkingNetNSPath(); err != nil {\n\t\treturn nil\n\t}\n\n\treturn netns.DeleteNamed(d.parkingNetNSName())",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/default_node.go",
+                "text": "\t}\n\n\treturn result, nil\n}\n\nfunc (d *DefaultNode) parkingNetNSName() string {\n\treturn clabutils.ParkingNetnsName(d.Cfg.LongName)\n}\n\nfunc (d *DefaultNode) parkingNetNSPath() (string, error) {\n\treturn clabutils.GetNamedNetNS(d.parkingNetNSName())\n}\n\n// cleanupParkingNetNS removes the node-owned parking namespace if it exists.\nfunc (d *DefaultNode) cleanupParkingNetNS() error {\n\tif _, err := d.parkingNetNSPath(); err != nil {\n\t\treturn nil\n\t}\n\n\treturn netns.DeleteNamed(d.parkingNetNSName())\n}\n\nfunc (d *DefaultNode) Delete(ctx context.Context) error {\n\tfor _, e := range d.Endpoints {\n\t\terr := e.GetLink().Remove(ctx)",
+                "lineStart": 450,
+                "lineEnd": 474,
+                "totalLines": 1334,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795190880508,
+              "end": 1795190880516
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b6f906001gPoLWB5D556euB",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f0b9001y6mtuFv29DmPeT",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 78945,
+            "input": 1322,
+            "output": 54,
+            "reasoning": 1,
+            "cache": {
+              "read": 77568,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b6f914001Nz5PeAzOQ156Cn",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190880532,
+          "completed": 1795190946288
+        },
+        "parentID": "msg_1f9b32d10001inCoD5zZZbQV4A",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 89697,
+          "input": 1084,
+          "output": 6227,
+          "reasoning": 3986,
+          "cache": {
+            "read": 78400,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_1f9b70197001ckzfCn2bdCUUPA",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f914001Nz5PeAzOQ156Cn"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_1f9b701990014C3QkiU1yVitKQ",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f914001Nz5PeAzOQ156Cn",
+          "text": "Confirmed: the established cleanup pattern is `netns.DeleteNamed` (umount + unlink). The new `UnlinkNamedNetNS` uses `os.Remove` which fails with EBUSY on the bind-mounted `/run/netns/<name>` created by `netns.NewNamed` (utils/netlink.go:201). Both callers ignore the error (`_ =`), so every bridge-port migration leaks a parking netns entry in `/run/netns`. Note: it's per bridge longName (reused on subsequent migrations), persists after lab destroy, and pollutes `/run/netns` (visible to `ip netns list`, and Docker/other tools). P2 leak, straightforward fix: use `netns.DeleteNamed`.\n\nWait — one nuance: is the EBUSY failure certain? `netns.NewNamed` creates the file and bind-mounts the netns onto it. `os.Remove` (unlink) on a mount point: for a bind-mounted regular file, unlink returns EBUSY (\"Device or resource busy\"). Yes — this is exactly why `ip netns del` does umount2 then unlink, and why `netns.DeleteNamed` exists. Solid.\n\nAlso the error-path caller (line 79) leaks too but the netns was just created (empty); same leak.\n\nAdditionally: leaked parking netns keeps no processes; it's just a mountpoint + an idle netns reference. A leaked netns with... actually the netns file bind-mounts the net namespace; if interfaces were parked inside and restore failed (apply aborted mid-way), the parked interfaces stay alive in the leaked netns — that's actually the \"recovery\" mechanism? No — there's no recovery path for parked bridge ports on failed apply (next apply re-plans the migration; parking is CreateOrGet so the netns is reused — but the parked port is destroyed if the peer died). Hmm — actually, in the aborted case where the port was successfully parked but restore failed for another reason, the parked end persists in the leaked/reused netns, and the NEXT apply's migration would... plan the migration again (state unchanged) → park again → findLinkByOwnershipAltName in the PARENT's netns → port is not there (it's in parking) → error. So an aborted apply after parking ALSO bricks subsequent applies. That's another manifestation of the same class but different root (no recovery for interrupted migration). Hmm — worth mentioning? The migration has no journaling/recovery: a failure between park and restore leaves the port in the parking netns with the altname of the OLD bridge, invisible to discovery, and every subsequent apply fails at parking with \"no interface carries the ownership marker\". This is a robustness gap in the new migration flow: failure between park and restore is unrecoverable. Is this introduced by the PR? Yes — the parking mechanism is new. The trigger: any error between park and restore (e.g., new bridge node deploy failure, or the P2 peer-destruction case). Impact: persistent failure. I could fold this into the same finding (robustness of migration flow) or report separately. The root cause differs (no recovery vs. no validation). But the correction for both is related. I think the peer-destruction finding is the concrete demonstrated defect; the no-recovery-on-abort is a broader robustness gap that I can fold in as part of the same finding's impact, or a separate P3. Given \"one finding per root cause\", I'll keep the planning-validation finding (P2) and mention in coverage notes the recovery gap... Actually no — the recovery gap has its own trigger (any failure between park and restore) and its own correction (idempotent parking: if the port is already in the parking netns, proceed to restore instead of erroring). Hmm. Let me think about whether to report it.\n\nActually wait — reconsider: on the next apply after an aborted post-park failure, `parkMigratedBridgeNSPorts` errors at findLinkByOwnershipAltName because the port is in the parking netns, not the parent's. If instead parking were idempotent (check parking netns first), the flow would recover. That's a genuine, distinct, actionable defect: interrupted migration is unrecoverable. But its trigger requires a failure in between (e.g., the parent container deploy fails, or migration target missing). Given my main P2 already covers the most likely trigger (peer destruction) which ALSO ends in a persistent failure, and the recovery issue would fix persistence for OTHER failure causes... I'll report the planning-validation P2 as the primary finding and add a P3 for the missing recovery path. Hmm, is that over-reporting? Let me weigh: the P2 already establishes \"apply permanently fails\". The recovery P3 addresses a different trigger. I think one combined finding is cleaner: \"Bridge port migration is not resilient: invalid candidates are planned, and an interrupted migration cannot be resumed\". Correction: (1) validate candidates (skip when old parent unresolvable or client endpoint not preserved), (2) make parking idempotent so a parked port can be restored by a subsequent apply. Actually (2) alone doesn't fix the peer-destruction case (the port is gone entirely). They're genuinely different fixes. I'll report the planning/validation issue as the P2 finding, and keep the recovery gap as a P3 finding.\n\nHmm, actually wait. Let me reconsider the recovery gap once more: is there truly no path that recovers a parked port? On next apply: migration replanned (from old state), parking fails → error. What if the migration is NOT replanned? It is, because the state is unchanged. And what if the state WERE updated (apply succeeded)? Then no migration planned; the parked port is invisible garbage. So yes: after any interrupted migration, subsequent applies either error or silently lose the port. The fix: make ParkBridgePortByOwnership check the parking netns first (if the ownership altname is already there, skip parking). That's small and valuable. OK, P3.\n\nHmm, wait — actually, if the state is unchanged and the port is already parked, parking (fixed to be idempotent) → restore proceeds → recovers. Yes, that fixes recovery for interruptions AFTER parking.\n\nNow, let me also consider: during parkMigratedBridgeNSPorts, ParkBridgePortByOwnership calls CreateOrGetNamedNetNS which LEAKS even on the success path... covered by the leak finding.\n\nNow let me finalize the finding list:\n\n1. P2 — `addBridgeNSMigrationCandidate` plans migrations by bridge-side port-name match only; migration proceeds even when the client-side peer will be destroyed in the same apply (client node removed, or stale client endpoint deleted before parking) or when the old bridge's parent is no longer in the desired topology. Result: hard apply failure at park/restore that persists on every retry (state not persisted on failed apply), forcing `destroy`. Location: head/core/topology_reconcile.go:482-518 (also core/apply_bridge_migration.go:17-34).\n\n2. P2 — `UnlinkNamedNetNS` cannot remove bind-mounted netns; parking netns leaks. Location: head/utils/netlink.go:233-240; callers links/migration.go:79,178.\n\n3. P3 — Interrupted migration is unrecoverable: parking is not idempotent; a port already parked makes the next apply fail at `findLinkByOwnershipAltName`. Location: head/links/migration.go:57-77 (specifically 58-61) / head/core/apply_bridge_migration.go:69-78. Correction: check parking netns for the ownership altname before parking (or fall back to restoring from parking).\n\n4. P4 — Dead code `LinkDeploymentStateSetter` + `LinkVEth.SetDeploymentState` (no callers), and the comment in `restoreMigratedBridgeNSPorts` claims a nonexistent mechanism (\"The corresponding live link is marked full-deployed...\") while the actual mechanism is filtering `plan.addedLinks`. Location: head/links/apply.go:79-84, head/links/link_veth.go:156-159, head/core/apply_bridge_migration.go:89-90.\n\n5. P4 — `enslaveBridgePortsInNamespace` type-asserts `bridgeLink.(*netlink.Bridge)` (head/nodes/bridge/bridge.go:308); a same-named non-bridge device would panic the apply. Use `bridgeLink.Attrs().Index` instead. Optional hardening. Should I include? The assert is on a LinkByName result for the bridge's own name — if a veth named br01 existed (leftover from a weird state), LinkByName returns *netlink.Veth → panic. Plausible? Bridge nodes named br01 could conflict with a leftover veth from a prior crashed apply where a port got the name... port names come from endpoint names; a link endpoint named \"br01\" is possible if the user names a client port br01! E.g., user has a client with interface br01 and a bridge named br01 — then LinkByName(br01) inside the parent's netns could return... the bridge is created first? Order matters. Actually the endpoint iface name \"br01\" on a client connected to the bridge — the port's kernel name would be sanitized \"br01\" — collision with the bridge name! Then LinkByName returns one of them (which one? by name — ambiguous). This is an edge case; the type assert is a panic risk in an error path. P4 is right.\n\n6. Coverage notes: leftover bridge interfaces after BridgeNS node removal (pre-existing `bridge.Delete` noop); `CheckDeploymentConditions` slice-out-of-range pre-existing (base:165); no docs change needed (BridgeNS documented in bridge.md; migration internal); schema unaffected; tests not executed.\n\nNow — line numbers for citations. I need exact head line numbers:\n- addBridgeNSMigrationCandidate: head/core/topology_reconcile.go:482-518 (from grep: 479 comment, 482 func, candidate loop ~497-517). Use 482-518.\n- bridgeNSMigParentNode: head/core/apply_bridge_migration.go:17-34.\n- UnlinkNamedNetNS: head/utils/netlink.go:233-240. Callers links/migration.go:79 and 178.\n- ParkBridgePortByOwnership: head/links/migration.go:38-84; the non-idempotent part: 57-77.\n- Dead code: head/links/apply.go:79-84; head/links/link_veth.go:156-159; misleading comment head/core/apply_bridge_migration.go:86-90 (comment lines 86-90; the claim is lines 89-90).\n- enslaveBridgePortsInNamespace assert: head/nodes/bridge/bridge.go:308.\n\nAlso double-check finding 1's claim about \"deleteApplyEndpoints deletes the stale client end before parking destroys the pair\": in the rewire case, is c1:eth1 really discovered? Discovery loop: `discoverLiveApplyEndpoints` — c1 is in `desiredNodes` (c.Nodes includes c1), c1 in plan.currentNodes (it exists) → scanned → DiscoverOwnedInterfacesFor(ctx, c1, \"clab-<lab>-c1\"?, nil) — knownIfaceNames = applyKnownEndpointNames → nil for non-special → all owned ifaces discovered. c1:eth1 owned (has altname clab...). Wait — is the ownershipName for a client node \"clab-<lab>-<node>\"? ownershipName(node) returns node.GetShortName() for regular nodes = \"c1\". And ownershipAltNameFor hashes nodeName+\"\\x00\"+ifaceName. HasOwnershipAltNameFor(link, \"c1\", \"eth1\") — the altname is a sha1 hash. Fine — the client end has the altname set at deploy time (addOwnershipAltName in SetNameMACAndUpInterface, executed for each endpoint). So yes, c1:eth1 is discovered → stale (not in desiredEndpointSet since the link now targets eth2) → deleted. Pair destroyed → parking fails. Confirmed.\n\nHmm — wait, one thing: is c1:eth1 in the liveEndpointSet → stale → deleteApplyEndpoints: `ref.node.GetLinkEndpointType()` = c1 (linux node) → veth → RemoveOwnedInterface(c1, \"eth1\") — removes eth1 in c1's netns → LinkDel → pair destroyed. Yes.\n\nBut hold on — would the rewire scenario ALSO plan a migration? The stale bridge endpoint br01|bp1:c1eth1 — desired has br02|bp1:c1eth1 (bridge moved to br02). Yes → migration planned → parking after deletion → fails. Also, even without a bridge move (bridge br01|bp1 stays, link re-cabled c1:eth1→c1:eth2): stale bridge endpoint br01|bp1:c1eth1; candidate: any desired BridgeNS endpoint with iface c1eth1 under different node? NO (br01|bp1:c1eth1 IS desired via new link c1:eth2–br01|bp1:c1eth1... wait the port name would then be c1eth1 still? If the user keeps port name c1eth1 on the bridge and just changes the client iface eth1→eth2: desired br01|bp1:c1eth1 exists → staleKey desired → no migration. Client c1:eth1 stale → deleted → pair destroyed → port gone → new link created fresh. Works.\n\nSo the failure requires the bridge-side port to move to a different bridge node while the client side changes. That's the narrow trigger. Good — precise trigger statement: \"the desired topology re-claims the port under a different in-container bridge while the port's client-side endpoint is deleted (link rewired to another interface/node) or its node is removed in the same apply\".\n\nBoth sub-variants end in persistent apply failure:\n- client rewire (c1 stays): stale client endpoint deleted at step 1 destroys pair → park step 2 fails → persistent.\n- client node removed: park succeeds, container teardown destroys peer → restore step 8 fails → persistent.\n- old parent removed: park step 2 fails with \"parent container not found\" → persistent (though nothing mutated).\n\nOne finding, P2.\n\nNow — one more sanity check on the \"client node removed\" variant: does `planParkedNodes`/parkRecreatedNodes matter? c1 is in deletedNodeSet, not recreatedNodeSet → no parking of c1's interfaces → container deletion destroys the netns. Confirmed.\n\nAnd what about `linkIntact`/classification of the new link — irrelevant to the failure.\n\nLet me also double check `removeApplyLinkEndpoints` is not the issue — runs after restore.\n\nOK. Also — one more possible issue: `restoreMigratedBridgeNSPorts` filters `plan.addedLinks` but what about `plan.deletedLinks`/`removedLinks`? Not relevant.\n\nAnd `parkMigratedBridgeNSPorts` parks only when `mig.relocation == nil` — i.e., all migrations get parked. But the doc comment on `bridgeNSMigration.relocation` says... fine.\n\nAlso check: `restoreRecreatedNodes` runs before `restoreMigratedBridgeNSPorts` — if the client was recreated, its ends are restored first; then bridge port restored. Peer index preserved (both ends parked). Good.\n\nNow, severity for finding 1: I'll go P2. Rationale: correctness/reliability defect in a new feature, plausible trigger, persistent failure but edge-case trigger. Hmm, the persistence (bricked until destroy) is nasty. P1 is \"high-impact merge blocker\". I think P2 is fair; the maintainer can decide. Actually — let me reconsider once more. The trigger \"remove a client and move the bridge in one apply\" — that IS a fairly plausible combined operation for someone using this feature (e.g., rebalancing). And the result is a permanently broken apply requiring destroy (losing all other node state? destroy --cleanup removes everything; then redeploy loses in-container config — the whole point of migration is preserving state). The impact is high but the feature itself is new. I'll keep P2 (correctness/reliability defect), noting persistence.\n\nWait, actually, one more consideration for finding 1: could the PR authors have deliberately accepted this (migration is best-effort)? The doc comment says \"the client-side endpoint and the veth pair itself stay valid\" — an assumption, not validation. No guard exists. It's a defect.\n\nNow write the final review. Include:\n- Summary table P2, P2, P3, P4, P4.\n- Details with links (head permalinks).\n- Coverage notes: files reviewed, what wasn't done (tests not executed), pre-existing items excluded (CheckDeploymentConditions slicing, bridge.Delete noop leftover bridges), docs/schema status.\n\nPermalink roots:\n- head: https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/\n- base: https://github.com/srl-labs/containerlab/blob/6e94d1e5e7c0b2c3b328cfd9037e42fb98e55040/\n\nPaths encoded (no special chars needed except none).\n\nJSON schema: findings array with priority/title/location{revision,path,start,end}/problem/trigger/impact/suggestion. Coverage with complete=true and notes.\n\nLet me now also double-check exact line numbers for a few citations by grepping line numbers I already have:\n- topology_reconcile.go addBridgeNSMigrationCandidate: 482 (func), through 518. ✓ (grep showed 482 func, isBridgeNSMigrationPlanned at 522 → so candidate ends ~518).\n- bridgeNSMigParentNode: apply_bridge_migration.go:17-34. ✓\n- UnlinkNamedNetNS: utils/netlink.go:233-240. ✓\n- links/migration.go:79 and 178. ✓\n- ParkBridgePortByOwnership parking step: 57-77 (the exec + findLinkByOwnershipAltName at 58). ✓\n- links/apply.go:79-84. ✓\n- links/link_veth.go:156-159. ✓\n- apply_bridge_migration.go comment: lines 86-90 (the sentence spans 89-90). ✓\n- bridge.go:308. ✓\n\nDiagram: maybe a small flowchart for finding 1 showing order: deleteApplyEndpoints (destroys pair) → park (fails). Could help. I'll include a compact flowchart for finding 1.\n\nFor the JSON: keep problem/trigger/impact/suggestion complete sentences with inline code.\n\nWrite the review now.",
+          "time": {
+            "start": 1795190882713,
+            "end": 1795190913686
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_1f9b77a9a001xF1xLiW10YPz3d",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f914001Nz5PeAzOQ156Cn",
+          "text": "All changed paths and their call sites have now been traced. I have complete evidence for the findings below; the review follows.\n\n---\n\n# PR Review: BridgeNS migration and reconcile support\n\n## Summary\n\nThis PR adds migration support for in-container bridges (`bridge` kind with `network-mode: container:<parent>`, \"BridgeNS\") to the `apply` reconcile flow: bridge-side veth ends are parked into a dedicated named netns while the parent/bridge is replaced, then restored and re-enslaved into the replacement bridge. It also wires the nodes map into namespace-sharing nodes, groups BridgeNS bridges as `rootNamespaceBased` in runtime state so they can be planned as added nodes, and adds a full robot suite covering move, drift, add, and remove scenarios.\n\nThe core happy paths traced correctly (move with unchanged client, parent recreation, add/remove clients). Three defects were found in the new migration machinery: migrations are planned without validating that the client-side peer survives the apply (leading to a **persistent** apply failure, since failed applies never persist state), the new `UnlinkNamedNetNS` helper cannot delete a bind-mounted netns and silently leaks parking namespaces, and an interrupted migration cannot be resumed by a later apply. Two P4 maintainability items round out the review (dead code plus a comment describing a nonexistent mechanism, and a type assertion that can panic).\n\n## Findings\n\n| # | Priority | Title | Location |\n|---|----------|-------|----------|\n| 1 | P2 | Migration planned by port name only; destroyed client peer makes apply fail persistently | `core/topology_reconcile.go` |\n| 2 | P2 | `UnlinkNamedNetNS` cannot remove a bind-mounted netns, so parking namespaces leak | `utils/netlink.go` |\n| 3 | P3 | Interrupted bridge-port migration is unrecoverable; parking is not idempotent | `links/migration.go` |\n| 4 | P4 | Dead `LinkDeploymentStateSetter`/`SetDeploymentState` and a comment describing a nonexistent mechanism | `links/apply.go`, `links/link_veth.go`, `core/apply_bridge_migration.go` |\n| 5 | P4 | `enslaveBridgePortsInNamespace` type-asserts `*netlink.Bridge` and can panic | `nodes/bridge/bridge.go` |\n\n### 1. Migration planned by port name only; destroyed client peer makes apply fail persistently — P2\n\nLocation: [core/topology_reconcile.go#L482-L518](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/topology_reconcile.go#L482-L518) (`addBridgeNSMigrationCandidate`), with the failure surfacing in [core/apply_bridge_migration.go#L17-L34](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/apply_bridge_migration.go#L17-L34) and [links/migration.go#L90-L124](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/links/migration.go#L90-L124).\n\n`addBridgeNSMigrationCandidate` matches a stale bridge-side endpoint to a desired endpoint purely by identical port name under a different BridgeNS node (`candidate.iface != staleKey.iface || candidate.node == staleKey.node`). It never inspects the *client-side* peer of the old port and never checks that the migration is feasible — yet the struct's own comment asserts \"the client-side endpoint and the veth pair itself stay valid\" ([core/topology_reconcile.go#L35-L40](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/topology_reconcile.go#L35-L40)). Three concrete breaks follow:\n\n```mermaid\nflowchart TD\n    A[apply: migration planned by port name] --> B{old client end fate}\n    B -->|rewired to eth2, c1 stays| C[deleteApplyEndpoints deletes c1:eth1<br/>veth pair destroyed]\n    B -->|c1 node removed| D[park succeeds<br/>c1 container deleted<br/>peer destroyed, parked half destroyed too]\n    B -->|bp1 removed from topology| E[bridgeNSMigParentNode: parent not found]\n    C --> F[park fails: ownership altname not found]\n    D --> G[restore fails: parked iface not found]\n    F --> H[apply aborts, state not persisted]\n    E --> H\n    G --> H\n    H --> I[next apply re-plans same migration from stale state<br/>fails identically - lab bricked until destroy]\n```\n\n**Triggers.** (a) The client link is rewired to another interface in the same apply as the bridge move (e.g. old `c1:eth1–br01|bp1:c1eth1` becomes `c1:eth2–br02|bp1:c1eth1`): since `applyKnownEndpointNames` returns `nil` for regular nodes ([core/topology_reconcile.go#L854-L870](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/topology_reconcile.go#L854-L870)), the old `c1:eth1` is still discovered, becomes a stale endpoint, and `deleteApplyEndpoints` deletes it at step 1 — destroying the whole veth pair — before `parkMigratedBridgeNSPorts` runs at step 2. (b) The client node is removed from the topology in the same apply: parking succeeds (step 2 runs before node deletion), but deleting the client container destroys its netns, which destroys the veth peer and with it the parked half, so `RestoreBridgePort` fails with \"parked interface not found in parking ns\". (c) The old bridge's parent is also removed from the topology in the same apply (bridge moved from `br01|bp1` to `br02|bp2`): `bridgeNSMigParentNode` resolves parents only from `c.Nodes` (desired topology) and returns \"parent container not found\", aborting at step 2.\n\n**Impact.** Because every apply step returns early on error before `finalize`/`writeState` ([core/apply.go#L207-L241](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/apply.go#L207-L241)), the failed apply persists nothing; the next apply re-plans the identical migration from the unchanged state and fails identically. The lab is bricked for that port until `destroy` — which destroys exactly the client-side state migration exists to preserve. Even variant (c), which mutates nothing, is persistent and fails with a confusing error.\n\n**Correction.** Validate candidates at planning time: skip a migration when the old bridge's parent cannot be resolved from the desired topology (the normal delete/recreate path already handles that case correctly), and require that the old link's client-side endpoint matches the new link's client endpoint and is not deleted/replaced in this plan. A unit test asserting the guard on `addBridgeNSMigrationCandidate` would be the smallest useful check; the new robot suite only covers the move with an unchanged client, so none of these variants is currently exercised.\n\n### 2. `UnlinkNamedNetNS` cannot remove a bind-mounted netns, so parking namespaces leak — P2\n\nLocation: [utils/netlink.go#L233-L240](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/utils/netlink.go#L233-L240), callers [links/migration.go#L79](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/links/migration.go#L79) and [links/migration.go#L178](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/links/migration.go#L178).\n\nThe parking netns is created with `netns.NewNamed` ([utils/netlink.go#L201](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/utils/netlink.go#L201)), which bind-mounts the network namespace onto `/run/netns/<name>`. `os.Remove` (unlink) on a mount point fails with `EBUSY` on Linux — this is precisely why the existing machinery uses `netns.DeleteNamed`, which umounts first ([nodes/default_node.go#L463-L470](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/nodes/default_node.go#L463-L470), [nodes/sros/netns.go#L74-L80](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/nodes/sros/netns.go#L74-L80)). Both call sites discard the error (`_ =`), so the cleanup silently does nothing.\n\n**Trigger.** Any bridge-port migration: the success path at `RestoreBridgePort` (line 178) leaks the netns on every migration, and the park-error path (line 79) leaks the freshly created one. `CreateOrGetNamedNetNS` reuses a name, so the leak is one entry per distinct bridge long name, but the entries persist after lab destroy.\n\n**Impact.** `clab-park-<longName>` entries accumulate in `/run/netns`, visible to `ip netns list` and other tooling, survive lab destroy, and mislead operators into thinking a netns is in use. The leaked netns is empty in the common case, so it is a hygiene leak rather than data loss — but the failure is silent and guaranteed on the success path.\n\n**Correction.** Replace `UnlinkNamedNetNS`'s body with the established pattern (`netns.DeleteNamed`/umount+unlink, matching `cleanupParkingNetNS`), and handle the returned error instead of `_ =`, at minimum logging at debug level.\n\n### 3. Interrupted bridge-port migration is unrecoverable; parking is not idempotent — P3\n\nLocation: [links/migration.go#L57-L77](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/links/migration.go#L57-L77), planning in [core/topology_reconcile.go#L437-L477](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/topology_reconcile.go#L437-L477).\n\nOnce `ParkBridgePortByOwnership` has moved a bridge-side end into the parking netns, the port carries the *old* bridge's ownership altname and sits in a namespace discovery never scans. If the apply then fails before `restoreMigratedBridgeNSPorts` (for example, a later node deploy error unrelated to the migration), the state file is unchanged, so the next apply re-plans the same migration — and `findLinkByOwnershipAltName` now fails in the parent's netns because the port is already parked. Conversely, if a later apply succeeds for other reasons and no migration is planned, the parked port becomes invisible garbage forever.\n\n**Trigger.** Any failure between step 2 (`parkMigratedBridgeNSPorts`) and step 8 (`restoreMigratedBridgeNSPorts`) of the apply sequence in [core/apply.go#L207-L241](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/apply.go#L207-L241).\n\n**Impact.** A transient failure converts a healthy lab into one where every subsequent apply aborts at the park step, and where abandoning the migration silently strands the port.\n\n**Correction.** Make parking idempotent: before moving the port, check the parking netns of `longName` for an interface with the ownership altname and, if found, skip the move and proceed with restore. This turns an interrupted migration into a resumable one with a small, local change.\n\n### 4. Dead `LinkDeploymentStateSetter`/`SetDeploymentState` and a comment describing a nonexistent mechanism — P4\n\nLocation: [links/apply.go#L79-L84](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/links/apply.go#L79-L84), [links/link_veth.go#L156-L159](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/links/link_veth.go#L156-L159), [core/apply_bridge_migration.go#L86-L90](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/core/apply_bridge_migration.go#L86-L90).\n\nThis PR introduces the `LinkDeploymentStateSetter` interface and `LinkVEth.SetDeploymentState`, but a repository-wide search finds no call sites (all other `DeploymentState` mutations are internal to each link type). Meanwhile the `restoreMigratedBridgeNSPorts` comment claims \"The corresponding live link is marked full-deployed so deployLinks skips pair re-creation for it\" — no such marking exists; the actual mechanism is the `plan.addedLinks` filtering four lines below. The comment would send the next maintainer hunting for a mechanism that does not exist.\n\n**Trigger/impact.** Read-only maintenance cost; dead exported interface and misleading documentation of the restore path.\n\n**Correction.** Delete the interface and method, or wire them up if they were intended for something; reword the comment to describe the actual `plan.addedLinks` filtering.\n\n### 5. `enslaveBridgePortsInNamespace` type-asserts `*netlink.Bridge` and can panic — P4\n\nLocation: [nodes/bridge/bridge.go#L308](https://github.com/srl-labs/containerlab/blob/192dec107ced8f608c230f6822578c3f5742037a/nodes/bridge/bridge.go#L308).\n\n`netlink.LinkByName(bridgeName)` is type-asserted to `*netlink.Bridge`. `LinkByName` decodes by kernel kind, so if any other device (for example a leftover veth whose port name collides with the bridge name) currently holds `bridgeName`, the assertion panics inside the PostDeploy hook rather than producing an error.\n\n**Trigger.** A device other than a bridge occupying the bridge's name in the parent's netns during `PostDeploy` — an edge case, but a panic aborts the whole apply with no diagnostics.\n\n**Impact.** Crash instead of a clean error; low likelihood.\n\n**Correction.** Compare `link.Attrs().MasterIndex != bridgeLink.Attrs().Index` on the `netlink.Link` interface — the assertion is not needed for the master check at all.\n\n## Coverage notes\n\n- All 21 changed paths from `manifest.json` were examined, including full reads of `core/apply.go`, `core/apply_bridge_migration.go`, `links/migration.go`, `links/ownership.go`, and the relevant sections of `core/topology_reconcile.go`, `nodes/bridge/bridge.go`, `utils/netlink.go`, `nodes/node.go`, and `core/config.go`; findings were traced through callers in both head and base.\n- Tests were **not executed** (review is source-only); conclusions on runtime behavior are derived from code semantics, including Linux veth pair semantics and `netns.NewNamed` mount behavior.\n- The new robot suite (`tests/01-smoke/34-bridge-ns-reconcile.*`) covers move-with-same-client, parent drift, add/remove clients, and idempotency; none of the finding-1 variants (client rewire/removal combined with a bridge move) is covered.\n- Pre-existing issues deliberately excluded: the `CheckDeploymentConditions` unguarded slicing `b.Cfg.NetworkMode[10:]` / `b.GetShortName()[len(...)+1:]` exists identically in base ([base/nodes/bridge/bridge.go#L158-L168](https://github.com/srl-labs/containerlab/blob/6e94d1e5e7c0b2c3b328cfd9037e42fb98e55040/nodes/bridge/bridge.go#L158-L168)), and `bridge.Delete` being a noop (leaving a removed in-container bridge behind in the parent) is also pre-existing; the new migration flow depends on the latter but does not worsen it.\n- Documentation check: the BridgeNS feature and its `<bridge>|<parent>` naming are already documented in `docs/manual/kinds/bridge.md` (unchanged in this PR); migration is an internal apply behavior, so no doc or schema update is required by this PR.\n- `checkApplyNetworkModeTargets` guard behavior, the `rootNamespaceBased` BridgeNS grouping in `core/runtime_state.go`, and the `SetNodesMap` wiring in `core/config.go` were verified and are correct; no findings there.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P2\",\n      \"title\": \"`addBridgeNSMigrationCandidate` plans migrations by port name only; a destroyed client peer makes apply fail persistently\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"core/topology_reconcile.go\",\n        \"start\": 482,\n        \"end\": 518\n      },\n      \"problem\": \"`addBridgeNSMigrationCandidate` matches a stale bridge-side endpoint to a desired endpoint purely by identical port name under a different BridgeNS node and never inspects the client-side peer, even though the `bridgeNSMigration` comment asserts \\\"the client-side endpoint and the veth pair itself stay valid\\\". Three apply sequences break: (a) rewiring the client link to another interface in the same apply as the bridge move deletes the stale client end in `deleteApplyEndpoints`, which destroys the whole veth pair before `parkMigratedBridgeNSPorts` runs; (b) removing the client node in the same apply lets parking succeed but the container teardown destroys the peer and with it the parked half, so `RestoreBridgePort` fails; (c) removing the old bridge's parent in the same apply makes `bridgeNSMigParentNode` return \\\"parent container not found\\\" because it resolves parents only from the desired `c.Nodes`.\",\n      \"trigger\": \"An apply that simultaneously moves or recreates an in-container bridge and changes the fate of the port's client side: the client link rewired to another interface or node, the client node removed, or the old parent container removed from the topology.\",\n      \"impact\": \"Every apply step returns early on error before `finalize`/`writeState`, so the failed apply persists nothing; the next apply re-plans the identical migration from the unchanged state and fails identically. The lab is bricked for that port until `destroy`, which destroys exactly the client-side state migration exists to preserve.\",\n      \"suggestion\": \"Validate candidates at planning time: skip the migration when the old bridge's parent cannot be resolved from the desired topology (the delete/recreate path handles that case) and require that the old link's client-side endpoint matches the new link's client endpoint and is not deleted in this plan. Add a small unit test for the guard; the new robot suite only covers a bridge move with an unchanged client.\",\n      \"diagram\": \"flowchart TD\\n    A[apply: migration planned by port name] --> B{old client end fate}\\n    B -->|rewired, c1 stays| C[deleteApplyEndpoints deletes c1:eth1, pair destroyed]\\n    B -->|c1 removed| D[park succeeds, container teardown destroys peer and parked half]\\n    B -->|bp1 removed| E[bridgeNSMigParentNode: parent not found]\\n    C --> F[park fails: altname not found]\\n    D --> G[restore fails: parked iface not found]\\n    E --> H[apply aborts, state not persisted]\\n    F --> H\\n    G --> H\\n    H --> I[next apply fails identically until destroy]\"\n    },\n    {\n      \"priority\": \"P2\",\n      \"title\": \"`UnlinkNamedNetNS` cannot remove a bind-mounted netns, so parking namespaces leak\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"utils/netlink.go\",\n        \"start\": 233,\n        \"end\": 240\n      },\n      \"problem\": \"The parking netns is created with `netns.NewNamed`, which bind-mounts the namespace onto `/run/netns/<name>`. `UnlinkNamedNetNS` uses `os.Remove`, and unlink on a mount point fails with EBUSY on Linux; this is why the existing machinery uses `netns.DeleteNamed`, which umounts first. Both callers in `links/migration.go` (lines 79 and 178) discard the error with `_ =`, so the cleanup silently does nothing.\",\n      \"trigger\": \"Any bridge-port migration: the success path in `RestoreBridgePort` leaks the netns on every migration, and the park-error path in `ParkBridgePortByOwnership` leaks the freshly created one.\",\n      \"impact\": \"`clab-park-<longName>` entries accumulate in `/run/netns`, remain visible to `ip netns list` after lab destroy, and mislead operators. The leak is bounded to one entry per bridge long name but is guaranteed and silent on the success path.\",\n      \"suggestion\": \"Implement `UnlinkNamedNetNS` with the established umount+unlink pattern (`netns.DeleteNamed`, as in `DefaultNode.cleanupParkingNetNS` and `nodes/sros/netns.go`) and stop discarding the returned error at both call sites, logging at debug level at minimum.\"\n    },\n    {\n      \"priority\": \"P3\",\n      \"title\": \"Interrupted bridge-port migration is unrecoverable because parking is not idempotent\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"links/migration.go\",\n        \"start\": 57,\n        \"end\": 77\n      },\n      \"problem\": \"Once `ParkBridgePortByOwnership` has moved a bridge-side end into the parking netns, the port carries the old bridge's ownership altname and sits in a namespace discovery never scans. If the apply fails after parking but before `restoreMigratedBridgeNSPorts`, the state file is unchanged, so the next apply re-plans the same migration and `findLinkByOwnershipAltName` fails in the parent's netns because the port is already parked. If a later apply succeeds without planning the migration, the parked port becomes invisible garbage.\",\n      \"trigger\": \"Any failure between step 2 (`parkMigratedBridgeNSPorts`) and step 8 (`restoreMigratedBridgeNSPorts`) of the apply sequence in `core/apply.go`, for example an unrelated node deploy error.\",\n      \"impact\": \"A transient failure converts a healthy lab into one where every subsequent apply aborts at the park step, and abandoning the migration silently strands the port with no cleanup path.\",\n      \"suggestion\": \"Make parking idempotent: before moving the port, check the parking netns of `longName` for an interface carrying the ownership altname and, if found, skip the move and let the existing restore path proceed. This turns an interrupted migration into a resumable one with a small local change.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Dead `LinkDeploymentStateSetter`/`SetDeploymentState` and a comment describing a nonexistent mechanism\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"links/apply.go\",\n        \"start\": 79,\n        \"end\": 84\n      },\n      \"problem\": \"This PR introduces the `LinkDeploymentStateSetter` interface and `LinkVEth.SetDeploymentState`, but a repository-wide search finds no call sites. Meanwhile the `restoreMigratedBridgeNSPorts` comment claims \\\"The corresponding live link is marked full-deployed so deployLinks skips pair re-creation for it\\\", which no code does; the actual mechanism is the `plan.addedLinks` filtering a few lines below in the same function.\",\n      \"trigger\": \"Read-only maintenance cost; no runtime trigger.\",\n      \"impact\": \"A dead exported interface invites future callers of an unused abstraction, and the misleading comment sends maintainers hunting for a deployment-state mechanism that does not exist.\",\n      \"suggestion\": \"Delete `LinkDeploymentStateSetter` and `LinkVEth.SetDeploymentState` (or wire them up if they were intended for a purpose this PR did not land), and reword the `restoreMigratedBridgeNSPorts` comment to describe the actual `plan.addedLinks` filtering.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"`enslaveBridgePortsInNamespace` type-asserts `*netlink.Bridge` and can panic\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/bridge/bridge.go\",\n        \"start\": 308,\n        \"end\": 308\n      },\n      \"problem\": \"`netlink.LinkByName(bridgeName)` is unconditionally type-asserted to `*netlink.Bridge`. If a non-bridge device, such as a leftover veth whose port name collides with the bridge name, currently holds that name, the assertion panics inside the PostDeploy hook instead of returning an error.\",\n      \"trigger\": \"A device other than a bridge occupying the bridge's kernel name in the parent's netns during PostDeploy; an edge case, but a panic aborts the whole apply without diagnostics.\",\n      \"impact\": \"Crash instead of a clean error; low likelihood.\",\n      \"suggestion\": \"Compare `link.Attrs().MasterIndex != bridgeLink.Attrs().Index` on the `netlink.Link` interface; the type assertion is unnecessary for the master check.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"All 21 changed paths from manifest.json were examined, including full reads of core/apply.go, core/apply_bridge_migration.go, links/migration.go, links/ownership.go, and relevant sections of core/topology_reconcile.go, nodes/bridge/bridge.go, utils/netlink.go, nodes/node.go, and core/config.go; findings were traced through callers in both head and base.\",\n      \"Tests were not executed (source-only review); runtime conclusions derive from code semantics including Linux veth pair destruction semantics and netns.NewNamed bind-mount behavior.\",\n      \"The new robot suite covers bridge move with unchanged client, parent drift, add/remove clients, and idempotency; none of the finding-1 variants (client rewire or removal combined with a bridge move, or removed old parent) is exercised.\",\n      \"Pre-existing issues excluded: the unguarded slicing in bridge CheckDeploymentConditions (base nodes/bridge/bridge.go:165) and the noop bridge.Delete leaving a removed in-container bridge behind in the parent both exist in base; the new migration flow depends on the latter but does not worsen it.\",\n      \"Documentation check: the BridgeNS feature and its <bridge>|<parent> naming are already documented in docs/manual/kinds/bridge.md (unchanged in this PR); migration is internal apply behavior, so no doc or schema update is required by this PR.\",\n      \"Verified-correct items: the rootNamespaceBased BridgeNS grouping in core/runtime_state.go, the SetNodesMap wiring in core/config.go and nodes/node.go, the exact cross-netns PeerIndex comparison in linkIntact, the nil-safety of ref.node in deleteApplyEndpoints, and the discovery order-independence of discoverBridgeNSEndpoints.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1795190913690,
+            "end": 1795190946278
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_1f9b7f9eb001xbLPIVXSHpzEXp",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b6f914001Nz5PeAzOQ156Cn",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 89697,
+            "input": 1084,
+            "output": 6227,
+            "reasoning": 3986,
+            "cache": {
+              "read": 78400,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_1f9b7f9f2001SOtQIBmcPFW83M",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190946290
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3-Flash"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_1f9b7f9f40010wGA2ccwbyXkSK",
+          "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+          "messageID": "msg_1f9b7f9f2001SOtQIBmcPFW83M",
+          "auto": true,
+          "overflow": false
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_1f9b7fa25001oXv4SPrUrHcWV4",
+        "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
+        "time": {
+          "created": 1795190946341
+        },
+        "parentID": "msg_1f9b7f9f2001SOtQIBmcPFW83M",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-ypwo0G",
+          "root": "/"
+        },
+        "summary": true,
         "cost": 0,
         "tokens": {
           "input": 0,
@@ -5453,18 +6524,18 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_1f9b5e9bd0014k7yVoKA5He3D4",
+          "id": "prt_1f9b8075e001nRKY4m4rg16yl0",
           "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
-          "messageID": "msg_1f9b5e0c6001DKUryZSDeJjInj"
+          "messageID": "msg_1f9b7fa25001oXv4SPrUrHcWV4"
         },
         {
           "type": "reasoning",
-          "id": "prt_1f9b5e9bf001PsX5ZGAXy3GyHm",
+          "id": "prt_1f9b80760001DRXEry7s0GJUh5",
           "sessionID": "ses_e065279c1ffe97S1996q7UKKwQ",
-          "messageID": "msg_1f9b5e0c6001DKUryZSDeJjInj",
+          "messageID": "msg_1f9b7fa25001oXv4SPrUrHcWV4",
           "text": "",
           "time": {
-            "start": 1795190811071
+            "start": 1795190949729
           }
         }
       ]
