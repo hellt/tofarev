@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "3f7b254a6ff50f2438d62bfd7a01ba3eb86b7f19",
-  "updatedAt": "2026-11-24T17:08:53.963Z",
+  "updatedAt": "2026-11-24T17:11:23.966Z",
   "state": "running",
   "info": {
     "id": "ses_df17e7b15ffezqjn3qqGTFkXv0",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 424127,
-      "output": 4047,
-      "reasoning": 18790,
+      "input": 587424,
+      "output": 4655,
+      "reasoning": 28811,
       "cache": {
-        "read": 2247168,
+        "read": 3190784,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795539698922,
-      "updated": 1795540128500
+      "updated": 1795540281795
     }
   },
   "messages": [
@@ -6438,7 +6438,1804 @@
         "id": "msg_20e8812f1001f7wYB6l2uCLvOB",
         "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
         "time": {
-          "created": 1795540128497
+          "created": 1795540128497,
+          "completed": 1795540155897
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 50198,
+          "input": 2095,
+          "output": 30,
+          "reasoning": 1993,
+          "cache": {
+            "read": 46080,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8819d4001xfMHShZF0l2UIZ",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8812f1001f7wYB6l2uCLvOB"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e8819d5001dAVCiSKk3bXrst",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8812f1001f7wYB6l2uCLvOB",
+          "text": "Docs are reasonably accurate for the new flag. The `--details` doc doesn't state that `--details` also includes internal containers now, but srl.md covers it.\n\nNow, remaining: think hard about actual defects. Let me enumerate potential real issues:\n\n1. **`inspect --all` with both `--containers` and multiple labs**: works.\n\n2. **`listContainers` topo flow: label pass may return containers of a DIFFERENT lab with the same name deployed by another user?** Standard clab behavior. Fine.\n\n3. **`--name` flow: containers from the label pass + logical. What if the lab contains BOTH an srl node \"srl\" AND another srl netns holder from a node that has been REMOVED from the topology?** E.g., topo edited to remove node \"old\" while \"old-netns\" container still runs (leftover). Label pass with `--name lab` returns old-netns (RootNodeName \"old\"). DeleteFunc only applies to topo flow. logicalNodeContainers: holders[{\"lab\",\"old\"}] set; second loop: InternalNode → skip. OK hidden.\n\nBut in the topo flow with --containers, leftover internal containers from removed nodes pass DeleteFunc (RootNodeName \"old\" IS in c.Nodes? No — \"old\" node was removed from topo, so c.Nodes lacks it → DeleteFunc removes old-netns). Interesting: with `--topo --containers`, internal holders of nodes removed from the topology are hidden. Edge case, arguably fine (matches \"containers of the nodes defined in that topology file\").\n\n4. **The real subtle one: `logicalNodeContainers` merging holder settings into the CPM — but for the SRL case, the holders merge happens for key {\"lab\",\"srl\"} where the srl node container has NodeName \"srl\" and NO RootNodeName. In the FIRST loop, the key for the srl node container is {\"lab\", \"\"} — so holders are keyed by {\"lab\", RootNodeName}. In the second loop, the srl node has key {\"lab\", \"\"} → then `if key.node == \"\" { key.node = name }` → key becomes {\"lab\",\"srl\"} → holders lookup works. ✓ For the CPM: key {\"lab\",\"sr\"} directly. ✓\n\n5. **What about a normal node whose name happens to end in \"-a\"?** E.g., node \"r1-a\" in lab \"lab1\", no RootNodeName. key {\"lab1\",\"\"}; second loop: name \"r1-a\", key.node \"\" → isCPM = (name == \"\"+\"-a\")? name == \"-a\"? No. key.node == \"\" → kept. ✓ Safe.\n\nBut wait — what about a node named exactly \"-a\"? Impossible (shortnames can't start with dash? Actually could a node be named \"-a\"? clab node names must match some regex; likely alphanumeric+dash, could start with dash? Probably not. Skip.)\n\n6. **What about a node \"x\" and ANOTHER node \"x-a\" in the same lab?** Node \"x-a\" has no RootNodeName → key {\"lab\",\"\"} → kept. But could node \"x-a\" be misinterpreted as a component of \"x\"? Only if it had RootNodeName set, which only components have. ✓ Safe.\n\n7. **Potential issue: `inspect --topo` when the topology has a node of kind `linux` that ALSO is a containerlab-internal? No.\n\n8. **Tool containers with `--details` and topo: DeleteFunc removes tools (NodeName \"sshx\" not a topo node). With `--all --details`, tools shown. Consistent-ish.\n\n9. **CSV output with logical node: no issue.\n\n10. **Now, an actual user-visible regression candidate**: `inspect --all` previously showed tool containers (sshx etc.). Some user workflows might grep for them. Docs updated to describe the new default. Deliberate. Not a defect.\n\n11. **Another candidate**: In the topo flow, head now makes TWO list calls (label + node). The label call lists ALL containers of the lab (each node's container + holders + components + tools). Then node pass calls each node's GetContainers, which each perform ANOTHER runtime list call (per node!). Wait — that was the same in base (base did only node pass, which is per-node list calls). So head = label call + node pass. The label call is one extra API call. Negligible. But NOTE: in base, for the topo flow, tool containers were never listed. In head... also excluded by DeleteFunc. ✓ same.\n\n12. **Dedupe by `ctr.ID`: empty IDs?** If a runtime returns containers with empty ID... docker always sets ID. Fine.\n\n13. **`slices.DeleteFunc` on `containers` mutates the underlying array — no aliasing issue since it's the fresh list.\n\n14. **Now, the second loop's `ctr := containers[idx]` (copy) then merging holder settings into the copy — fine.\n\n15. **Potential nil map issue: `ctr.Labels` nil for ext-containers? GenericContainer.Labels could be nil for ext-containers with no labels — map index on nil map is fine in Go (returns zero value). ✓\n\n16. **JSON output of logical nodes: `GenericContainer` serialized — same as base.\n\nNow let me think about the c9s path once more: `ListLabRuntimeContainers(ctx, o.Destroy.All)`. With `--containers`, no effect. c9s labs can't have netns holders. Fine.\n\nNow, is there anything wrong with the flag help text? \"show every container of a lab, including node components and internal helper containers\". Accurate.\n\nOne more potential real defect: **`inspect --containers` with `--name`/`--all` shows components INCLUDING linecards and internal holders — but ALSO shows tool containers (ToolType)**. Docs say \"list every container of a lab\". ✓ accurate.\n\nNow — what about `--containers` combined with `--details`? Both return all containers; details wins (details path prints full JSON). Fine.\n\nNow — think about the **`hasCPMA` map with containers from MULTIPLE labs in `--all` mode where lab names are empty**? Containers without containerlab label can't appear in the label pass (WithListclabLabelExists). Node pass (topo) can add ext-containers with empty labels → lab \"\" → key {\"\", RootNodeName}. Ext-containers have no RootNodeName. Fine.\n\nLet me now double-check the ONE thing that could be a genuine P2: **in the topo flow, does `DeleteFunc` drop the netns holder for a node that's in c.Nodes but whose `RootNodeName` label uses a different name?** Holder labels RootNodeName = n.Cfg.ShortName (the logical node shortname). c.Nodes keyed by ShortName. ✓ Match.\n\nBut WAIT — there's a subtlety with **custom long names / prefixes**. The label `clab-node-name` is the SHORT name (e.g., \"srl\"). c.Nodes keys are shortnames. ✓.\n\nNow, what about **inspect with `--topo` when the topology was never parsed into c.Nodes because of `--name` mismatch**? N/A.\n\nNow let me consider **whether `logicalNodeContainers` handles the `srl` node + netns holder case where the holder's NodeName differs from `key.node`** — first loop keys holders by RootNodeName, not NodeName. If the holder is from a REMOVED node (leftover), holders[{\"lab\",\"old\"}] exists but no second-loop container has key {\"lab\",\"old\"} → not merged. ✓.\n\n**Potential real defect candidate: leftover CPM B from a removed SR-SIM node in the same lab?** Lab \"lab1\" has sros node \"sr\" (deployed) and a leftover component \"old-b\" with RootNodeName \"old\" (node removed from topo, container still running). `ins --name lab1`: label pass returns sr-a, sr-1, sr-netns, old-b. logical: old-b → key {\"lab1\",\"old\"}; hasCPMA[{\"lab1\",\"old\"}] false; name \"old-b\" == \"old\"+\"-b\" → isCPM TRUE → old-b IS shown as a logical node! Hmm. So a leftover CPM B from a destroyed-topology node shows up in `ins --name lab1` as a standalone node entry. Is that a defect? Base behavior: `ins --name lab1` (no --all) showed ALL lab containers except internal — including sr-a, sr-1 (linecards!), old-b. So base showed MORE junk (linecards too). Head is strictly better. Not a regression. Fine.\n\nNow — the genuinely questionable one: **linecards are hidden by default**. For SR-SIM distributed, `ins` shows only the CPM. The `--containers` flag reveals linecards. Docs describe \"one entry per topology node\". OK.\n\nLet me now check the ONE test file's full content — already seen via diff (71 lines, complete). ✓\n\nNow — check `labruntime_gaps_test.go` at line ~111 to ensure removal of the internal skip doesn't break that test (it passes containers and o). Let me read that test quickly.",
+          "time": {
+            "start": 1795540130261,
+            "end": 1795540155871
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e887de2001G1hJurvmuQ1gdZ",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8812f1001f7wYB6l2uCLvOB",
+          "callID": "call_3b2a1849cf7a43eda261fc03",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/cmd/labruntime_gaps_test.go",
+              "limit": 70,
+              "offset": 60
+            },
+            "output": "<path>/source/head/cmd/labruntime_gaps_test.go</path>\n<type>file</type>\n<content>\n60: \n61: \t\t\tif err := checkLabRuntimeCommandSupport(graph, \"docker\"); err != nil {\n62: \t\t\t\tt.Fatalf(\"docker graph rejected: %v\", err)\n63: \t\t\t}\n64: \t\t})\n65: \t}\n66: }\n67: \n68: func TestInspectJSONReportsLabRuntimeWorkload(t *testing.T) {\n69: \tlabels := func(lab, node string) map[string]string {\n70: \t\treturn map[string]string{\n71: \t\t\tclabconstants.Containerlab: lab,\n72: \t\t\tclabconstants.NodeKind:     \"linux\",\n73: \t\t\tclabconstants.TopoFile:     \"/labs/\" + lab + \".clab.yml\",\n74: \t\t}\n75: \t}\n76: \tcontainers := []clabruntime.GenericContainer{\n77: \t\t{\n78: \t\t\tNames:   []string{\"clab-docker-r1\"},\n79: \t\t\tID:      \"0123456789abcdef0123\",\n80: \t\t\tShortID: \"0123456789ab\",\n81: \t\t\tImage:   \"alpine\",\n82: \t\t\tState:   \"running\",\n83: \t\t\tLabels:  labels(\"docker\", \"r1\"),\n84: \t\t},\n85: \t\t{\n86: \t\t\tNames:   []string{\"c9s-r1\"},\n87: \t\t\tID:      \"c9s-c9s/c9s/r1\",\n88: \t\t\tShortID: \"c9s-c9s/c9s/r1\",\n89: \t\t\tImage:   \"alpine\",\n90: \t\t\tState:   \"running\",\n91: \t\t\tLabels:  labels(\"c9s\", \"r1\"),\n92: \t\t\tWorkload: &clabtypes.LabRuntimeWorkload{\n93: \t\t\t\tNamespace: \"c9s-c9s\",\n94: \t\t\t\tPod:       \"c9s-r1-abc\",\n95: \t\t\t\tContainer: \"node-r1-x\",\n96: \t\t\t\tNodeUID:   \"uid-1\",\n97: \t\t\t\tExposedPorts: []clabtypes.ExposedPort{\n98: \t\t\t\t\t{Port: 22, ExposePort: 22, Protocol: \"tcp\"},\n99: \t\t\t\t},\n100: \t\t\t\tLoadBalancerAddress: \"192.0.2.10\",\n101: \t\t\t},\n102: \t\t},\n103: \t}\n104: \n105: \to := GetOptions()\n106: \tpreviousFormat := o.Inspect.Format\n107: \to.Inspect.Format = clabconstants.FormatJSON\n108: \tt.Cleanup(func() { o.Inspect.Format = previousFormat })\n109: \n110: \toutput := captureApplyOutput(t, func() {\n111: \t\tif err := PrintContainerInspect(containers, o); err != nil {\n112: \t\t\tt.Fatal(err)\n113: \t\t}\n114: \t})\n115: \n116: \tvar labs map[string][]map[string]any\n117: \tif err := json.Unmarshal([]byte(output[strings.Index(output, \"{\"):]), &labs); err != nil {\n118: \t\tt.Fatalf(\"invalid JSON %q: %v\", output, err)\n119: \t}\n120: \n121: \tdocker := labs[\"docker\"][0]\n122: \tfor _, field := range []string{\n123: \t\t\"namespace\", \"pod\", \"container\", \"node_uid\", \"exposed_ports\", \"load_balancer_address\",\n124: \t} {\n125: \t\tif _, ok := docker[field]; ok {\n126: \t\t\tt.Fatalf(\"docker record carries %q: %v\", field, docker)\n127: \t\t}\n128: \t}\n129: \tif docker[\"container_id\"] != \"0123456789ab\" {\n\n(Showing lines 60-129 of 182. Use offset=130 to continue.)\n</content>",
+            "title": "source/head/cmd/labruntime_gaps_test.go",
+            "metadata": {
+              "preview": "\n\t\t\tif err := checkLabRuntimeCommandSupport(graph, \"docker\"); err != nil {\n\t\t\t\tt.Fatalf(\"docker graph rejected: %v\", err)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestInspectJSONReportsLabRuntimeWorkload(t *testing.T) {\n\tlabels := func(lab, node string) map[string]string {\n\t\treturn map[string]string{\n\t\t\tclabconstants.Containerlab: lab,\n\t\t\tclabconstants.NodeKind:     \"linux\",\n\t\t\tclabconstants.TopoFile:     \"/labs/\" + lab + \".clab.yml\",\n\t\t}\n\t}\n\tcontainers := []clabruntime.GenericContainer{\n\t\t{\n\t\t\tNames:   []string{\"clab-docker-r1\"},\n\t\t\tID:      \"0123456789abcdef0123\",",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/cmd/labruntime_gaps_test.go",
+                "text": "\n\t\t\tif err := checkLabRuntimeCommandSupport(graph, \"docker\"); err != nil {\n\t\t\t\tt.Fatalf(\"docker graph rejected: %v\", err)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestInspectJSONReportsLabRuntimeWorkload(t *testing.T) {\n\tlabels := func(lab, node string) map[string]string {\n\t\treturn map[string]string{\n\t\t\tclabconstants.Containerlab: lab,\n\t\t\tclabconstants.NodeKind:     \"linux\",\n\t\t\tclabconstants.TopoFile:     \"/labs/\" + lab + \".clab.yml\",\n\t\t}\n\t}\n\tcontainers := []clabruntime.GenericContainer{\n\t\t{\n\t\t\tNames:   []string{\"clab-docker-r1\"},\n\t\t\tID:      \"0123456789abcdef0123\",\n\t\t\tShortID: \"0123456789ab\",\n\t\t\tImage:   \"alpine\",\n\t\t\tState:   \"running\",\n\t\t\tLabels:  labels(\"docker\", \"r1\"),\n\t\t},\n\t\t{\n\t\t\tNames:   []string{\"c9s-r1\"},\n\t\t\tID:      \"c9s-c9s/c9s/r1\",\n\t\t\tShortID: \"c9s-c9s/c9s/r1\",\n\t\t\tImage:   \"alpine\",\n\t\t\tState:   \"running\",\n\t\t\tLabels:  labels(\"c9s\", \"r1\"),\n\t\t\tWorkload: &clabtypes.LabRuntimeWorkload{\n\t\t\t\tNamespace: \"c9s-c9s\",\n\t\t\t\tPod:       \"c9s-r1-abc\",\n\t\t\t\tContainer: \"node-r1-x\",\n\t\t\t\tNodeUID:   \"uid-1\",\n\t\t\t\tExposedPorts: []clabtypes.ExposedPort{\n\t\t\t\t\t{Port: 22, ExposePort: 22, Protocol: \"tcp\"},\n\t\t\t\t},\n\t\t\t\tLoadBalancerAddress: \"192.0.2.10\",\n\t\t\t},\n\t\t},\n\t}\n\n\to := GetOptions()\n\tpreviousFormat := o.Inspect.Format\n\to.Inspect.Format = clabconstants.FormatJSON\n\tt.Cleanup(func() { o.Inspect.Format = previousFormat })\n\n\toutput := captureApplyOutput(t, func() {\n\t\tif err := PrintContainerInspect(containers, o); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t})\n\n\tvar labs map[string][]map[string]any\n\tif err := json.Unmarshal([]byte(output[strings.Index(output, \"{\"):]), &labs); err != nil {\n\t\tt.Fatalf(\"invalid JSON %q: %v\", output, err)\n\t}\n\n\tdocker := labs[\"docker\"][0]\n\tfor _, field := range []string{\n\t\t\"namespace\", \"pod\", \"container\", \"node_uid\", \"exposed_ports\", \"load_balancer_address\",\n\t} {\n\t\tif _, ok := docker[field]; ok {\n\t\t\tt.Fatalf(\"docker record carries %q: %v\", field, docker)\n\t\t}\n\t}\n\tif docker[\"container_id\"] != \"0123456789ab\" {",
+                "lineStart": 60,
+                "lineEnd": 129,
+                "totalLines": 182,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795540155879,
+              "end": 1795540155892
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e887df6001SQvFYgOE1e1UQi",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8812f1001f7wYB6l2uCLvOB",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 50198,
+            "input": 2095,
+            "output": 30,
+            "reasoning": 1993,
+            "cache": {
+              "read": 46080,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e887dff001o2IEmB17XBX7Kt",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540155903,
+          "completed": 1795540163718
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 51640,
+          "input": 869,
+          "output": 14,
+          "reasoning": 581,
+          "cache": {
+            "read": 50176,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8884c4001QG76iyiimQLwLh",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e887dff001o2IEmB17XBX7Kt"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e8884c6001Lo2DsfVFqQr1oX",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e887dff001o2IEmB17XBX7Kt",
+          "text": "This test passes containers without internal labels — unaffected by the removed skip.\n\nNow let me think about the c9s `--containers` no-op once more and whether `ListLabRuntimeContainers` should honor it. It can't (c9s pods vs containers). P4 at most; I'll put it in coverage notes.\n\nNext, verify one more thing about `logicalNodeContainers`'s holder merge for the SRL case in the `--all`/`--name` flows. Wait — there is actually something to check: **In the `--all`/`--name` label flow, the srl node container may have its own mgmt IP?** No — srl containers run in the holder's netns, so they have no own network settings; the holder has the IP. Merge gives the right IP. In base, `ins --all` showed the holder row (with IP) AND the srl row (without IP). Head shows one row with the IP. Improvement.\n\nNow — **what about `network-mode: container:X` nodes (non-srl)?** E.g., a linux node with network-mode container:something — does containerlab create an internal netns node for it? Only srl/sros have netns nodes. OK.\n\nNow, let me also confirm that `srl.GetContainers` merging doesn't conflict with the label-pass version used for the logical row. Fine.\n\nOne more scan for potential issue: **the flag is registered with `BoolVarP` and no shorthand; `--containers` conflicts with nothing.**\n\n**Potential issue with `--details` semantic change:** In base, `ins --details` (without --all) hid internal containers; now they're included. This changes `--details` JSON output shape (adds internal entries). Documented in srl.md. Intended.\n\n**Now, the CSV format with `--containers`:** CSV only reachable without --details. `ins --containers -f csv` → all containers in CSV. Fine.\n\nNow let me think about **whether `logicalNodeContainers` should sort output** — the JSON summary output (`-f json`) order follows input order which is the runtime's list order (typically by name/created). Base had the same for the label flow. For the topo flow, base order = node iteration order (sorted by index? c.Nodes map iteration? ListNodesContainersIgnoreNotFound iterates c.Nodes — map order → random!). Hmm — actually in base, the topo flow order came from `ListNodesContainersIgnoreNotFound`, which iterates `c.Nodes` (a map → nondeterministic order?). Let me check: `for _, n := range c.Nodes` — map iteration order is random in Go. But wait — do they sort first? Let me check core/list.go ListNodesContainers.",
+          "time": {
+            "start": 1795540157638,
+            "end": 1795540163671
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e889c5a001OTvQjgzlHGQBlM",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e887dff001o2IEmB17XBX7Kt",
+          "callID": "call_21a9247c50bb44aead91b9ee",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/list.go"
+            },
+            "output": "<path>/source/head/core/list.go</path>\n<type>file</type>\n<content>\n1: package core\n2: \n3: import (\n4: \t\"context\"\n5: \t\"fmt\"\n6: \t\"sort\"\n7: \n8: \t\"github.com/charmbracelet/log\"\n9: \tclablinks \"github.com/srl-labs/containerlab/links\"\n10: \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n11: \tclabtypes \"github.com/srl-labs/containerlab/types\"\n12: \t\"github.com/vishvananda/netlink\"\n13: \t\"github.com/vishvananda/netns\"\n14: )\n15: \n16: // ListContainers lists all containers using provided filter.\n17: func (c *CLab) ListContainers(\n18: \tctx context.Context,\n19: \toptions ...ListOption,\n20: ) ([]clabruntime.GenericContainer, error) {\n21: \topts := NewListOptions()\n22: \n23: \tfor _, opt := range options {\n24: \t\topt(opts)\n25: \t}\n26: \n27: \tvar containers []clabruntime.GenericContainer\n28: \n29: \tfor _, r := range c.Runtimes {\n30: \t\tctrs, err := r.ListContainers(ctx, opts.ToFilters())\n31: \t\tif err != nil {\n32: \t\t\treturn containers, fmt.Errorf(\"could not list containers: %v\", err)\n33: \t\t}\n34: \n35: \t\tcontainers = append(containers, ctrs...)\n36: \t}\n37: \n38: \treturn containers, nil\n39: }\n40: \n41: // ListNodesContainers lists all containers based on the nodes stored in clab instance.\n42: func (c *CLab) ListNodesContainers(\n43: \tctx context.Context,\n44: ) ([]clabruntime.GenericContainer, error) {\n45: \tvar containers []clabruntime.GenericContainer\n46: \n47: \tfor _, n := range c.Nodes {\n48: \t\tcts, err := n.GetContainers(ctx)\n49: \t\tif err != nil {\n50: \t\t\treturn containers, fmt.Errorf(\n51: \t\t\t\t\"could not get container for node %s: %v\",\n52: \t\t\t\tn.Config().LongName, err,\n53: \t\t\t)\n54: \t\t}\n55: \n56: \t\tcontainers = append(containers, cts...)\n57: \t}\n58: \n59: \treturn containers, nil\n60: }\n61: \n62: // ListNodesContainersIgnoreNotFound lists all containers based on the nodes stored in clab\n63: // instance, ignoring errors for non found containers.\n64: func (c *CLab) ListNodesContainersIgnoreNotFound(\n65: \tctx context.Context,\n66: ) ([]clabruntime.GenericContainer, error) {\n67: \tvar containers []clabruntime.GenericContainer\n68: \n69: \tfor _, n := range c.Nodes {\n70: \t\tcts, err := n.GetContainers(ctx)\n71: \t\tif err != nil {\n72: \t\t\tcontinue\n73: \t\t}\n74: \n75: \t\tcontainers = append(containers, cts...)\n76: \t}\n77: \n78: \treturn containers, nil\n79: }\n80: \n81: // ListContainerInterfaces list interfaces of the given container.\n82: func (c *CLab) ListContainerInterfaces(\n83: \tctx context.Context,\n84: \tcontainer *clabruntime.GenericContainer,\n85: ) (*clabtypes.ContainerInterfaces, error) {\n86: \tcontainerInterfaces := clabtypes.ContainerInterfaces{}\n87: \n88: \tif len(container.Names) > 0 {\n89: \t\tcontainerInterfaces.ContainerName = container.Names[0]\n90: \t}\n91: \n92: \t// Retrieve the path to the container network NS\n93: \tnodeNsPath, err := container.Runtime.GetNSPath(ctx, containerInterfaces.ContainerName)\n94: \tif err != nil {\n95: \t\treturn nil, err\n96: \t}\n97: \n98: \t// Get network NS handle\n99: \tvar containerNsHandle netns.NsHandle\n100: \n101: \tswitch {\n102: \tcase nodeNsPath != \"\":\n103: \t\tcontainerNsHandle, err = netns.GetFromPath(nodeNsPath)\n104: \t\tif err != nil {\n105: \t\t\treturn nil, fmt.Errorf(\"unable to get container network NS handle: %w\", err)\n106: \t\t}\n107: \t\tdefer containerNsHandle.Close()\n108: \tcase container.Runtime.GetName() == \"podman\":\n109: \t\t// Network NS path is empty and the runtime is Podman -> host network mode\n110: \t\t// Manually get the handle for the root network namespace\n111: \t\tcontainerNsHandle, err = netns.Get()\n112: \t\tif err != nil {\n113: \t\t\treturn nil, fmt.Errorf(\"unable to get root network NS handle: %w\", err)\n114: \t\t}\n115: \t\tdefer containerNsHandle.Close()\n116: \tdefault:\n117: \t\tlog.Warnf(\"Container %v has no namespace set, skipping!\", containerInterfaces.ContainerName)\n118: \t\tcontainerInterfaces.Interfaces = make([]*clabtypes.ContainerInterfaceDetails, 0)\n119: \n120: \t\treturn &containerInterfaces, nil\n121: \t}\n122: \n123: \t// Get Netlink handle in container network NS\n124: \tnetlinkHandle, err := netlink.NewHandleAt(containerNsHandle)\n125: \tif err != nil {\n126: \t\treturn nil, fmt.Errorf(\"unable to enter container network NS: %w\", err)\n127: \t}\n128: \tdefer netlinkHandle.Close()\n129: \n130: \tinterfaces, err := netlinkHandle.LinkList()\n131: \tif err != nil {\n132: \t\treturn nil, fmt.Errorf(\"unable to list network interfaces: %w\", err)\n133: \t}\n134: \n135: \tcontainerInterfaces.Interfaces = make(\n136: \t\t[]*clabtypes.ContainerInterfaceDetails,\n137: \t\t0,\n138: \t\tlen(interfaces),\n139: \t)\n140: \n141: \tlab, node := TopoIdentity(container.Labels)\n142: \n143: \tfor _, iface := range interfaces {\n144: \t\treported, alias := reportedInterface(iface, lab, node)\n145: \t\tattrs := reported.Attrs()\n146: \n147: \t\tifaceDetails := clabtypes.ContainerInterfaceDetails{\n148: \t\t\tInterfaceName:  attrs.Name,\n149: \t\t\tInterfaceAlias: alias,\n150: \t\t\tInterfaceMTU:   attrs.MTU,\n151: \t\t\tInterfaceMAC:   attrs.HardwareAddr.String(),\n152: \t\t\tInterfaceIndex: attrs.Index,\n153: \t\t\tInterfaceType:  reported.Type(),\n154: \t\t\tInterfaceState: attrs.OperState.String(),\n155: \t\t}\n156: \t\tlog.Debugf(\"Interface info: %+v\", ifaceDetails)\n157: \n158: \t\tcontainerInterfaces.Interfaces = append(containerInterfaces.Interfaces, &ifaceDetails)\n159: \t}\n160: \n161: \tlog.Debugf(\"Fetched %v interfaces for %v\", len(interfaces), containerInterfaces.ContainerName)\n162: \n163: \treturn &containerInterfaces, nil\n164: }\n165: \n166: // reportedInterface substitutes the host-side stitch interface for iface when\n167: // one exists, keeping the topology name as alias so the swap is transparent.\n168: func reportedInterface(iface netlink.Link, lab, node string) (netlink.Link, string) {\n169: \talias := iface.Attrs().Alias\n170: \n171: \ttopoName := alias\n172: \tif topoName == \"\" {\n173: \t\ttopoName = iface.Attrs().Name\n174: \t}\n175: \n176: \tif tools, ok := clablinks.ToolsInterface(lab, node, topoName); ok {\n177: \t\treturn tools, topoName\n178: \t}\n179: \n180: \treturn iface, alias\n181: }\n182: \n183: // ListContainersInterfaces list interfaces of all given containers.\n184: func (c *CLab) ListContainersInterfaces(\n185: \tctx context.Context,\n186: \tcontainers []clabruntime.GenericContainer,\n187: ) ([]*clabtypes.ContainerInterfaces, error) {\n188: \tcontainerInterfaces := make([]*clabtypes.ContainerInterfaces, 0, len(containers))\n189: \n190: \tfor idx := range containers {\n191: \t\tcIfs, err := c.ListContainerInterfaces(ctx, &containers[idx])\n192: \t\tif err != nil {\n193: \t\t\tcontainerName := \"\"\n194: \t\t\tif len(containers[idx].Names) > 0 {\n195: \t\t\t\tcontainerName = containers[idx].Names[0]\n196: \t\t\t}\n197: \t\t\tlog.Warn(\"Skipping interface detection\", \"node\", containerName, \"err\", err)\n198: \t\t\tcontinue\n199: \t\t}\n200: \n201: \t\tif len(cIfs.Interfaces) > 0 {\n202: \t\t\tsort.Slice(cIfs.Interfaces, func(i, j int) bool {\n203: \t\t\t\treturn cIfs.Interfaces[i].InterfaceName < cIfs.Interfaces[j].InterfaceName\n204: \t\t\t})\n205: \t\t} else {\n206: \t\t\tlog.Warnf(\"No interfaces found for container %v\", cIfs.ContainerName)\n207: \t\t}\n208: \n209: \t\tcontainerInterfaces = append(containerInterfaces, cIfs)\n210: \t}\n211: \n212: \tsort.Slice(containerInterfaces, func(i, j int) bool {\n213: \t\treturn containerInterfaces[i].ContainerName < containerInterfaces[j].ContainerName\n214: \t})\n215: \n216: \treturn containerInterfaces, nil\n217: }\n\n(End of file - total 217 lines)\n</content>",
+            "title": "source/head/core/list.go",
+            "metadata": {
+              "preview": "package core\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"sort\"\n\n\t\"github.com/charmbracelet/log\"\n\tclablinks \"github.com/srl-labs/containerlab/links\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\t\"github.com/vishvananda/netlink\"\n\t\"github.com/vishvananda/netns\"\n)\n\n// ListContainers lists all containers using provided filter.\nfunc (c *CLab) ListContainers(\n\tctx context.Context,\n\toptions ...ListOption,\n) ([]clabruntime.GenericContainer, error) {",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/list.go",
+                "text": "package core\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"sort\"\n\n\t\"github.com/charmbracelet/log\"\n\tclablinks \"github.com/srl-labs/containerlab/links\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\t\"github.com/vishvananda/netlink\"\n\t\"github.com/vishvananda/netns\"\n)\n\n// ListContainers lists all containers using provided filter.\nfunc (c *CLab) ListContainers(\n\tctx context.Context,\n\toptions ...ListOption,\n) ([]clabruntime.GenericContainer, error) {\n\topts := NewListOptions()\n\n\tfor _, opt := range options {\n\t\topt(opts)\n\t}\n\n\tvar containers []clabruntime.GenericContainer\n\n\tfor _, r := range c.Runtimes {\n\t\tctrs, err := r.ListContainers(ctx, opts.ToFilters())\n\t\tif err != nil {\n\t\t\treturn containers, fmt.Errorf(\"could not list containers: %v\", err)\n\t\t}\n\n\t\tcontainers = append(containers, ctrs...)\n\t}\n\n\treturn containers, nil\n}\n\n// ListNodesContainers lists all containers based on the nodes stored in clab instance.\nfunc (c *CLab) ListNodesContainers(\n\tctx context.Context,\n) ([]clabruntime.GenericContainer, error) {\n\tvar containers []clabruntime.GenericContainer\n\n\tfor _, n := range c.Nodes {\n\t\tcts, err := n.GetContainers(ctx)\n\t\tif err != nil {\n\t\t\treturn containers, fmt.Errorf(\n\t\t\t\t\"could not get container for node %s: %v\",\n\t\t\t\tn.Config().LongName, err,\n\t\t\t)\n\t\t}\n\n\t\tcontainers = append(containers, cts...)\n\t}\n\n\treturn containers, nil\n}\n\n// ListNodesContainersIgnoreNotFound lists all containers based on the nodes stored in clab\n// instance, ignoring errors for non found containers.\nfunc (c *CLab) ListNodesContainersIgnoreNotFound(\n\tctx context.Context,\n) ([]clabruntime.GenericContainer, error) {\n\tvar containers []clabruntime.GenericContainer\n\n\tfor _, n := range c.Nodes {\n\t\tcts, err := n.GetContainers(ctx)\n\t\tif err != nil {\n\t\t\tcontinue\n\t\t}\n\n\t\tcontainers = append(containers, cts...)\n\t}\n\n\treturn containers, nil\n}\n\n// ListContainerInterfaces list interfaces of the given container.\nfunc (c *CLab) ListContainerInterfaces(\n\tctx context.Context,\n\tcontainer *clabruntime.GenericContainer,\n) (*clabtypes.ContainerInterfaces, error) {\n\tcontainerInterfaces := clabtypes.ContainerInterfaces{}\n\n\tif len(container.Names) > 0 {\n\t\tcontainerInterfaces.ContainerName = container.Names[0]\n\t}\n\n\t// Retrieve the path to the container network NS\n\tnodeNsPath, err := container.Runtime.GetNSPath(ctx, containerInterfaces.ContainerName)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\t// Get network NS handle\n\tvar containerNsHandle netns.NsHandle\n\n\tswitch {\n\tcase nodeNsPath != \"\":\n\t\tcontainerNsHandle, err = netns.GetFromPath(nodeNsPath)\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"unable to get container network NS handle: %w\", err)\n\t\t}\n\t\tdefer containerNsHandle.Close()\n\tcase container.Runtime.GetName() == \"podman\":\n\t\t// Network NS path is empty and the runtime is Podman -> host network mode\n\t\t// Manually get the handle for the root network namespace\n\t\tcontainerNsHandle, err = netns.Get()\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf(\"unable to get root network NS handle: %w\", err)\n\t\t}\n\t\tdefer containerNsHandle.Close()\n\tdefault:\n\t\tlog.Warnf(\"Container %v has no namespace set, skipping!\", containerInterfaces.ContainerName)\n\t\tcontainerInterfaces.Interfaces = make([]*clabtypes.ContainerInterfaceDetails, 0)\n\n\t\treturn &containerInterfaces, nil\n\t}\n\n\t// Get Netlink handle in container network NS\n\tnetlinkHandle, err := netlink.NewHandleAt(containerNsHandle)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"unable to enter container network NS: %w\", err)\n\t}\n\tdefer netlinkHandle.Close()\n\n\tinterfaces, err := netlinkHandle.LinkList()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"unable to list network interfaces: %w\", err)\n\t}\n\n\tcontainerInterfaces.Interfaces = make(\n\t\t[]*clabtypes.ContainerInterfaceDetails,\n\t\t0,\n\t\tlen(interfaces),\n\t)\n\n\tlab, node := TopoIdentity(container.Labels)\n\n\tfor _, iface := range interfaces {\n\t\treported, alias := reportedInterface(iface, lab, node)\n\t\tattrs := reported.Attrs()\n\n\t\tifaceDetails := clabtypes.ContainerInterfaceDetails{\n\t\t\tInterfaceName:  attrs.Name,\n\t\t\tInterfaceAlias: alias,\n\t\t\tInterfaceMTU:   attrs.MTU,\n\t\t\tInterfaceMAC:   attrs.HardwareAddr.String(),\n\t\t\tInterfaceIndex: attrs.Index,\n\t\t\tInterfaceType:  reported.Type(),\n\t\t\tInterfaceState: attrs.OperState.String(),\n\t\t}\n\t\tlog.Debugf(\"Interface info: %+v\", ifaceDetails)\n\n\t\tcontainerInterfaces.Interfaces = append(containerInterfaces.Interfaces, &ifaceDetails)\n\t}\n\n\tlog.Debugf(\"Fetched %v interfaces for %v\", len(interfaces), containerInterfaces.ContainerName)\n\n\treturn &containerInterfaces, nil\n}\n\n// reportedInterface substitutes the host-side stitch interface for iface when\n// one exists, keeping the topology name as alias so the swap is transparent.\nfunc reportedInterface(iface netlink.Link, lab, node string) (netlink.Link, string) {\n\talias := iface.Attrs().Alias\n\n\ttopoName := alias\n\tif topoName == \"\" {\n\t\ttopoName = iface.Attrs().Name\n\t}\n\n\tif tools, ok := clablinks.ToolsInterface(lab, node, topoName); ok {\n\t\treturn tools, topoName\n\t}\n\n\treturn iface, alias\n}\n\n// ListContainersInterfaces list interfaces of all given containers.\nfunc (c *CLab) ListContainersInterfaces(\n\tctx context.Context,\n\tcontainers []clabruntime.GenericContainer,\n) ([]*clabtypes.ContainerInterfaces, error) {\n\tcontainerInterfaces := make([]*clabtypes.ContainerInterfaces, 0, len(containers))\n\n\tfor idx := range containers {\n\t\tcIfs, err := c.ListContainerInterfaces(ctx, &containers[idx])\n\t\tif err != nil {\n\t\t\tcontainerName := \"\"\n\t\t\tif len(containers[idx].Names) > 0 {\n\t\t\t\tcontainerName = containers[idx].Names[0]\n\t\t\t}\n\t\t\tlog.Warn(\"Skipping interface detection\", \"node\", containerName, \"err\", err)\n\t\t\tcontinue\n\t\t}\n\n\t\tif len(cIfs.Interfaces) > 0 {\n\t\t\tsort.Slice(cIfs.Interfaces, func(i, j int) bool {\n\t\t\t\treturn cIfs.Interfaces[i].InterfaceName < cIfs.Interfaces[j].InterfaceName\n\t\t\t})\n\t\t} else {\n\t\t\tlog.Warnf(\"No interfaces found for container %v\", cIfs.ContainerName)\n\t\t}\n\n\t\tcontainerInterfaces = append(containerInterfaces, cIfs)\n\t}\n\n\tsort.Slice(containerInterfaces, func(i, j int) bool {\n\t\treturn containerInterfaces[i].ContainerName < containerInterfaces[j].ContainerName\n\t})\n\n\treturn containerInterfaces, nil\n}",
+                "lineStart": 1,
+                "lineEnd": 217,
+                "totalLines": 217,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795540163678,
+              "end": 1795540163690
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e889c830010OOPuGkTTfw4AX",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e887dff001o2IEmB17XBX7Kt",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 51640,
+            "input": 869,
+            "output": 14,
+            "reasoning": 581,
+            "cache": {
+              "read": 50176,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e889c8c001GTfFQJSFCSN0vu",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540163724,
+          "completed": 1795540168181
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 53986,
+          "input": 2287,
+          "output": 28,
+          "reasoning": 215,
+          "cache": {
+            "read": 51456,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e88a49d001lhiTQ2rAnOIHKV",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e889c8c001GTfFQJSFCSN0vu"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e88a49f001sj7s0JaCwdm5qZ",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e889c8c001GTfFQJSFCSN0vu",
+          "text": "Interesting: `ListNodesContainers`/`ListNodesContainersIgnoreNotFound` iterate `c.Nodes` (a map) — nondeterministic order. In BASE, the topo flow output order came from this map iteration (so base output order was already nondeterministic for `-t` runs). In HEAD, for the topo flow the FIRST pass is the label list (runtime order, deterministic-ish), and node-pass additions (ext-containers) get appended. So head's order is actually more deterministic. Also `printContainerInspectJSON` groups by lab but doesn't sort rows within a lab... it appends in input order. So with `-t -f json` the row order was nondeterministic in base; head is mostly deterministic except ext-containers appended at the end in map order. This is not worsened by the PR (actually improved). Not a finding.\n\nNow — think about a potential issue with **table output ordering with `--all`**: `PrintContainerInspect` — let me check lines 516-627 for sorting.",
+          "time": {
+            "start": 1795540165791,
+            "end": 1795540168166
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e88ade8001BPCAekEtzC7dqw",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e889c8c001GTfFQJSFCSN0vu",
+          "callID": "call_063c69621e4d43c6a0e607cd",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/cmd/inspect.go",
+              "limit": 110,
+              "offset": 517
+            },
+            "output": "<path>/source/head/cmd/inspect.go</path>\n<type>file</type>\n<content>\n517: func PrintContainerInspect(containers []clabruntime.GenericContainer, o *Options) error {\n518: \tcontDetails := make([]clabtypes.ContainerDetails, 0, len(containers))\n519: \n520: \t// Gather summary details of each container\n521: \tfor idx := range containers {\n522: \t\tabsPath := containers[idx].Labels[clabconstants.TopoFile]\n523: \n524: \t\tshortPath, err := getShortestTopologyPath(absPath)\n525: \t\tif err != nil {\n526: \t\t\tlog.Warnf(\n527: \t\t\t\t\"failed to get relative topology path for container %s: %v, using raw path %q\",\n528: \t\t\t\tcontainers[idx].Names[0],\n529: \t\t\t\terr,\n530: \t\t\t\tabsPath,\n531: \t\t\t)\n532: \n533: \t\t\tshortPath = absPath // Use raw path as fallback for display\n534: \t\t}\n535: \n536: \t\tstatus := parseStatus(containers[idx].Status)\n537: \n538: \t\tcdet := clabtypes.ContainerDetails{\n539: \t\t\tLabName:     containers[idx].Labels[clabconstants.Containerlab],\n540: \t\t\tLabPath:     shortPath, // Relative or shortest path for table view\n541: \t\t\tAbsLabPath:  absPath,   // Absolute path for JSON view\n542: \t\t\tImage:       containers[idx].Image,\n543: \t\t\tState:       containers[idx].State,\n544: \t\t\tStatus:      status,\n545: \t\t\tIPv4Address: containers[idx].GetContainerIPv4(),\n546: \t\t\tIPv6Address: containers[idx].GetContainerIPv6(),\n547: \t\t\tContainerID: containers[idx].ShortID,\n548: \t\t\t// Only lab runtimes set the workload; it adds namespace, pod, container, node_uid,\n549: \t\t\t// exposed_ports and load_balancer_address to the JSON output.\n550: \t\t\tLabRuntimeWorkload: containers[idx].Workload,\n551: \t\t}\n552: \n553: \t\tif len(containers[idx].Names) > 0 {\n554: \t\t\tcdet.Name = containers[idx].Names[0]\n555: \t\t}\n556: \n557: \t\tif group, ok := containers[idx].Labels[clabconstants.NodeGroup]; ok {\n558: \t\t\tcdet.Group = group\n559: \t\t}\n560: \n561: \t\tif kind, ok := containers[idx].Labels[clabconstants.NodeKind]; ok {\n562: \t\t\tcdet.Kind = kind\n563: \t\t}\n564: \n565: \t\tif owner, ok := containers[idx].Labels[clabconstants.Owner]; ok {\n566: \t\t\tcdet.Owner = owner\n567: \t\t}\n568: \n569: \t\tcontDetails = append(contDetails, cdet)\n570: \t}\n571: \n572: \t// Sort summary details by lab name, then container name\n573: \tsort.Slice(contDetails, func(i, j int) bool {\n574: \t\tif contDetails[i].LabName == contDetails[j].LabName {\n575: \t\t\treturn contDetails[i].Name < contDetails[j].Name\n576: \t\t}\n577: \n578: \t\treturn contDetails[i].LabName < contDetails[j].LabName\n579: \t})\n580: \n581: \tswitch o.Inspect.Format {\n582: \tcase clabconstants.FormatJSON:\n583: \t\terr := printContainerInspectJSON(contDetails)\n584: \t\tif err != nil {\n585: \t\t\treturn err\n586: \t\t}\n587: \tcase \"table\":\n588: \t\tprintContainerInspectTable(contDetails, o)\n589: \tcase \"csv\":\n590: \t\tprintContainerInspectCSV(contDetails)\n591: \tdefault:\n592: \t\treturn fmt.Errorf(\"internal error: unhandled format %q\", o.Inspect.Format)\n593: \t}\n594: \n595: \treturn nil\n596: }\n597: \n598: // parseStatus extracts a simpler status string, focusing on health states.\n599: func parseStatus(status string) string {\n600: \tswitch {\n601: \tcase strings.Contains(status, \"unhealthy\"):\n602: \t\treturn \"unhealthy\"\n603: \tcase strings.Contains(status, \"health: starting\"):\n604: \t\treturn \"health: starting\"\n605: \tcase strings.Contains(status, \"healthy\"):\n606: \t\treturn \"healthy\"\n607: \tdefault:\n608: \t\t// Return original status if no specific health info found\n609: \t\treturn status\n610: \t}\n611: }\n612: \n613: // ipWithoutPrefix removes the CIDR prefix length from an IP address string.\n614: // Returns \"N/A\" if input contains \"N/A\".\n615: // Returns original string if it doesn't contain exactly one \"/\".\n616: func ipWithoutPrefix(ip string) string {\n617: \tif strings.Contains(ip, clabconstants.NotApplicable) {\n618: \t\treturn ip\n619: \t}\n620: \n621: \tipParts := strings.Split(ip, \"/\")\n622: \tif len(ipParts) != 2 { //nolint: mnd\n623: \t\treturn ip // Return original if not in expected format \"address/prefix\"\n624: \t}\n625: \n626: \treturn ipParts[0]\n\n(Showing lines 517-626 of 627. Use offset=627 to continue.)\n</content>",
+            "title": "source/head/cmd/inspect.go",
+            "metadata": {
+              "preview": "func PrintContainerInspect(containers []clabruntime.GenericContainer, o *Options) error {\n\tcontDetails := make([]clabtypes.ContainerDetails, 0, len(containers))\n\n\t// Gather summary details of each container\n\tfor idx := range containers {\n\t\tabsPath := containers[idx].Labels[clabconstants.TopoFile]\n\n\t\tshortPath, err := getShortestTopologyPath(absPath)\n\t\tif err != nil {\n\t\t\tlog.Warnf(\n\t\t\t\t\"failed to get relative topology path for container %s: %v, using raw path %q\",\n\t\t\t\tcontainers[idx].Names[0],\n\t\t\t\terr,\n\t\t\t\tabsPath,\n\t\t\t)\n\n\t\t\tshortPath = absPath // Use raw path as fallback for display\n\t\t}\n\n\t\tstatus := parseStatus(containers[idx].Status)",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/cmd/inspect.go",
+                "text": "func PrintContainerInspect(containers []clabruntime.GenericContainer, o *Options) error {\n\tcontDetails := make([]clabtypes.ContainerDetails, 0, len(containers))\n\n\t// Gather summary details of each container\n\tfor idx := range containers {\n\t\tabsPath := containers[idx].Labels[clabconstants.TopoFile]\n\n\t\tshortPath, err := getShortestTopologyPath(absPath)\n\t\tif err != nil {\n\t\t\tlog.Warnf(\n\t\t\t\t\"failed to get relative topology path for container %s: %v, using raw path %q\",\n\t\t\t\tcontainers[idx].Names[0],\n\t\t\t\terr,\n\t\t\t\tabsPath,\n\t\t\t)\n\n\t\t\tshortPath = absPath // Use raw path as fallback for display\n\t\t}\n\n\t\tstatus := parseStatus(containers[idx].Status)\n\n\t\tcdet := clabtypes.ContainerDetails{\n\t\t\tLabName:     containers[idx].Labels[clabconstants.Containerlab],\n\t\t\tLabPath:     shortPath, // Relative or shortest path for table view\n\t\t\tAbsLabPath:  absPath,   // Absolute path for JSON view\n\t\t\tImage:       containers[idx].Image,\n\t\t\tState:       containers[idx].State,\n\t\t\tStatus:      status,\n\t\t\tIPv4Address: containers[idx].GetContainerIPv4(),\n\t\t\tIPv6Address: containers[idx].GetContainerIPv6(),\n\t\t\tContainerID: containers[idx].ShortID,\n\t\t\t// Only lab runtimes set the workload; it adds namespace, pod, container, node_uid,\n\t\t\t// exposed_ports and load_balancer_address to the JSON output.\n\t\t\tLabRuntimeWorkload: containers[idx].Workload,\n\t\t}\n\n\t\tif len(containers[idx].Names) > 0 {\n\t\t\tcdet.Name = containers[idx].Names[0]\n\t\t}\n\n\t\tif group, ok := containers[idx].Labels[clabconstants.NodeGroup]; ok {\n\t\t\tcdet.Group = group\n\t\t}\n\n\t\tif kind, ok := containers[idx].Labels[clabconstants.NodeKind]; ok {\n\t\t\tcdet.Kind = kind\n\t\t}\n\n\t\tif owner, ok := containers[idx].Labels[clabconstants.Owner]; ok {\n\t\t\tcdet.Owner = owner\n\t\t}\n\n\t\tcontDetails = append(contDetails, cdet)\n\t}\n\n\t// Sort summary details by lab name, then container name\n\tsort.Slice(contDetails, func(i, j int) bool {\n\t\tif contDetails[i].LabName == contDetails[j].LabName {\n\t\t\treturn contDetails[i].Name < contDetails[j].Name\n\t\t}\n\n\t\treturn contDetails[i].LabName < contDetails[j].LabName\n\t})\n\n\tswitch o.Inspect.Format {\n\tcase clabconstants.FormatJSON:\n\t\terr := printContainerInspectJSON(contDetails)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\tcase \"table\":\n\t\tprintContainerInspectTable(contDetails, o)\n\tcase \"csv\":\n\t\tprintContainerInspectCSV(contDetails)\n\tdefault:\n\t\treturn fmt.Errorf(\"internal error: unhandled format %q\", o.Inspect.Format)\n\t}\n\n\treturn nil\n}\n\n// parseStatus extracts a simpler status string, focusing on health states.\nfunc parseStatus(status string) string {\n\tswitch {\n\tcase strings.Contains(status, \"unhealthy\"):\n\t\treturn \"unhealthy\"\n\tcase strings.Contains(status, \"health: starting\"):\n\t\treturn \"health: starting\"\n\tcase strings.Contains(status, \"healthy\"):\n\t\treturn \"healthy\"\n\tdefault:\n\t\t// Return original status if no specific health info found\n\t\treturn status\n\t}\n}\n\n// ipWithoutPrefix removes the CIDR prefix length from an IP address string.\n// Returns \"N/A\" if input contains \"N/A\".\n// Returns original string if it doesn't contain exactly one \"/\".\nfunc ipWithoutPrefix(ip string) string {\n\tif strings.Contains(ip, clabconstants.NotApplicable) {\n\t\treturn ip\n\t}\n\n\tipParts := strings.Split(ip, \"/\")\n\tif len(ipParts) != 2 { //nolint: mnd\n\t\treturn ip // Return original if not in expected format \"address/prefix\"\n\t}\n\n\treturn ipParts[0]",
+                "lineStart": 517,
+                "lineEnd": 626,
+                "totalLines": 627,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795540168171,
+              "end": 1795540168177
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e88adf200180bCw8g1y2g7BP",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e889c8c001GTfFQJSFCSN0vu",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 53986,
+            "input": 2287,
+            "output": 28,
+            "reasoning": 215,
+            "cache": {
+              "read": 51456,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e88adfb001IG8obnyOrOQBfB",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540168187,
+          "completed": 1795540180344
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 56139,
+          "input": 1495,
+          "output": 27,
+          "reasoning": 857,
+          "cache": {
+            "read": 53760,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e88b626001uvmgMdi6piK05B",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88adfb001IG8obnyOrOQBfB"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e88b62800105wm9DmRcwzT9n",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88adfb001IG8obnyOrOQBfB",
+          "text": "`PrintContainerInspect` sorts by lab name then container name — so the output is sorted regardless. Good.\n\nNow the logical node row: Name = Names[0] = e.g. \"clab-lab1-srl\" (the srl container's name) but the CPM case: Names[0] of the CPM A container = \"clab-lab1-sr-a\". Fine.\n\nNow — one thing to double check: for the srl case, the kept container is the SRL node container (label-listed version, or node-pass version if deduped?). Dedupe keeps the label-passed version. Its `Kind` label = \"srl\" ✓, Image ✓. And merged settings give IPv4/6. But what about `PortBindings`/`Ports` (from holder, merged) — used by `graph`/details? In summary view, not used. In `--details`, all containers returned directly (holder included). ✓\n\nNow — one potential inconsistency: for the srl logical row, `ContainerID` = the srl container's ID (not the holder's). Reasonable.\n\nNow let me revisit the one finding candidate I still consider real: **P3: `logicalNodeContainers` is skipped for the c9s runtime path, so `--containers` is silently ignored there** — actually c9s inspect already reports logical nodes; the flag is meaningless. This is at most a docs nit. I'll put it in coverage notes, not a finding.\n\nNext, let me reconsider the **`--topo` flow double-listing**: For a lab where the topo contains a node whose container name matches a component container of ANOTHER node? No.\n\nNow, the last candidate: **`DeleteFunc` removes a container whose `NodeName` matches a topo node but which is actually a TOOL container of that lab when tool name equals node name** — contrived, skip.\n\nNow let me think about **whether the head topo flow drops the base behavior for `--details` with topo**: base `ins -t --details` → node pass → all node containers (incl. srl with merged settings, CPM A). Head `ins -t --details` → label pass (holders + components + tools→removed) + node pass → MORE containers (holders, linecards). That's the intended new behavior.\n\nNow, let me also confirm the **`o.Inspect.Containers` name doesn't collide with `o.Destroy.All`'s `-a`**. Fine.\n\nOne more: **the flag help says \"show every container of a lab\"** — with `--topo`, tools are excluded. Docs paragraph explains the topo case. ✓\n\nNow — one more scan of the head topo flow for a subtle bug: `containers = slices.DeleteFunc(containers, ...)` — DeleteFunc zeroes trailing elements; fine.\n\n**What about a container that appears in the label pass but whose `NodeName` matches a topo node of the same lab — but the container is actually from a DIFFERENT deployment with the same lab name?** N/A.\n\nNow let me think about **empty `--all` + `--containers` + JSON: output `{}`? Only if no containers.\n\nI think the implementation is solid. Let me do a final check of remaining changed-file content: docs/manual/kinds/srl.md — seen. The docs statement \"The internal container is only listed by `containerlab inspect` with the [`--containers`](../../cmd/inspect/index.md#containers) or `--details` flag\" — accurate.\n\nWait — one more consideration on the srl.md statement: is the internal container listed by `inspect --topo` WITHOUT --containers? No — hidden. By `inspect --all` alone? No (changed). By `deploy` output? No (ListNodesContainers). So \"only listed ... with --containers or --details\" is accurate. ✓\n\nNow, are there any other places that reference the old behavior of inspect --all listing internal containers? Let me grep docs for \"netns\" container references and \"inspect --all\" to catch stale docs.",
+          "time": {
+            "start": 1795540170280,
+            "end": 1795540180300
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e88dd4f001gbohCDvhmX7sOn",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88adfb001IG8obnyOrOQBfB",
+          "callID": "call_6cc112bde0404c5cbf8b08d0",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs",
+              "pattern": "inspect --all|ins -a|netns"
+            },
+            "output": "Found 50 matches\n/source/head/docs/manual/wireshark.md:\n  Line 38: To capture the packets from a given interface requires having that interface's name and its network namespace (netns). And that's it.\n\n  Line 53: Now when it is clear which netns names corresponds to which container and which interfaces are available inside the given lab node, it's easy to start capturing traffic. But how to do that?\n\n  Line 67: ip netns exec clab-quickstart-srl tcpdump -nni e1-1\n\n  Line 70: In this example we first entered the namespace where the target interface is located using `ip netns exec` command and then started the capture with `tcpdump` providing the interface name to it.\n\n  Line 82:     \"ip netns exec clab-quickstart-srl tcpdump -nni e1-1\"\n\n  Line 93:     \"ip netns exec $lab_node_name tcpdump -U -nni $if_name -w -\" | \\\n\n  Line 108:     \"ip netns exec $lab_node_name tcpdump -U -nni $if_name -w -\" | \\\n\n  Line 132: ssh $1 \"sudo ip netns exec $2 tshark -l ${IFACES} -w -\" | \\\n\n  Line 266:     \"ip netns exec $clab-pcap-srl tcpdump -U -nni e1-1 -w -\" | \\\n\n  Line 274:     \"ip netns exec $clab-pcap-srl tcpdump -U -nni mgmt0 -w -\" | \\\n\n  Line 284:     \"ip netns exec $clab-pcap-ceos tcpdump -U -nni eth1 -w -\" | \\\n\n  Line 295:     \"ip netns exec $clab-pcap-linux tcpdump -U -nni eth1 -w -\" | \\\n\n  Line 307: Note that in this case you do not need to drill into the network namespace, since management bridge is in the default netns.\n\n  Line 315: ip netns list\n\n  Line 321: # where $netns_name is the container name of a node\n\n  Line 322: ip netns exec $netns_name ip link\n\n\n/source/head/docs/manual/network.md:\n  Line 704:     link/ether b2:80:e9:60:c7:9d brd ff:ff:ff:ff:ff:ff link-netns clab-srl01-srl\n\n\n/source/head/docs/manual/kinds/crpd.md:\n  Line 73:         link/ether 02:42:ac:14:14:03 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n\n  Line 81:         link/ether b6:d3:63:f1:cb:7b brd ff:ff:ff:ff:ff:ff link-netnsid 1\n\n\n/source/head/docs/manual/kinds/sros.md:\n  Line 805: $ sudo ip netns exec  clab-sros-sr-sim10  tcpdump -nnei mirror0 icmp\n\n\n/source/head/docs/manual/kinds/srl.md:\n  Line 473: To support that, SR Linux nodes default to the `unless-stopped` [restart policy](../nodes.md#restart-policy), and containerlab keeps the links and the management address of each node in an internal `<node-name>-netns` container. The internal container is only listed by `containerlab inspect` with the [`--containers`](../../cmd/inspect/index.md#containers) or `--details` flag, and it is removed together with the node.\n\n\n/source/head/docs/manual/kinds/ceos.md:\n  Line 98:         link/ether 02:42:ac:14:14:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n\n\n/source/head/docs/manual/kinds/fdio_vpp.md:\n  Line 185: root@clab-vpp:~# nsenter --net=/var/run/netns/dataplane\n\n\n/source/head/docs/manual/kinds/bridge.md:\n  Line 61: In the example above we named interfaces `eth1`, `eth2`, `eth3` accordingly and ensured that none of these interfaces existed before in the root netns.\n\n\n/source/head/docs/manual/kinds/k8s-kind.md:\n  Line 97:     link/ether aa:c1:ab:7e:22:6f brd ff:ff:ff:ff:ff:ff link-netnsid 1\n\n  Line 131: ### `inspect --all` command output\n\n  Line 133: When you run `clab inspect --all` command you may notice that the output doesn't list the `-{{ kind_code_name }}-` nodes nor the `ext-container` nodes.\n\n\n/source/head/docs/manual/clabernetes/runtime.md:\n  Line 291: - `inspect --all`\n\n  Line 486: containerlab --runtime c9s inspect --all\n\n  Line 496: `inspect --all` groups c9s Nodes by `c9s.run/topologyOwner` across all\n\n  Line 1328: containerlab --runtime c9s inspect --all\n\n\n/source/head/docs/manual/api-server.md:\n  Line 136:   -v /var/run/netns:/var/run/netns \\\n\n\n/source/head/docs/manual/share-access.md:\n  Line 23: ❯ clab ins -a\n\n\n/source/head/docs/install.md:\n  Line 317:     -v /var/run/netns:/var/run/netns \\\n\n\n/source/head/docs/lab-examples/peering-lab.md:\n  Line 202: $ containerlab inspect --all\n\n\n/source/head/docs/lab-examples/vsrx01.md:\n  Line 55:    link/ether aa:c1:ab:ac:1b:19 brd ff:ff:ff:ff:ff:ff link-netnsid 1\n\n\n/source/head/docs/rn/0.75.md:\n  Line 73: - **Core:** close netns and netlink handles in interface listing; fix a tool-container cleanup loop when `exec` fails; return errors for bad PEM in cert code paths; stricter `PreDeploy` certificate error propagation; safer env var splitting and `CreateFile` error checks; and closing files to avoid leaks. #3161 #3159 #3130 #3138 #3139 #3140 #3132\n\n\n/source/head/docs/rn/0.80.md:\n  Line 248: ## SR-SIM netns ownership\n\n  Line 262: `apply` no longer rejects nodes with `network-mode: container:<target>`, so sidecars sharing another node's netns can be added or changed on a running lab. When the target node is recreated, dependent nodes are recreated as well, and they wait for their target independently of the `--max-workers` pool.\n\n  Line 271: - `inspect --all` merges repeated cells again when `--wide`/`-w` is set. [#3378](https://github.com/srl-labs/containerlab/pull/3378)\n\n\n/source/head/docs/rn/0.46.md:\n  Line 15:     The `vxlan` link type creates a VXLAN link in the host network namespace and moves it to the node's netns as if this link belongs to the node itself.\n\n  Line 40:     The `vxlan-stitch` mode creates vxlan link in the host netns, but contrary to `vxlan` link type it doesn't move the link to the node's netns; instead it creates a veth link between the node and the host, and uses tc redirect rules to stitch the veth link to the vxlan link.\n\n\n/source/head/docs/rn/0.14.3.md:\n  Line 6: - fixed missing IPv4/6 information in `containerlab inspect --all` output\n\n\n/source/head/docs/rn/0.83.md:\n  Line 68: - Events can be scoped to one lab or namespace, and `inspect --all` and `destroy --all` honor the namespace override.\n\n  Line 142: Each `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n\n\n/source/head/docs/macos.md:\n  Line 219:         \"type=bind,src=/run/docker/netns,dst=/run/docker/netns\",\n\n\n/source/head/docs/cmd/inspect/index.md:\n  Line 13: With `--runtime c9s`, `inspect` reads Clabernetes `Topology` resources and their related kubernetes objects instead of local Docker containers. `inspect --all` lists c9s topologies across all namespaces, or in the `--namespace` override. The JSON output uses `<namespace>/<lab>/<node>` as `container_id` and adds the `namespace`, `pod`, `container`, `node_uid`, `exposed_ports` and `load_balancer_address` fields. See [Containerlab runtime](../../manual/clabernetes/runtime.md#inspect) for details.\n\n  Line 89: ❯ containerlab inspect --all\n\n  Line 132: clab inspect --all --wide\n\n\n/source/head/docs/cmd/tools/vxlan/create.md:\n  Line 59:     link/ether fa:4c:16:11:11:05 brd ff:ff:ff:ff:ff:ff link-netns clab-vx-srl1\n",
+            "title": "inspect --all|ins -a|netns",
+            "metadata": {
+              "matches": 50,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540180307,
+              "end": 1795540180321
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e88dd73001S96ljs1R63BfNs",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88adfb001IG8obnyOrOQBfB",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 56139,
+            "input": 1495,
+            "output": 27,
+            "reasoning": 857,
+            "cache": {
+              "read": 53760,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e88dd81001bIPTZ0noTuCHZ4",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540180353,
+          "completed": 1795540184921
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 58428,
+          "input": 2176,
+          "output": 21,
+          "reasoning": 167,
+          "cache": {
+            "read": 56064,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e88e68e001FKQKV0FaaAU2IH",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88dd81001bIPTZ0noTuCHZ4"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e88e690001L9d6swyPBk6wKa",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88dd81001bIPTZ0noTuCHZ4",
+          "text": "Found a stale doc: `docs/rn/0.83.md` line 142 says \"The holder is hidden from `inspect` unless `--all` is set\" — this describes the old behavior. Release notes are historical records though; the 0.83 release note describes the behavior at that release. Since this PR changes the behavior in a later (unreleased) version, the 0.83 RN text stays historically accurate for 0.83. Generally, RNs are not updated retroactively. I won't flag.\n\nBut there might be a missing release note for the new behavior change in this PR's own RN file? Let me check if there's an unreleased RN (e.g., docs/rn/0.84.md or similar) that this PR should update. Check rn dir.",
+          "time": {
+            "start": 1795540182672,
+            "end": 1795540184896
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e88ef42001Sdalrnn0vN2QxB",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88dd81001bIPTZ0noTuCHZ4",
+          "callID": "call_f9e5b88de7f7480b9705e65f",
+          "tool": "glob",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "docs/rn/*.md",
+              "path": "/source/head"
+            },
+            "output": "/source/head/docs/rn/0.60.md\n/source/head/docs/rn/0.30.md\n/source/head/docs/rn/0.41.md\n/source/head/docs/rn/0.70.md\n/source/head/docs/rn/0.74.md\n/source/head/docs/rn/0.75.md\n/source/head/docs/rn/0.56.md\n/source/head/docs/rn/0.47.md\n/source/head/docs/rn/0.59.md\n/source/head/docs/rn/0.13.0.md\n/source/head/docs/rn/0.54.md\n/source/head/docs/rn/0.45.md\n/source/head/docs/rn/0.18.md\n/source/head/docs/rn/0.76.md\n/source/head/docs/rn/0.14.3.md\n/source/head/docs/rn/0.46.md\n/source/head/docs/rn/0.16.md\n/source/head/docs/rn/0.17.md\n/source/head/docs/rn/0.23.md\n/source/head/docs/rn/0.27.md\n/source/head/docs/rn/0.66.md\n/source/head/docs/rn/0.79.md\n/source/head/docs/rn/0.80.md\n/source/head/docs/rn/0.78.md\n/source/head/docs/rn/0.38.md\n/source/head/docs/rn/0.68.md\n/source/head/docs/rn/0.61.md\n/source/head/docs/rn/0.67.md\n/source/head/docs/rn/0.65.md\n/source/head/docs/rn/0.69.md\n/source/head/docs/rn/0.72.md\n/source/head/docs/rn/0.83.md\n/source/head/docs/rn/0.42.md\n/source/head/docs/rn/0.58.md\n/source/head/docs/rn/0.52.md\n/source/head/docs/rn/0.31.md\n/source/head/docs/rn/0.57.md\n/source/head/docs/rn/0.36.md\n/source/head/docs/rn/0.25.md\n/source/head/docs/rn/0.14.1.md\n/source/head/docs/rn/0.28.md\n/source/head/docs/rn/0.44.md\n/source/head/docs/rn/0.82.md\n/source/head/docs/rn/0.48.md\n/source/head/docs/rn/0.40.md\n/source/head/docs/rn/0.32.md\n/source/head/docs/rn/0.64.md\n/source/head/docs/rn/0.29.md\n/source/head/docs/rn/0.39.md\n/source/head/docs/rn/0.71.md\n/source/head/docs/rn/0.49.md\n/source/head/docs/rn/0.14.2.md\n/source/head/docs/rn/0.21.md\n/source/head/docs/rn/0.15.md\n/source/head/docs/rn/0.43.md\n/source/head/docs/rn/0.14.0.md\n/source/head/docs/rn/0.33.md\n/source/head/docs/rn/0.81.md\n/source/head/docs/rn/0.50.md\n/source/head/docs/rn/0.34.md\n/source/head/docs/rn/0.37.md\n/source/head/docs/rn/0.14.4.md\n/source/head/docs/rn/0.35.md\n/source/head/docs/rn/0.22.md\n/source/head/docs/rn/0.77.md\n/source/head/docs/rn/0.20.md\n/source/head/docs/rn/0.63.md\n/source/head/docs/rn/0.12.0.md\n/source/head/docs/rn/0.26.md\n/source/head/docs/rn/0.62.md\n/source/head/docs/rn/0.73.md\n/source/head/docs/rn/0.11.0.md\n/source/head/docs/rn/0.19.md\n/source/head/docs/rn/0.53.md\n/source/head/docs/rn/0.51.md\n/source/head/docs/rn/0.55.md\n/source/head/docs/rn/0.24.md",
+            "title": "source/head",
+            "metadata": {
+              "count": 77,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540184903,
+              "end": 1795540184916
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e88ef56001km83bETFOFxiYv",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88dd81001bIPTZ0noTuCHZ4",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 58428,
+            "input": 2176,
+            "output": 21,
+            "reasoning": 167,
+            "cache": {
+              "read": 56064,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e88ef60001BZmLoNhgBP1fSw",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540184928,
+          "completed": 1795540189515
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59516,
+          "input": 926,
+          "output": 27,
+          "reasoning": 195,
+          "cache": {
+            "read": 58368,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e88f720001gK77eGxaJbwBFj",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88ef60001BZmLoNhgBP1fSw"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e88f722001RoZzBQqcgzlCNy",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88ef60001BZmLoNhgBP1fSw",
+          "text": "The latest RN is 0.83 (the unreleased/current dev version presumably). This PR changes user-visible inspect behavior; the 0.83 RN already documents the netns holder behavior introduced in that version, and this PR changes it again within the same unreleased release — the PR updates the srl.md doc but not the 0.83 RN line 142 (\"The holder is hidden from `inspect` unless `--all` is set\"). Since 0.83 is presumably still unreleased (latest RN), the RN statement is now stale within the same release cycle. That's a legitimate P3/P4 docs finding: `docs/rn/0.83.md:142` says the holder \"is hidden from inspect unless --all is set\", which this PR changes to \"--containers or --details\". Let me verify whether 0.83 is released — check if the repo version constant is 0.83. Check constants or version.",
+          "time": {
+            "start": 1795540186914,
+            "end": 1795540189490
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e890135001iEu7570CVLBYr0",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88ef60001BZmLoNhgBP1fSw",
+          "callID": "call_6c7b6a0ba7c540f5899fa75c",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/constants",
+              "pattern": "version|Version"
+            },
+            "output": "No files found",
+            "title": "version|Version",
+            "metadata": {
+              "matches": 0,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540189497,
+              "end": 1795540189511
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e890149001j7U2noV5Zy5pBr",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e88ef60001BZmLoNhgBP1fSw",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 59516,
+            "input": 926,
+            "output": 27,
+            "reasoning": 195,
+            "cache": {
+              "read": 58368,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e890152001pAOJv8FaDbN0zQ",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540189522,
+          "completed": 1795540191999
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59595,
+          "input": 131,
+          "output": 71,
+          "reasoning": 1,
+          "cache": {
+            "read": 59392,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e89091d001ryqImHNYV508Ar",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890152001pAOJv8FaDbN0zQ"
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e890a07001prYRQI8TPYLfKA",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890152001pAOJv8FaDbN0zQ",
+          "callID": "call_3bd585a5907945f5b2ea49b4",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.md",
+              "path": "/source/head/docs/rn",
+              "pattern": "0\\.84|unreleased|Unreleased"
+            },
+            "output": "No files found",
+            "title": "0\\.84|unreleased|Unreleased",
+            "metadata": {
+              "matches": 0,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540191755,
+              "end": 1795540191763
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e890ae9001Z4SCOZSmAGVwCp",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890152001pAOJv8FaDbN0zQ",
+          "callID": "call_00379935806c4629be2a8bd2",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "version = \"0\\.\\d+|Version = \"0\\."
+            },
+            "output": "Found 1 matches\n/source/head/cmd/version.go:\n  Line 24: \tVersion = \"0.0.0\"\n",
+            "title": "version = \"0\\.\\d+|Version = \"0\\.",
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540191982,
+              "end": 1795540191995
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e890afc001Na8DJMcqlA4dmz",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890152001pAOJv8FaDbN0zQ",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 59595,
+            "input": 131,
+            "output": 71,
+            "reasoning": 1,
+            "cache": {
+              "read": 59392,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e890b06001GAe1I4LWXBHkOO",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540192006,
+          "completed": 1795540200319
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 59832,
+          "input": 56814,
+          "output": 31,
+          "reasoning": 171,
+          "cache": {
+            "read": 2816,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e891a910017ZPZJnBSyClVPR",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890b06001GAe1I4LWXBHkOO"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e891a93001QnRp3QFDG3YrWr",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890b06001GAe1I4LWXBHkOO",
+          "text": "Version is dev. The latest RN is 0.83. The PR's behavior change makes `docs/rn/0.83.md:142` stale if 0.83 is still unreleased. Is 0.83 released? The RN for 0.83 exists with detailed entries; 0.83 might be the current dev release notes being accumulated. Since the srl.md statement it links to was ALSO introduced in 0.83 (\"Each nokia_srlinux node uses an internal holder... hidden from inspect unless --all\") — and this PR rewrites that same srl.md statement, the parallel RN line should be updated too. This is a legit P4 (minor docs) finding: stale release-note text contradicting the updated docs.\n\nLet me quickly verify 0.83.md line 142 context.",
+          "time": {
+            "start": 1795540195987,
+            "end": 1795540200305
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e892b73001icGqvCwRd47pr9",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890b06001GAe1I4LWXBHkOO",
+          "callID": "call_509dbf9b0a54412fa44d60de",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/docs/rn/0.83.md",
+              "limit": 30,
+              "offset": 130
+            },
+            "output": "<path>/source/head/docs/rn/0.83.md</path>\n<type>file</type>\n<content>\n130: Repeated configuration saves now omit an invalid empty default keymat-provider entry emitted by recent RouterOS versions, preserve intentional discovery and service VRF settings, and filter launcher-owned management configuration more reliably.\n131: \n132: /// warning | Recreate nodes using the previous management setup\n133: The native VRF setup requires a fresh node container. Export the user configuration before recreating an existing node that uses the previous policy-routing setup; the launcher does not migrate it in place.\n134: ///\n135: \n136: Done in #3545, #3546 and #3547, thanks to @mischadiehm\n137: \n138: ## SR Linux links survive chassis reboots\n139: \n140: A reboot issued from within an [SR Linux](../manual/kinds/srl.md#reboot) node, such as `tools platform chassis reboot`, now brings the node back with its links, saved configuration and management address intact.\n141: \n142: Each `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n143: \n144: Done in #3567 thanks to @sacckth and @kaelemc\n145: \n146: ## Per-node runtime deprecated\n147: \n148: The node-level `runtime` parameter is deprecated and will be removed in a future release. Mixing runtimes within a lab is not supported because management networking and lab-wide operations use the lab-wide runtime. Setting `runtime` on a node, group, kind or defaults block still works but emits a deprecation notice.\n149: \n150: Use the global `--runtime` flag or `CLAB_RUNTIME` environment variable instead:\n151: \n152: ```bash\n153: containerlab deploy -t mylab.clab.yml --runtime podman\n154: ```\n155: \n156: Done in #3527 thanks to @FloSch62\n157: \n158: ## Miscellaneous\n159: \n\n(Showing lines 130-159 of 171. Use offset=160 to continue.)\n</content>",
+            "title": "source/head/docs/rn/0.83.md",
+            "metadata": {
+              "preview": "Repeated configuration saves now omit an invalid empty default keymat-provider entry emitted by recent RouterOS versions, preserve intentional discovery and service VRF settings, and filter launcher-owned management configuration more reliably.\n\n/// warning | Recreate nodes using the previous management setup\nThe native VRF setup requires a fresh node container. Export the user configuration before recreating an existing node that uses the previous policy-routing setup; the launcher does not migrate it in place.\n///\n\nDone in #3545, #3546 and #3547, thanks to @mischadiehm\n\n## SR Linux links survive chassis reboots\n\nA reboot issued from within an [SR Linux](../manual/kinds/srl.md#reboot) node, such as `tools platform chassis reboot`, now brings the node back with its links, saved configuration and management address intact.\n\nEach `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n\nDone in #3567 thanks to @sacckth and @kaelemc\n\n## Per-node runtime deprecated\n\nThe node-level `runtime` parameter is deprecated and will be removed in a future release. Mixing runtimes within a lab is not supported because management networking and lab-wide operations use the lab-wide runtime. Setting `runtime` on a node, group, kind or defaults block still works but emits a deprecation notice.\n",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/docs/rn/0.83.md",
+                "text": "Repeated configuration saves now omit an invalid empty default keymat-provider entry emitted by recent RouterOS versions, preserve intentional discovery and service VRF settings, and filter launcher-owned management configuration more reliably.\n\n/// warning | Recreate nodes using the previous management setup\nThe native VRF setup requires a fresh node container. Export the user configuration before recreating an existing node that uses the previous policy-routing setup; the launcher does not migrate it in place.\n///\n\nDone in #3545, #3546 and #3547, thanks to @mischadiehm\n\n## SR Linux links survive chassis reboots\n\nA reboot issued from within an [SR Linux](../manual/kinds/srl.md#reboot) node, such as `tools platform chassis reboot`, now brings the node back with its links, saved configuration and management address intact.\n\nEach `nokia_srlinux` node uses an internal `<node-name>-netns` holder container for its network namespace. The holder is hidden from `inspect` unless `--all` is set and is removed with the node. SR Linux nodes now default to the `unless-stopped` restart policy, while an explicitly configured policy is preserved. Nodes with a user-defined `network-mode` keep the previous behavior.\n\nDone in #3567 thanks to @sacckth and @kaelemc\n\n## Per-node runtime deprecated\n\nThe node-level `runtime` parameter is deprecated and will be removed in a future release. Mixing runtimes within a lab is not supported because management networking and lab-wide operations use the lab-wide runtime. Setting `runtime` on a node, group, kind or defaults block still works but emits a deprecation notice.\n\nUse the global `--runtime` flag or `CLAB_RUNTIME` environment variable instead:\n\n```bash\ncontainerlab deploy -t mylab.clab.yml --runtime podman\n```\n\nDone in #3527 thanks to @FloSch62\n\n## Miscellaneous\n",
+                "lineStart": 130,
+                "lineEnd": 159,
+                "totalLines": 171,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795540200310,
+              "end": 1795540200315
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e892b7d0015oE182OK1oizzd",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e890b06001GAe1I4LWXBHkOO",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 59832,
+            "input": 56814,
+            "output": 31,
+            "reasoning": 171,
+            "cache": {
+              "read": 2816,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e892b86001jUfijuNKMrKpxC",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540200326,
+          "completed": 1795540215102
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 61672,
+          "input": 706,
+          "output": 66,
+          "reasoning": 1252,
+          "cache": {
+            "read": 59648,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8933ed001opFxXMEljnLtEt",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e892b86001jUfijuNKMrKpxC"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e8933ef001idVmwEzsVmaeAD",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e892b86001jUfijuNKMrKpxC",
+          "text": "Confirmed: `docs/rn/0.83.md:142` describes the old visibility rule (\"hidden from `inspect` unless `--all` is set\"), which this PR changes to `--containers`/`--details`. The PR updated `docs/manual/kinds/srl.md` (the same statement) but left the release note stale. Since 0.83 is the newest RN (and the srl.md section it references was introduced within it), this is a small docs inconsistency — P4.\n\nNow, let me make one more pass for genuine code findings. Let me re-examine the dedupe in the topo flow once more for a scenario where the label pass and the node pass return the same container with DIFFERENT data and the dedupe prefers the label-pass version. \n\nScenario: sros distributed node. Node pass returns CPM A with `distNodeMgmtIPs` merged (IPv4 from holder). Label pass returns CPM A WITHOUT those settings, plus the holder. Dedupe keeps the label-pass CPM A. logicalNodeContainers then merges holder settings into it → same IPs. Equivalent. ✓\n\nBut wait — one difference: the label-passed CPM A's `Labels` vs node-pass CPM A's Labels — same labels. `Image`, `State`, `Status` same. `Runtime` pointer? The label-passed container's `Runtime` field — is it set? In docker runtime's ListContainers, `Runtime` is set? For `PrintContainerInspect` it doesn't matter. For `inspect interfaces`? Not affected.\n\nHmm — but actually there's one more subtle difference: `distNodeMgmtIPs` also sets `IPv4Gw`/`IPv6Gw`, which the holder merge also provides (holder.NetworkSettings includes Gw). Equivalent.\n\nAnother scenario: **srl node with holder**: node pass returns srl container with holder's settings merged (srl.GetContainers). Label pass returns srl container without settings + holder. Dedupe keeps label-pass srl; logical merge re-applies holder settings. Equivalent. ✓\n\nOK. Now — a scenario where dedupe DISCARDS the node-pass version for an ext-container: label pass can't return ext-containers (no labels). ✓\n\nNow, one more scenario: **the topo flow with a node that is `kind: linux` AND has `network-mode: container:<other-node>`** — its container appears in node pass with no labels? It'd have the standard clab labels. Fine.\n\nNow let me think about whether the head topo flow could DUPLICATE a logical entry: label pass returns srl node + holder; node pass returns srl container (same ID) → deduped. Single row. ✓\n\nWhat if the runtime's label filter with `WithListLabName` doesn't match because c.Config.Name differs from deployed lab name (topo edited `name:` field after deploy)? Label pass returns [] (or other labs' containers?). WithListLabName(c.Config.Name) — c.Config.Name is from the current topo. If the deployed lab has a different name, label pass returns nothing; node pass returns the actual containers (by name filter). DeleteFunc already applied to empty. Then logical: node containers have labels (from runtime listing? GetContainers returns containers WITH labels from the runtime) — for srl: node container + holder (RootNodeName) → merged. Works. ✓ Actually wait — in the topo flow, `slices.DeleteFunc` runs on the EMPTY label-pass list, fine.\n\nNow the reverse: `--topo` on a lab whose name matches but nodes partially renamed — fine.\n\nNow let me evaluate **the `hasCPMA` fallback behavior change for `--topo`**: In base `ins -t` (distributed, CPM A running): showed CPM A. If CPM A was DOWN (stopped, not removed): base `ins -t`: node pass → sros.GetContainers: lists CPM A by name — docker lists stopped containers too → returns CPM A (state exited). Head: same container via label pass; logical keeps CPM A. Same. ✓\n\nIf CPM A REMOVED: base: node pass → cnts empty → returns holder containers (the holder itself, with InternalNode label) → base DeleteFunc (!--all) removed it → base showed NOTHING for that node (with -t, no --all). Head: label pass has holder + CPM B; node pass returns holder; logical: hasCPMA false → CPM B kept, merged with holder → shows CPM B with mgmt IP. Improvement. ✓\n\nNow — let me also double check `ListNodesContainersIgnoreNotFound` for the sros node when CPM A is removed: returns holder's containers — wait, `n.netnsNode.GetContainers(ctx)` — the netns node's GetContainers lists the holder container by name. Returns holder GenericContainer with labels (NodeName \"sr-netns\", RootNodeName \"sr\", InternalNode true). Dedupe: holder already in label-pass list → skipped. ✓\n\nNow the very last thing: **`inspect` used by `cmd/deploy.go` — `PrintContainerInspect(result.Containers, o)` — result.Containers from ListNodesContainers (per-node, includes merged settings). With head, no internal-skip in PrintContainerInspect, but ListNodesContainers never returns internal containers... EXCEPT: does `ListNodesContainers` include tool containers? No (tools aren't in c.Nodes... wait, are tailscale sidecars in c.Nodes? In tailscale.go, addTailscaleNode — let me check whether it adds to c.Nodes. If tailscale sidecars ARE in c.Nodes (as nodes), then `ListNodesContainers` returns them and the deploy table previously hid them via the internal-node skip in PrintContainerInspect — which the PR REMOVED! That would make the deploy table show tailscale sidecar rows now. Let me check addTailscaleNode and whether it registers in c.Nodes.",
+          "time": {
+            "start": 1795540202479,
+            "end": 1795540214441
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_20e8962ac001ZdysZfx26CWyss",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e892b86001jUfijuNKMrKpxC",
+          "text": "One more important trace: whether the deploy summary path could now show new rows after the removed internal-node skip. Let me check whether the tailscale sidecar node registers in `c.Nodes`.",
+          "time": {
+            "start": 1795540214444,
+            "end": 1795540215083
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e896523001xbiZOEAeqKPP4r",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e892b86001jUfijuNKMrKpxC",
+          "callID": "call_8d8044cd4c5f4a678d543f28",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/tailscale.go",
+              "limit": 70,
+              "offset": 110
+            },
+            "output": "<path>/source/head/core/tailscale.go</path>\n<type>file</type>\n<content>\n110: // discoverTailscaleContainers finds generated containers even when the topology no longer\n111: // enables Tailscale (for example, when the auth-key environment variable is unset on destroy).\n112: func (c *CLab) discoverTailscaleContainers(ctx context.Context, filter []string) (\n113: \t[]clabruntime.GenericContainer, error,\n114: ) {\n115: \tcontainers, err := c.ListContainers(ctx,\n116: \t\tWithListLabName(c.Config.Name),\n117: \t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n118: \t)\n119: \tif err != nil {\n120: \t\treturn nil, err\n121: \t}\n122: \tvar result []clabruntime.GenericContainer\n123: \tfor _, ctr := range containers {\n124: \t\tproxy := ctr.Labels[clabconstants.ToolType] == clabnodestailscale.ToolType\n125: \t\tsidecar := ctr.Labels[clabconstants.NodeKind] == clabnodestailscale.KindName &&\n126: \t\t\tctr.Labels[clabconstants.InternalNode] == \"true\"\n127: \t\tif !proxy && !sidecar {\n128: \t\t\tcontinue\n129: \t\t}\n130: \t\tif len(filter) > 0 &&\n131: \t\t\t(proxy || !slices.Contains(filter, ctr.Labels[clabnodestailscale.ParentLabel])) {\n132: \t\t\tcontinue\n133: \t\t}\n134: \t\tresult = append(result, ctr)\n135: \t}\n136: \treturn result, nil\n137: }\n138: \n139: // verifyTailscaleProxy checks that the SSO proxy container name is free and that every\n140: // /ts listen port is unique on the proxy.\n141: func (c *CLab) verifyTailscaleProxy() error {\n142: \tif !c.tailscaleProxyEnabled() {\n143: \t\treturn nil\n144: \t}\n145: \tif _, exists := c.Nodes[clabnodestailscale.ProxyName]; exists {\n146: \t\treturn fmt.Errorf(\n147: \t\t\t\"node name %q is reserved for the Tailscale SSO proxy\",\n148: \t\t\tclabnodestailscale.ProxyName,\n149: \t\t)\n150: \t}\n151: \n152: \towners := map[uint16]string{}\n153: \tfor _, name := range sortedNodeNames(c.Nodes) {\n154: \t\tcfg := c.Nodes[name].Config()\n155: \t\tif len(cfg.TailscalePorts) > 0 && !cfg.ManagementIPAMEligible() {\n156: \t\t\tlog.Warn(\"Tailscale /ts ports need a node management IP, ignoring\", \"node\", name)\n157: \t\t\tcontinue\n158: \t\t}\n159: \t\tif len(cfg.TailscalePorts) > 0 && cfg.MgmtNet != c.tailscaleMgmtNet().Network {\n160: \t\t\tlog.Warn(\n161: \t\t\t\t\"Tailscale /ts ports need the node on the tailscale management network, ignoring\",\n162: \t\t\t\t\"node\",\n163: \t\t\t\tname,\n164: \t\t\t\t\"network\",\n165: \t\t\t\tc.tailscaleMgmtNet().Network,\n166: \t\t\t)\n167: \t\t\tcontinue\n168: \t\t}\n169: \t\tfor _, p := range cfg.TailscalePorts {\n170: \t\t\tif owner, exists := owners[p.Listen]; exists {\n171: \t\t\t\treturn fmt.Errorf(\n172: \t\t\t\t\t\"Tailscale listen port %d is used by nodes %q and %q\",\n173: \t\t\t\t\tp.Listen, owner, name,\n174: \t\t\t\t)\n175: \t\t\t}\n176: \t\t\towners[p.Listen] = name\n177: \t\t}\n178: \t}\n179: \n\n(Showing lines 110-179 of 366. Use offset=180 to continue.)\n</content>",
+            "title": "source/head/core/tailscale.go",
+            "metadata": {
+              "preview": "// discoverTailscaleContainers finds generated containers even when the topology no longer\n// enables Tailscale (for example, when the auth-key environment variable is unset on destroy).\nfunc (c *CLab) discoverTailscaleContainers(ctx context.Context, filter []string) (\n\t[]clabruntime.GenericContainer, error,\n) {\n\tcontainers, err := c.ListContainers(ctx,\n\t\tWithListLabName(c.Config.Name),\n\t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar result []clabruntime.GenericContainer\n\tfor _, ctr := range containers {\n\t\tproxy := ctr.Labels[clabconstants.ToolType] == clabnodestailscale.ToolType\n\t\tsidecar := ctr.Labels[clabconstants.NodeKind] == clabnodestailscale.KindName &&\n\t\t\tctr.Labels[clabconstants.InternalNode] == \"true\"\n\t\tif !proxy && !sidecar {\n\t\t\tcontinue\n\t\t}",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/tailscale.go",
+                "text": "// discoverTailscaleContainers finds generated containers even when the topology no longer\n// enables Tailscale (for example, when the auth-key environment variable is unset on destroy).\nfunc (c *CLab) discoverTailscaleContainers(ctx context.Context, filter []string) (\n\t[]clabruntime.GenericContainer, error,\n) {\n\tcontainers, err := c.ListContainers(ctx,\n\t\tWithListLabName(c.Config.Name),\n\t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n\t)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar result []clabruntime.GenericContainer\n\tfor _, ctr := range containers {\n\t\tproxy := ctr.Labels[clabconstants.ToolType] == clabnodestailscale.ToolType\n\t\tsidecar := ctr.Labels[clabconstants.NodeKind] == clabnodestailscale.KindName &&\n\t\t\tctr.Labels[clabconstants.InternalNode] == \"true\"\n\t\tif !proxy && !sidecar {\n\t\t\tcontinue\n\t\t}\n\t\tif len(filter) > 0 &&\n\t\t\t(proxy || !slices.Contains(filter, ctr.Labels[clabnodestailscale.ParentLabel])) {\n\t\t\tcontinue\n\t\t}\n\t\tresult = append(result, ctr)\n\t}\n\treturn result, nil\n}\n\n// verifyTailscaleProxy checks that the SSO proxy container name is free and that every\n// /ts listen port is unique on the proxy.\nfunc (c *CLab) verifyTailscaleProxy() error {\n\tif !c.tailscaleProxyEnabled() {\n\t\treturn nil\n\t}\n\tif _, exists := c.Nodes[clabnodestailscale.ProxyName]; exists {\n\t\treturn fmt.Errorf(\n\t\t\t\"node name %q is reserved for the Tailscale SSO proxy\",\n\t\t\tclabnodestailscale.ProxyName,\n\t\t)\n\t}\n\n\towners := map[uint16]string{}\n\tfor _, name := range sortedNodeNames(c.Nodes) {\n\t\tcfg := c.Nodes[name].Config()\n\t\tif len(cfg.TailscalePorts) > 0 && !cfg.ManagementIPAMEligible() {\n\t\t\tlog.Warn(\"Tailscale /ts ports need a node management IP, ignoring\", \"node\", name)\n\t\t\tcontinue\n\t\t}\n\t\tif len(cfg.TailscalePorts) > 0 && cfg.MgmtNet != c.tailscaleMgmtNet().Network {\n\t\t\tlog.Warn(\n\t\t\t\t\"Tailscale /ts ports need the node on the tailscale management network, ignoring\",\n\t\t\t\t\"node\",\n\t\t\t\tname,\n\t\t\t\t\"network\",\n\t\t\t\tc.tailscaleMgmtNet().Network,\n\t\t\t)\n\t\t\tcontinue\n\t\t}\n\t\tfor _, p := range cfg.TailscalePorts {\n\t\t\tif owner, exists := owners[p.Listen]; exists {\n\t\t\t\treturn fmt.Errorf(\n\t\t\t\t\t\"Tailscale listen port %d is used by nodes %q and %q\",\n\t\t\t\t\tp.Listen, owner, name,\n\t\t\t\t)\n\t\t\t}\n\t\t\towners[p.Listen] = name\n\t\t}\n\t}\n",
+                "lineStart": 110,
+                "lineEnd": 179,
+                "totalLines": 366,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795540215080,
+              "end": 1795540215090
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e896538001rrCO9HQzK90Klj",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e892b86001jUfijuNKMrKpxC",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 61672,
+            "input": 706,
+            "output": 66,
+            "reasoning": 1252,
+            "cache": {
+              "read": 59648,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e896547001sZH09tPwMiw8El",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540215111,
+          "completed": 1795540217347
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62543,
+          "input": 1072,
+          "output": 30,
+          "reasoning": 1,
+          "cache": {
+            "read": 61440,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e896d75001rximrIx5Zn3Bat",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e896547001sZH09tPwMiw8El"
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e896def001AFKRW2ms6duCau",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e896547001sZH09tPwMiw8El",
+          "callID": "call_691a61dee75640f986a5727f",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "tailscale.go",
+              "path": "/source/head/core",
+              "pattern": "addTailscaleNode"
+            },
+            "output": "Found 2 matches\n/source/head/core/tailscale.go:\n  Line 64: \t\tif err := c.addTailscaleNode(\n\n  Line 313: func (c *CLab) addTailscaleNode(\n",
+            "title": "addTailscaleNode",
+            "metadata": {
+              "matches": 2,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540217332,
+              "end": 1795540217342
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e896e00001GPz7JGgewAFW12",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e896547001sZH09tPwMiw8El",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 62543,
+            "input": 1072,
+            "output": 30,
+            "reasoning": 1,
+            "cache": {
+              "read": 61440,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e896e0a001OO99SbLmdCPTgG",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540217355,
+          "completed": 1795540219592
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 62625,
+          "input": 131,
+          "output": 29,
+          "reasoning": 1,
+          "cache": {
+            "read": 62464,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e89762200108noEhawxXAuJV",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e896e0a001OO99SbLmdCPTgG"
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e8976b7001UghSrO18V4KBSY",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e896e0a001OO99SbLmdCPTgG",
+          "callID": "call_bcc097ff0a1c486983d9a3af",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/tailscale.go",
+              "limit": 55,
+              "offset": 313
+            },
+            "output": "<path>/source/head/core/tailscale.go</path>\n<type>file</type>\n<content>\n313: func (c *CLab) addTailscaleNode(\n314: \tname, runtime string,\n315: \tlabels map[string]string,\n316: \twaitFor []string,\n317: ) error {\n318: \t_, inNodes := c.Nodes[name]\n319: \t_, inTopo := c.Config.Topology.Nodes[name]\n320: \tif inNodes || inTopo {\n321: \t\treturn fmt.Errorf(\n322: \t\t\t\"cannot inject Tailscale sidecar %q: a node with that name already exists\",\n323: \t\t\tname,\n324: \t\t)\n325: \t}\n326: \n327: \tdef := &clabtypes.NodeDefinition{\n328: \t\tKind:          clabnodestailscale.KindName,\n329: \t\tImage:         clabnodestailscale.DefaultImage,\n330: \t\tRestartPolicy: \"always\",\n331: \t\tLabels:        labels,\n332: \t\tStages:        clabtypes.NewStages(),\n333: \t}\n334: \tif len(waitFor) > 0 {\n335: \t\twf := make(clabtypes.WaitForList, 0, len(waitFor))\n336: \t\tfor _, node := range waitFor {\n337: \t\t\twf = append(wf, &clabtypes.WaitFor{\n338: \t\t\t\tNode:  node,\n339: \t\t\t\tStage: clabtypes.WaitForCreate,\n340: \t\t\t})\n341: \t\t}\n342: \t\tdef.Stages.Create.WaitFor = wf\n343: \t}\n344: \tc.Config.Topology.Nodes[name] = def\n345: \n346: \t// Generated sidecars must not inherit node commands, ports, binds, or network modes.\n347: \tcfg := &clabtypes.NodeConfig{\n348: \t\tShortName:     name,\n349: \t\tLongName:      c.nodeLongName(name),\n350: \t\tFqdn:          strings.Join([]string{name, c.Config.Name, \"io\"}, \".\"),\n351: \t\tLabDir:        c.TopoPaths.NodeDir(name),\n352: \t\tIndex:         len(c.Nodes),\n353: \t\tKind:          def.Kind,\n354: \t\tImage:         def.Image,\n355: \t\tRuntime:       runtime,\n356: \t\tRestartPolicy: def.RestartPolicy,\n357: \t\tLabels:        labels,\n358: \t\tStages:        def.Stages,\n359: \t\tMgmtNet:       c.tailscaleMgmtNet().Network,\n360: \t}\n361: \tif err := c.initNode(cfg, runtime); err != nil {\n362: \t\treturn fmt.Errorf(\"creating Tailscale sidecar %q: %w\", name, err)\n363: \t}\n364: \n365: \treturn nil\n366: }\n\n(End of file - total 366 lines)\n</content>",
+            "title": "source/head/core/tailscale.go",
+            "metadata": {
+              "preview": "func (c *CLab) addTailscaleNode(\n\tname, runtime string,\n\tlabels map[string]string,\n\twaitFor []string,\n) error {\n\t_, inNodes := c.Nodes[name]\n\t_, inTopo := c.Config.Topology.Nodes[name]\n\tif inNodes || inTopo {\n\t\treturn fmt.Errorf(\n\t\t\t\"cannot inject Tailscale sidecar %q: a node with that name already exists\",\n\t\t\tname,\n\t\t)\n\t}\n\n\tdef := &clabtypes.NodeDefinition{\n\t\tKind:          clabnodestailscale.KindName,\n\t\tImage:         clabnodestailscale.DefaultImage,\n\t\tRestartPolicy: \"always\",\n\t\tLabels:        labels,\n\t\tStages:        clabtypes.NewStages(),",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/tailscale.go",
+                "text": "func (c *CLab) addTailscaleNode(\n\tname, runtime string,\n\tlabels map[string]string,\n\twaitFor []string,\n) error {\n\t_, inNodes := c.Nodes[name]\n\t_, inTopo := c.Config.Topology.Nodes[name]\n\tif inNodes || inTopo {\n\t\treturn fmt.Errorf(\n\t\t\t\"cannot inject Tailscale sidecar %q: a node with that name already exists\",\n\t\t\tname,\n\t\t)\n\t}\n\n\tdef := &clabtypes.NodeDefinition{\n\t\tKind:          clabnodestailscale.KindName,\n\t\tImage:         clabnodestailscale.DefaultImage,\n\t\tRestartPolicy: \"always\",\n\t\tLabels:        labels,\n\t\tStages:        clabtypes.NewStages(),\n\t}\n\tif len(waitFor) > 0 {\n\t\twf := make(clabtypes.WaitForList, 0, len(waitFor))\n\t\tfor _, node := range waitFor {\n\t\t\twf = append(wf, &clabtypes.WaitFor{\n\t\t\t\tNode:  node,\n\t\t\t\tStage: clabtypes.WaitForCreate,\n\t\t\t})\n\t\t}\n\t\tdef.Stages.Create.WaitFor = wf\n\t}\n\tc.Config.Topology.Nodes[name] = def\n\n\t// Generated sidecars must not inherit node commands, ports, binds, or network modes.\n\tcfg := &clabtypes.NodeConfig{\n\t\tShortName:     name,\n\t\tLongName:      c.nodeLongName(name),\n\t\tFqdn:          strings.Join([]string{name, c.Config.Name, \"io\"}, \".\"),\n\t\tLabDir:        c.TopoPaths.NodeDir(name),\n\t\tIndex:         len(c.Nodes),\n\t\tKind:          def.Kind,\n\t\tImage:         def.Image,\n\t\tRuntime:       runtime,\n\t\tRestartPolicy: def.RestartPolicy,\n\t\tLabels:        labels,\n\t\tStages:        def.Stages,\n\t\tMgmtNet:       c.tailscaleMgmtNet().Network,\n\t}\n\tif err := c.initNode(cfg, runtime); err != nil {\n\t\treturn fmt.Errorf(\"creating Tailscale sidecar %q: %w\", name, err)\n\t}\n\n\treturn nil\n}",
+                "lineStart": 313,
+                "lineEnd": 366,
+                "totalLines": 366,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795540219581,
+              "end": 1795540219587
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8976c5001seggMGOMCytFRf",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e896e0a001OO99SbLmdCPTgG",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 62625,
+            "input": 131,
+            "output": 29,
+            "reasoning": 1,
+            "cache": {
+              "read": 62464,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8976ce0014oli6bcPTWQm4C",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540219598,
+          "completed": 1795540227759
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 64034,
+          "input": 829,
+          "output": 59,
+          "reasoning": 682,
+          "cache": {
+            "read": 62464,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e897e870016K9puW0e9cC4UU",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8976ce0014oli6bcPTWQm4C"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e897e89001ftxxPwgQIyqFK3",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8976ce0014oli6bcPTWQm4C",
+          "text": "`addTailscaleNode` calls `c.initNode(cfg, runtime)` which (per core/config.go initNode) adds the node to `c.Nodes`. So the tailscale sidecar IS registered in `c.Nodes` as a node named e.g. `<parent>-ts` with `InternalNode: \"true\"` label.\n\nImpact on the PR:\n1. `listContainers` topo flow: label pass lists the sidecar (InternalNode) — DeleteFunc keeps it (NodeName in c.Nodes). Node pass: the sidecar node's GetContainers returns its container. Dedupe → single. Then:\n   - Default (logical): sidecar dropped (InternalNode) — same as base (base hid internal when !--all). ✓\n   - `--topo --containers`: sidecar shown. New.\n   - `--topo --details`: sidecar shown. New.\n2. **Deploy flow** (`result.Containers` from `ListNodesContainers`): tailscale sidecar node IS in c.Nodes, so its container IS returned by `ListNodesContainers`. In BASE, `PrintContainerInspect` filtered out `InternalNode == \"true\"` containers when `!o.Destroy.All` — so the deploy summary table did NOT show tailscale sidecar rows. In HEAD, the skip is removed from `PrintContainerInspect`, so `clab deploy` on a lab with tailscale sidecars (or any internal node kind) will now print the sidecar as a row in the post-deploy table!\n\nWait — but does `result.Containers` from the fresh-deploy path (`c.deploy` → `finalize` → `ListNodesContainers`) include the tailscale sidecar? Yes, if the sidecar node is in c.Nodes. And the reconcile path also uses `ListNodesContainers`.\n\nHold on — but the deploy table's `toTableData` doesn't filter. In base the filter was in `PrintContainerInspect` (removed lines 160-162 of the diff). So in base, deploy output hid the internal sidecar; in head it will show it.\n\nHmm, but wait — is the sidecar's Kind \"tailscale\"? `cdet.Kind` = NodeKind label = \"tailscale\". So `clab deploy` would show a `n1-ts` row with kind `tailscale`. Is that a regression or intended? The PR's intent was to hide internal containers by default in inspect and show with --containers. The removal of the internal skip in `PrintContainerInspect` affects the deploy output path. But note: deploy's container list does NOT include netns holders (they're not in c.Nodes — srl.Init's netns node is created but NOT registered via c.Nodes... wait, is it? Let me check: srl.initNetnsNode — does it add the netns node to c.Nodes? Earlier I concluded NO (only sros components get registered through setupComponentNodes which DOES register component nodes in c.Nodes). Let me verify for srl netns: does srl.Init register the netns node in c.Nodes? Look at nodes/srl/netns.go around lines 40-70 — earlier I saw initNetnsNode creates the config and probably calls Init on a new srl node — but is it added to c.Nodes? Let me check.",
+          "time": {
+            "start": 1795540221577,
+            "end": 1795540227366
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_20e899528001l6tJ2qnxnOZ1cO",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8976ce0014oli6bcPTWQm4C",
+          "text": "The tailscale sidecar node registers in `c.Nodes`, so I need to verify whether the deploy summary path changes. Let me check if the SRL netns holder also registers in `c.Nodes`.",
+          "time": {
+            "start": 1795540227368,
+            "end": 1795540227755
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e89968d001eRW3I0DJHnlv3U",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8976ce0014oli6bcPTWQm4C",
+          "callID": "call_87fb88a1d40348c6815754a6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/nodes/srl/netns.go"
+            },
+            "output": "<path>/source/head/nodes/srl/netns.go</path>\n<type>file</type>\n<content>\n1: package srl\n2: \n3: import (\n4: \t\"context\"\n5: \t\"errors\"\n6: \t\"maps\"\n7: \n8: \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n9: \tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n10: \tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n11: \tclabtypes \"github.com/srl-labs/containerlab/types\"\n12: \tclabutils \"github.com/srl-labs/containerlab/utils\"\n13: )\n14: \n15: const netnsNodeType = \"srl-netns\"\n16: \n17: // usesNetnsNode reports whether the node runs in the network namespace of a holder container.\n18: // Nodes with a user-defined network mode keep the network namespace of their own container.\n19: func (n *srl) usesNetnsNode() bool {\n20: \treturn n.Cfg.NetworkMode == \"\" && !n.Cfg.IsRootNamespaceBased\n21: }\n22: \n23: func (n *srl) initNetnsNode() error {\n24: \tif !n.usesNetnsNode() {\n25: \t\treturn nil\n26: \t}\n27: \n28: \tn.netnsNode = new(clabnodes.NetnsHolder)\n29: \n30: \treturn n.netnsNode.Init(n.newNetnsConfig(), clabnodes.WithRuntime(n.GetRuntime()))\n31: }\n32: \n33: func (n *srl) newNetnsConfig() *clabtypes.NodeConfig {\n34: \tlabels := maps.Clone(n.Cfg.Labels)\n35: \n36: \tif labels == nil {\n37: \t\tlabels = map[string]string{}\n38: \t}\n39: \n40: \tshortName := n.Cfg.ShortName + \"-netns\"\n41: \tlabels[clabconstants.NodeName] = shortName\n42: \n43: \tlongName := n.Cfg.LongName + \"-netns\"\n44: \tlabels[clabconstants.LongName] = longName\n45: \n46: \tlabels[clabconstants.NodeType] = netnsNodeType\n47: \tlabels[clabconstants.InternalNode] = \"true\"\n48: \n49: \tlabels[clabconstants.RootNodeName] = n.Cfg.ShortName\n50: \tlabels[clabconstants.RootNodeLongName] = n.Cfg.LongName\n51: \n52: \treturn &clabtypes.NodeConfig{\n53: \t\tShortName:             shortName,\n54: \t\tLongName:              longName,\n55: \t\tHostname:              n.Cfg.GetHostname(),\n56: \t\tFqdn:                  n.Cfg.Fqdn,\n57: \t\tLabDir:                n.Cfg.LabDir,\n58: \t\tIndex:                 n.Cfg.Index,\n59: \t\tKind:                  n.Cfg.Kind,\n60: \t\tNodeType:              netnsNodeType,\n61: \t\tImage:                 n.Cfg.Image,\n62: \t\tImagePullPolicy:       n.Cfg.ImagePullPolicy,\n63: \t\tRestartPolicy:         n.Cfg.RestartPolicy,\n64: \t\tSysctls:               maps.Clone(n.Cfg.Sysctls),\n65: \t\tUser:                  \"0:0\",\n66: \t\tEntrypoint:            \"/bin/sh\",\n67: \t\tCmd:                   `-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\"`,\n68: \t\tEnv:                   map[string]string{},\n69: \t\tPortBindings:          n.Cfg.PortBindings,\n70: \t\tPortSet:               n.Cfg.PortSet,\n71: \t\tMgmtNet:               n.Cfg.MgmtNet,\n72: \t\tMgmtIntf:              n.Cfg.MgmtIntf,\n73: \t\tMgmtIPv4Address:       n.Cfg.MgmtIPv4Address,\n74: \t\tMgmtIPv4AddressAuto:   n.Cfg.MgmtIPv4AddressAuto,\n75: \t\tMgmtIPv4PrefixLength:  n.Cfg.MgmtIPv4PrefixLength,\n76: \t\tMgmtIPv6Address:       n.Cfg.MgmtIPv6Address,\n77: \t\tMgmtIPv6AddressAuto:   n.Cfg.MgmtIPv6AddressAuto,\n78: \t\tMgmtIPv6PrefixLength:  n.Cfg.MgmtIPv6PrefixLength,\n79: \t\tMgmtIPv4Gateway:       n.Cfg.MgmtIPv4Gateway,\n80: \t\tMgmtIPv6Gateway:       n.Cfg.MgmtIPv6Gateway,\n81: \t\tMacAddress:            n.Cfg.MacAddress,\n82: \t\tAliases:               n.Cfg.Aliases,\n83: \t\tDNS:                   n.Cfg.DNS,\n84: \t\tExtraHosts:            n.Cfg.ExtraHosts,\n85: \t\tLabels:                labels,\n86: \t\tRuntime:               n.Cfg.Runtime,\n87: \t\tResultingPortBindings: n.Cfg.ResultingPortBindings,\n88: \t}\n89: }\n90: \n91: // containerConfig returns the config of the SR Linux container attached to the holder's\n92: // network namespace. The runtime rejects network settings for such containers, as they\n93: // belong to the holder.\n94: func (n *srl) containerConfig() *clabtypes.NodeConfig {\n95: \tcfg := *n.Cfg\n96: \tcfg.NetworkMode = \"container:\" + n.netnsNode.GetShortName()\n97: \tcfg.DNS = nil\n98: \tcfg.ExtraHosts = nil\n99: \tcfg.MacAddress = \"\"\n100: \tcfg.PortBindings = nil\n101: \tcfg.PortSet = nil\n102: \n103: \treturn &cfg\n104: }\n105: \n106: // linkNetns points the node's netns symlink to the holder, as the namespace path of the\n107: // SR Linux container changes whenever the container restarts.\n108: func (n *srl) linkNetns(ctx context.Context) error {\n109: \tnsPath, err := n.netnsNode.GetNSPath(ctx)\n110: \tif err != nil {\n111: \t\treturn err\n112: \t}\n113: \n114: \treturn clabutils.LinkContainerNS(nsPath, n.Cfg.LongName)\n115: }\n116: \n117: // deployedWithoutNetnsNode reports whether the node's container runs without a holder: it keeps\n118: // its own network namespace, as a node deployed by a containerlab before the holder does until\n119: // it is recreated.\n120: func (n *srl) deployedWithoutNetnsNode(ctx context.Context) bool {\n121: \treturn n.netnsNode.GetContainerStatus(ctx) == clabruntime.NotFound &&\n122: \t\tn.GetContainerStatus(ctx) != clabruntime.NotFound\n123: }\n124: \n125: // GetNSPath retrieves the Namespace Path.\n126: func (n *srl) GetNSPath(ctx context.Context) (string, error) {\n127: \tif n.netnsNode == nil || n.deployedWithoutNetnsNode(ctx) {\n128: \t\treturn n.DefaultNode.GetNSPath(ctx)\n129: \t}\n130: \n131: \treturn n.netnsNode.GetNSPath(ctx)\n132: }\n133: \n134: // DeleteNetnsSymlink deletes the symlink file created for the container netns.\n135: func (n *srl) DeleteNetnsSymlink() error {\n136: \tif n.netnsNode == nil {\n137: \t\treturn n.DefaultNode.DeleteNetnsSymlink()\n138: \t}\n139: \n140: \treturn errors.Join(n.DefaultNode.DeleteNetnsSymlink(), n.netnsNode.DeleteNetnsSymlink())\n141: }\n\n(End of file - total 141 lines)\n</content>",
+            "title": "source/head/nodes/srl/netns.go",
+            "metadata": {
+              "preview": "package srl\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"maps\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n\nconst netnsNodeType = \"srl-netns\"\n\n// usesNetnsNode reports whether the node runs in the network namespace of a holder container.\n// Nodes with a user-defined network mode keep the network namespace of their own container.\nfunc (n *srl) usesNetnsNode() bool {\n\treturn n.Cfg.NetworkMode == \"\" && !n.Cfg.IsRootNamespaceBased",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/nodes/srl/netns.go",
+                "text": "package srl\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"maps\"\n\n\tclabconstants \"github.com/srl-labs/containerlab/constants\"\n\tclabnodes \"github.com/srl-labs/containerlab/nodes\"\n\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n\tclabtypes \"github.com/srl-labs/containerlab/types\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n\nconst netnsNodeType = \"srl-netns\"\n\n// usesNetnsNode reports whether the node runs in the network namespace of a holder container.\n// Nodes with a user-defined network mode keep the network namespace of their own container.\nfunc (n *srl) usesNetnsNode() bool {\n\treturn n.Cfg.NetworkMode == \"\" && !n.Cfg.IsRootNamespaceBased\n}\n\nfunc (n *srl) initNetnsNode() error {\n\tif !n.usesNetnsNode() {\n\t\treturn nil\n\t}\n\n\tn.netnsNode = new(clabnodes.NetnsHolder)\n\n\treturn n.netnsNode.Init(n.newNetnsConfig(), clabnodes.WithRuntime(n.GetRuntime()))\n}\n\nfunc (n *srl) newNetnsConfig() *clabtypes.NodeConfig {\n\tlabels := maps.Clone(n.Cfg.Labels)\n\n\tif labels == nil {\n\t\tlabels = map[string]string{}\n\t}\n\n\tshortName := n.Cfg.ShortName + \"-netns\"\n\tlabels[clabconstants.NodeName] = shortName\n\n\tlongName := n.Cfg.LongName + \"-netns\"\n\tlabels[clabconstants.LongName] = longName\n\n\tlabels[clabconstants.NodeType] = netnsNodeType\n\tlabels[clabconstants.InternalNode] = \"true\"\n\n\tlabels[clabconstants.RootNodeName] = n.Cfg.ShortName\n\tlabels[clabconstants.RootNodeLongName] = n.Cfg.LongName\n\n\treturn &clabtypes.NodeConfig{\n\t\tShortName:             shortName,\n\t\tLongName:              longName,\n\t\tHostname:              n.Cfg.GetHostname(),\n\t\tFqdn:                  n.Cfg.Fqdn,\n\t\tLabDir:                n.Cfg.LabDir,\n\t\tIndex:                 n.Cfg.Index,\n\t\tKind:                  n.Cfg.Kind,\n\t\tNodeType:              netnsNodeType,\n\t\tImage:                 n.Cfg.Image,\n\t\tImagePullPolicy:       n.Cfg.ImagePullPolicy,\n\t\tRestartPolicy:         n.Cfg.RestartPolicy,\n\t\tSysctls:               maps.Clone(n.Cfg.Sysctls),\n\t\tUser:                  \"0:0\",\n\t\tEntrypoint:            \"/bin/sh\",\n\t\tCmd:                   `-c \"trap 'exit 0' TERM INT; sleep infinity & wait $!\"`,\n\t\tEnv:                   map[string]string{},\n\t\tPortBindings:          n.Cfg.PortBindings,\n\t\tPortSet:               n.Cfg.PortSet,\n\t\tMgmtNet:               n.Cfg.MgmtNet,\n\t\tMgmtIntf:              n.Cfg.MgmtIntf,\n\t\tMgmtIPv4Address:       n.Cfg.MgmtIPv4Address,\n\t\tMgmtIPv4AddressAuto:   n.Cfg.MgmtIPv4AddressAuto,\n\t\tMgmtIPv4PrefixLength:  n.Cfg.MgmtIPv4PrefixLength,\n\t\tMgmtIPv6Address:       n.Cfg.MgmtIPv6Address,\n\t\tMgmtIPv6AddressAuto:   n.Cfg.MgmtIPv6AddressAuto,\n\t\tMgmtIPv6PrefixLength:  n.Cfg.MgmtIPv6PrefixLength,\n\t\tMgmtIPv4Gateway:       n.Cfg.MgmtIPv4Gateway,\n\t\tMgmtIPv6Gateway:       n.Cfg.MgmtIPv6Gateway,\n\t\tMacAddress:            n.Cfg.MacAddress,\n\t\tAliases:               n.Cfg.Aliases,\n\t\tDNS:                   n.Cfg.DNS,\n\t\tExtraHosts:            n.Cfg.ExtraHosts,\n\t\tLabels:                labels,\n\t\tRuntime:               n.Cfg.Runtime,\n\t\tResultingPortBindings: n.Cfg.ResultingPortBindings,\n\t}\n}\n\n// containerConfig returns the config of the SR Linux container attached to the holder's\n// network namespace. The runtime rejects network settings for such containers, as they\n// belong to the holder.\nfunc (n *srl) containerConfig() *clabtypes.NodeConfig {\n\tcfg := *n.Cfg\n\tcfg.NetworkMode = \"container:\" + n.netnsNode.GetShortName()\n\tcfg.DNS = nil\n\tcfg.ExtraHosts = nil\n\tcfg.MacAddress = \"\"\n\tcfg.PortBindings = nil\n\tcfg.PortSet = nil\n\n\treturn &cfg\n}\n\n// linkNetns points the node's netns symlink to the holder, as the namespace path of the\n// SR Linux container changes whenever the container restarts.\nfunc (n *srl) linkNetns(ctx context.Context) error {\n\tnsPath, err := n.netnsNode.GetNSPath(ctx)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\treturn clabutils.LinkContainerNS(nsPath, n.Cfg.LongName)\n}\n\n// deployedWithoutNetnsNode reports whether the node's container runs without a holder: it keeps\n// its own network namespace, as a node deployed by a containerlab before the holder does until\n// it is recreated.\nfunc (n *srl) deployedWithoutNetnsNode(ctx context.Context) bool {\n\treturn n.netnsNode.GetContainerStatus(ctx) == clabruntime.NotFound &&\n\t\tn.GetContainerStatus(ctx) != clabruntime.NotFound\n}\n\n// GetNSPath retrieves the Namespace Path.\nfunc (n *srl) GetNSPath(ctx context.Context) (string, error) {\n\tif n.netnsNode == nil || n.deployedWithoutNetnsNode(ctx) {\n\t\treturn n.DefaultNode.GetNSPath(ctx)\n\t}\n\n\treturn n.netnsNode.GetNSPath(ctx)\n}\n\n// DeleteNetnsSymlink deletes the symlink file created for the container netns.\nfunc (n *srl) DeleteNetnsSymlink() error {\n\tif n.netnsNode == nil {\n\t\treturn n.DefaultNode.DeleteNetnsSymlink()\n\t}\n\n\treturn errors.Join(n.DefaultNode.DeleteNetnsSymlink(), n.netnsNode.DeleteNetnsSymlink())\n}",
+                "lineStart": 1,
+                "lineEnd": 141,
+                "totalLines": 141,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795540227729,
+              "end": 1795540227733
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8996ac001mRL5rRdT8DiAor",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8976ce0014oli6bcPTWQm4C",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 64034,
+            "input": 829,
+            "output": 59,
+            "reasoning": 682,
+            "cache": {
+              "read": 62464,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8996b5001PY14TzZTZH9rCl",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540227765,
+          "completed": 1795540237776
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 66430,
+          "input": 22977,
+          "output": 26,
+          "reasoning": 675,
+          "cache": {
+            "read": 42752,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e89a21e0011PmAKc4apiV03m",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8996b5001PY14TzZTZH9rCl"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e89a220001bU9sS6ubzpZ5uK",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8996b5001PY14TzZTZH9rCl",
+          "text": "SRL netns holder is NOT registered in `c.Nodes` (only `n.netnsNode` on the srl node). So `ListNodesContainers` (deploy path) does not return srl holders. But the tailscale sidecar IS in `c.Nodes`.\n\nSo the deploy output regression: in base, `PrintContainerInspect` skipped internal containers when `!o.Destroy.All` (deploy never sets Destroy.All → always skipped) — so the post-deploy summary hid tailscale sidecar rows. In head, that skip is removed, and deploy's `result.Containers` (from `ListNodesContainers`) includes the tailscale sidecar (kind `tailscale`, InternalNode label). So `clab deploy` on a lab with tailscale sidecars (auth-mode sso) would now show `n1-ts` rows in the post-deploy table, and the reconcile path too.\n\nWait — but is that actually a change in visible output for deploy? Let me confirm the sidecar is included in `ListNodesContainers`: it iterates `c.Nodes` and calls `n.GetContainers(ctx)`. The tailscale node's GetContainers → DefaultNode.GetContainers → lists by container name. So yes, sidecar container returned.\n\nHmm, but hold on — was this skip REMOVED intentionally because the deploy path... let me check git history? Not available. The PR diff removed:\n\n```\n-\tif !o.Destroy.All && containers[idx].Labels[clabconstants.InternalNode] == \"true\" {\n-\t\tcontinue\n-\t}\n```\n\nfrom `PrintContainerInspect`. Since `PrintContainerInspect` is also called from `cmd/inspect.go` where internal filtering now happens earlier in `listContainers`, the removal is correct for inspect. But the deploy caller relied on this filter to hide the tailscale sidecar. Let me verify base behavior for the deploy table with a tailscale sidecar lab:\n\nBase: `result.Containers` includes sidecar → `PrintContainerInspect` → skip internal → hidden. ✓\nHead: sidecar → shown as a row in the deploy summary.\n\nIs this user-visible? Yes — `clab deploy` post-deploy table. Is it a defect or intended? The PR's stated goal is inspect default = one entry per topology node. The deploy table should presumably stay as-is (show logical nodes). The sidecar is an internal helper — showing it in the deploy table is inconsistent with the PR's own intent and is an unintended regression from removing the filter at the wrong level.\n\nSeverity: P3 (minor correctness/consistency defect; output-only, affects labs using tailscale sidecars — niche but real). Actually, let me double check that the tailscale sidecar is in c.Nodes at DEPLOY time... `injectTailscaleSidecars` is called during deploy (c.injectTailscaleSidecars()). Yes, at deploy time it registers sidecars in c.Nodes. So on a fresh deploy with auth-key, sidecars in c.Nodes → deploy table shows them.\n\nWait, actually let me double check `initNode` adds to c.Nodes. core/config.go:216-254 — earlier I noted \"c.Nodes population (core/config.go:216-254)\". Let me verify initNode registers in c.Nodes.",
+          "time": {
+            "start": 1795540230688,
+            "end": 1795540237753
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e89bdbc001KzGl5SHLU5AJkA",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8996b5001PY14TzZTZH9rCl",
+          "callID": "call_bc9a028128974c1f809b287c",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/config.go",
+              "limit": 70,
+              "offset": 200
+            },
+            "output": "<path>/source/head/core/config.go</path>\n<type>file</type>\n<content>\n200: \n201: \tif err := c.initNode(nodeCfg, nodeRuntime); err != nil {\n202: \t\treturn err\n203: \t}\n204: \n205: \tcfg := c.Nodes[nodeName].Config()\n206: \tif len(c.Config.MgmtNetworks) > 1 && cfg.MgmtNet == \"\" && cfg.ManagementIPAMEligible() {\n207: \t\treturn fmt.Errorf(\n208: \t\t\t\"node %q must set mgmt-net when several management networks are defined\",\n209: \t\t\tnodeName,\n210: \t\t)\n211: \t}\n212: \n213: \treturn nil\n214: }\n215: \n216: func (c *CLab) initNode(nodeCfg *clabtypes.NodeConfig, nodeRuntime string) error {\n217: \t// construct node\n218: \tn, err := c.Reg.NewNodeOfKind(nodeCfg.Kind)\n219: \tif err != nil {\n220: \t\treturn fmt.Errorf(\"constructing node %q: %w\", nodeCfg.ShortName, err)\n221: \t}\n222: \n223: \t// adding default labels to the node config\n224: \t// so that the labels are present in the node config\n225: \t// and can be copied to the child components\n226: \t// at the time of the node init\n227: \tc.addDefaultLabels(nodeCfg)\n228: \tlabelsToEnvVars(nodeCfg)\n229: \n230: \t// nodes on a non-default management network get a runtime bound to that network\n231: \trt := c.Runtimes[nodeRuntime]\n232: \tmgmtNet := c.mgmtNetByNetwork(nodeCfg.MgmtNet)\n233: \tif mgmtNet != c.Config.Mgmt && rt != nil {\n234: \t\tif rt, err = c.mgmtRuntime(nodeRuntime, mgmtNet); err != nil {\n235: \t\t\treturn fmt.Errorf(\"node %q: %w\", nodeCfg.ShortName, err)\n236: \t\t}\n237: \t}\n238: \n239: \t// Init\n240: \terr = n.Init(nodeCfg, clabnodes.WithRuntime(rt), clabnodes.WithMgmtNet(mgmtNet))\n241: \tif err != nil {\n242: \t\tlog.Errorf(\"failed to initialize node %q: %v\", nodeCfg.ShortName, err)\n243: \n244: \t\treturn fmt.Errorf(\"failed to initialize node %q: %v\", nodeCfg.ShortName, err)\n245: \t}\n246: \n247: \tc.Nodes[nodeCfg.ShortName] = n\n248: \t// adding default labels 2nd time in case node init\n249: \t// overwrote original values for the default labels\n250: \tc.addDefaultLabels(n.Config())\n251: \tlabelsToEnvVars(n.Config())\n252: \n253: \treturn nil\n254: }\n255: \n256: // AddPlaceholderNode adds a node whose underlying resource already exists outside this lab.\n257: func (c *CLab) AddPlaceholderNode(nodeCfg *clabtypes.NodeConfig) error {\n258: \tif nodeCfg == nil || nodeCfg.ShortName == \"\" || nodeCfg.Kind == \"\" {\n259: \t\treturn errors.New(\"placeholder node requires a name and kind\")\n260: \t}\n261: \tif _, exists := c.Nodes[nodeCfg.ShortName]; exists {\n262: \t\treturn fmt.Errorf(\"node %q already exists\", nodeCfg.ShortName)\n263: \t}\n264: \trt, exists := c.Runtimes[nodeCfg.Runtime]\n265: \tif !exists {\n266: \t\treturn fmt.Errorf(\"runtime %q not found for node %q\", nodeCfg.Runtime, nodeCfg.ShortName)\n267: \t}\n268: \tn, err := c.Reg.NewNodeOfKind(nodeCfg.Kind)\n269: \tif err != nil {\n\n(Showing lines 200-269 of 1112. Use offset=270 to continue.)\n</content>",
+            "title": "source/head/core/config.go",
+            "metadata": {
+              "preview": "\n\tif err := c.initNode(nodeCfg, nodeRuntime); err != nil {\n\t\treturn err\n\t}\n\n\tcfg := c.Nodes[nodeName].Config()\n\tif len(c.Config.MgmtNetworks) > 1 && cfg.MgmtNet == \"\" && cfg.ManagementIPAMEligible() {\n\t\treturn fmt.Errorf(\n\t\t\t\"node %q must set mgmt-net when several management networks are defined\",\n\t\t\tnodeName,\n\t\t)\n\t}\n\n\treturn nil\n}\n\nfunc (c *CLab) initNode(nodeCfg *clabtypes.NodeConfig, nodeRuntime string) error {\n\t// construct node\n\tn, err := c.Reg.NewNodeOfKind(nodeCfg.Kind)\n\tif err != nil {",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/config.go",
+                "text": "\n\tif err := c.initNode(nodeCfg, nodeRuntime); err != nil {\n\t\treturn err\n\t}\n\n\tcfg := c.Nodes[nodeName].Config()\n\tif len(c.Config.MgmtNetworks) > 1 && cfg.MgmtNet == \"\" && cfg.ManagementIPAMEligible() {\n\t\treturn fmt.Errorf(\n\t\t\t\"node %q must set mgmt-net when several management networks are defined\",\n\t\t\tnodeName,\n\t\t)\n\t}\n\n\treturn nil\n}\n\nfunc (c *CLab) initNode(nodeCfg *clabtypes.NodeConfig, nodeRuntime string) error {\n\t// construct node\n\tn, err := c.Reg.NewNodeOfKind(nodeCfg.Kind)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"constructing node %q: %w\", nodeCfg.ShortName, err)\n\t}\n\n\t// adding default labels to the node config\n\t// so that the labels are present in the node config\n\t// and can be copied to the child components\n\t// at the time of the node init\n\tc.addDefaultLabels(nodeCfg)\n\tlabelsToEnvVars(nodeCfg)\n\n\t// nodes on a non-default management network get a runtime bound to that network\n\trt := c.Runtimes[nodeRuntime]\n\tmgmtNet := c.mgmtNetByNetwork(nodeCfg.MgmtNet)\n\tif mgmtNet != c.Config.Mgmt && rt != nil {\n\t\tif rt, err = c.mgmtRuntime(nodeRuntime, mgmtNet); err != nil {\n\t\t\treturn fmt.Errorf(\"node %q: %w\", nodeCfg.ShortName, err)\n\t\t}\n\t}\n\n\t// Init\n\terr = n.Init(nodeCfg, clabnodes.WithRuntime(rt), clabnodes.WithMgmtNet(mgmtNet))\n\tif err != nil {\n\t\tlog.Errorf(\"failed to initialize node %q: %v\", nodeCfg.ShortName, err)\n\n\t\treturn fmt.Errorf(\"failed to initialize node %q: %v\", nodeCfg.ShortName, err)\n\t}\n\n\tc.Nodes[nodeCfg.ShortName] = n\n\t// adding default labels 2nd time in case node init\n\t// overwrote original values for the default labels\n\tc.addDefaultLabels(n.Config())\n\tlabelsToEnvVars(n.Config())\n\n\treturn nil\n}\n\n// AddPlaceholderNode adds a node whose underlying resource already exists outside this lab.\nfunc (c *CLab) AddPlaceholderNode(nodeCfg *clabtypes.NodeConfig) error {\n\tif nodeCfg == nil || nodeCfg.ShortName == \"\" || nodeCfg.Kind == \"\" {\n\t\treturn errors.New(\"placeholder node requires a name and kind\")\n\t}\n\tif _, exists := c.Nodes[nodeCfg.ShortName]; exists {\n\t\treturn fmt.Errorf(\"node %q already exists\", nodeCfg.ShortName)\n\t}\n\trt, exists := c.Runtimes[nodeCfg.Runtime]\n\tif !exists {\n\t\treturn fmt.Errorf(\"runtime %q not found for node %q\", nodeCfg.Runtime, nodeCfg.ShortName)\n\t}\n\tn, err := c.Reg.NewNodeOfKind(nodeCfg.Kind)\n\tif err != nil {",
+                "lineStart": 200,
+                "lineEnd": 269,
+                "totalLines": 1112,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795540237761,
+              "end": 1795540237770
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e89bdcd001oVqxu8XClK4qHD",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8996b5001PY14TzZTZH9rCl",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 66430,
+            "input": 22977,
+            "output": 26,
+            "reasoning": 675,
+            "cache": {
+              "read": 42752,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e89bdd9001msykgIKysaDhWK",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540237785,
+          "completed": 1795540259563
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69198,
+          "input": 1022,
+          "output": 37,
+          "reasoning": 1835,
+          "cache": {
+            "read": 66304,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e89c6030018yxeiUMJCnpLNO",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e89bdd9001msykgIKysaDhWK"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e89c605001NMMRlI2OjfC51d",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e89bdd9001msykgIKysaDhWK",
+          "text": "Confirmed: `initNode` → `c.Nodes[nodeCfg.ShortName] = n`. So tailscale sidecars ARE in `c.Nodes` and are included in `ListNodesContainers` (deploy's summary path).\n\nSo the deploy post-deploy summary will now include tailscale sidecar rows (kind `tailscale`, name `clab-<lab>-<parent>-ts`) — a behavior regression in `deploy` output introduced by removing the internal-node skip from `PrintContainerInspect` without preserving it for the deploy caller.\n\nWait — but I should double check whether the tailscale sidecar container actually gets a `NodeKind` label... The sidecar labels: `InternalNode: \"true\"`, `ParentLabel`. `cdet.Kind` comes from `Labels[NodeKind]`. addDefaultLabels adds NodeKind? The kind label — DefaultNode.Init sets `clabconstants.NodeKind`? Probably. Either way, the row appears.\n\nHmm, but also consider: does the deploy flow with tailscale SSO actually call `PrintContainerInspect`? Yes — `cmd/deploy.go:335` after successful deploy, if not dry-run. Also the reconcile path (`apply`).\n\nNow — severity. This changes `clab deploy` output for labs with tailscale sidecars. It's output-only, niche. P3.\n\nAre there OTHER internal-node kinds that register in c.Nodes? Let me grep for `InternalNode: \"true\"` labels set on nodes registered in c.Nodes: tailscale sidecar (core/tailscale.go:68) and tailscale proxy (clabnodestailscale.ToolType, \"tailscale\" ToolType — proxy is a tool container; is the proxy registered in c.Nodes? `verifyTailscaleProxy` checks `c.Nodes[ProxyName]` doesn't exist — so the proxy is NOT registered in c.Nodes. So deploy path only picks up sidecars, not the proxy).\n\nAlso — are there other node kinds with InternalNode labels? grep for InternalNode in nodes/ (srl netns, sros netns — not in c.Nodes). So the only deploy-path impact is tailscale sidecars.\n\nHmm wait, actually, let me also check whether the tailscale sidecar container is a real separate container or shares netns. `SidecarName(parent)`. It's a real container (tsproxy?). It's in c.Nodes → included in deploy summary.\n\nNow let me also double-check the base behavior: was the internal skip in base's PrintContainerInspect applied at deploy? Base cmd/inspect.go lines 156-162 (diff hunk):\n\n```\nfor idx := range containers {\n    if !o.Destroy.All && containers[idx].Labels[clabconstants.InternalNode] == \"true\" {\n        continue\n    }\n    absPath := ...\n```\n\nYes — base deploy hid internal rows. Head shows them. Confirmed regression (P3).\n\nCould one argue showing sidecars in deploy output is fine? The sidecar is an internal helper, not a topology node; showing it contradicts the PR's own \"one entry per topology node\" principle, and it wasn't shown before. It's an unintended output change. P3 is right.\n\nNow, is there a similar impact on `graph`? No.\n\nNow let me also think about the **inspect `--topo` default flow with tailscale sidecar in the topo** — hmm, tailscale sidecars are only injected when auth-key set, and in inspect the topo parse... does NewContainerLab for inspect inject sidecars? `injectTailscaleSidecars` is called in Deploy path only (core/deploy.go? let me check where it's called). If only during deploy, then inspect topo flow won't have them in c.Nodes. Fine.\n\nNow let me also reconsider the OTHER direction of the same root cause: with `inspect --details`/`--containers` for the deploy caller — not applicable (deploy doesn't pass those options... `o.Inspect.Containers` defaults false; `o.Inspect.Details` false for deploy unless --details is somehow set — deploy doesn't register --details flag on deploy cmd? o.Inspect.Details default false. OK).\n\nSo: one P3 finding: `PrintContainerInspect` no longer filters internal containers for the `deploy` summary; tailscale sidecars now appear in post-deploy output.\n\nSuggested correction: keep the internal filter for the deploy caller, e.g., filter in `Deploy`/`finalize` or apply the logical filter there — simplest: in `cmd/deploy.go`, or better: keep `PrintContainerInspect` generic and filter `result.Containers` in deploy via `logicalNodeContainers`-like skip... Actually simplest correct: in `core/deploy.go` `ListNodesContainers`-based results, filter InternalNode — but ListNodesContainers is used elsewhere. Alternative: in cmd/deploy.go:335, filter internal containers before calling PrintContainerInspect. Or keep the skip inside PrintContainerInspect but with the `o.Inspect.Containers` condition: `if !o.Destroy.All && !o.Inspect.Containers && internal → continue`? But for inspect, internal containers were already filtered upstream in logicalNodeContainers; adding the skip back in PrintContainerInspect would also apply to inspect --all (Destroy.All true → not skipped... hmm, with the old condition, `ins -a` showed internals). Now the intended inspect semantics: `--all` without --containers hides internals. PrintContainerInspect can't know. So the cleanest correction: filter internal containers out of `result.Containers` in the deploy paths (finalize/reconcile already list per-node... actually ListNodesContainers could filter InternalNode labeled containers — that matches the intent: deploy summary should show only topology nodes).\n\nOK. That's finding 1 (P3).\n\nNow, any other findings? Let me reconsider the **robot test's `--containers -f json` with `--name ${lab-name}`**: `ins --name lab13 --containers -f json` → label pass → all lab containers → Contains sr14s-a ✓ and netns ✓.\n\nAnd `ins --all -f json` → logical → sr14s-a ✓, no netns ✓.\n\nNow let me re-examine the **`Confirm SR-14s component doesn't have any IPv4 address` change**: `ins -a --containers -f json` → all containers → select sr14s-a → ipv4 N/A ✓ (CPM container shares netns, no own IP). Good — with plain `-a` in head this would show the merged holder IP, hence the test change. ✓\n\nNow — potential issue with the test at line 29: `ins -t ... -f json` select sr14s-a `.ipv4_address | split(\"/\")[0]` expects the real IP — logical merged from holder ✓.\n\nEverything checks out.\n\nNow, the second candidate finding — **c9s `--containers` no-op**. I'll fold into coverage notes.\n\nThird candidate — **stale RN 0.83.md line 142**. P4.\n\nFourth candidate — is there anything about `--containers` with `--topo` where components/holders of a node REMOVED from the topo but still running are hidden — acceptable per docs.\n\nNow let me do a final check on one more edge in `logicalNodeContainers`: **a lab with an sros node where the holder is INTERNAL and NodeName \"sr-netns\"** — first loop: key {\"lab\",\"sr\"} internal → holders[key]. But ALSO — what if a lab has TWO sros nodes \"sr\" in different labs? Keyed by lab. ✓\n\nAnd — **`hasCPMA` when CPM A has ToolType?** No.\n\nOne more: **`logicalNodeContainers` for a topo-selected lab via `--all` where the SAME lab name exists in two different owners**? Owner concept: labels include Owner; two users could deploy labs with the same name? Docker container names are unique globally, so no.\n\nNow, the last potential P3: **`inspect --name X` where X is a lab whose containers were listed by label pass — tool containers with NodeName equal to a topo node name**: contrived.\n\nLet me also double-check the diff didn't change `docs/cmd/inspect/index.md` in a way that omits the `--details` implication — fine.\n\nNow, one more consideration — the **table output for `ins -t` on srl labs: Kind column**. The logical row uses the label-listed srl container's labels (Kind \"srl\") ✓.\n\nAnd **the `Group` column**: label-listed container has NodeGroup label ✓.\n\nI'm fairly confident now. Let me also spot-check `GetContainerIPv4` to make sure merged NetworkSettings are picked up.",
+          "time": {
+            "start": 1795540239877,
+            "end": 1795540259534
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e8a12d1001CYeZugOdmVylIG",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e89bdd9001msykgIKysaDhWK",
+          "callID": "call_9835a91224214f8491fa7422",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head/runtime",
+              "pattern": "func \\(c \\*?GenericContainer\\) GetContainerIPv4"
+            },
+            "output": "No files found",
+            "title": "func \\(c \\*?GenericContainer\\) GetContainerIPv4",
+            "metadata": {
+              "matches": 0,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540259545,
+              "end": 1795540259559
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8a12e8001s23bHbLk08YDso",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e89bdd9001msykgIKysaDhWK",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69198,
+            "input": 1022,
+            "output": 37,
+            "reasoning": 1835,
+            "cache": {
+              "read": 66304,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8a12f200129hwRvbyTSZfli",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540259570,
+          "completed": 1795540262139
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69233,
+          "input": 85,
+          "output": 27,
+          "reasoning": 1,
+          "cache": {
+            "read": 69120,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8a1c89001sPeAhwLo3WFHBx",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a12f200129hwRvbyTSZfli"
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e8a1ce5001w4QNBuRRHBnNXa",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a12f200129hwRvbyTSZfli",
+          "callID": "call_a03401b6b9ff47c5bcbf57ba",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "GetContainerIPv4"
+            },
+            "output": "Found 5 matches\n/source/head/core/events/stream.go:\n  Line 239: \t\tattributes[\"mgmt_ipv4\"] = container.GetContainerIPv4()\n\n  Line 405: \t\tif ipv4 := container.GetContainerIPv4(); ipv4 != \"\" && ipv4 != clabconstants.NotApplicable {\n\n\n/source/head/core/graph.go:\n  Line 274: \t\t\t\tIPv4Address: containers[idx].GetContainerIPv4(),\n\n\n/source/head/runtime/generic_container.go:\n  Line 61: func (ctr *GenericContainer) GetContainerIPv4() string {\n\n\n/source/head/cmd/inspect.go:\n  Line 545: \t\t\tIPv4Address: containers[idx].GetContainerIPv4(),\n",
+            "title": "GetContainerIPv4",
+            "metadata": {
+              "matches": 5,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540262122,
+              "end": 1795540262135
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8a1cf8001eEhavvTpHiuVsH",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a12f200129hwRvbyTSZfli",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69233,
+            "input": 85,
+            "output": 27,
+            "reasoning": 1,
+            "cache": {
+              "read": 69120,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8a1d02001f01gc13BXTtRm1",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540262146,
+          "completed": 1795540264358
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 69413,
+          "input": 264,
+          "output": 28,
+          "reasoning": 1,
+          "cache": {
+            "read": 69120,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8a252f001Y0P7ieE2SjMQ2N",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a1d02001f01gc13BXTtRm1"
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e8a259400140hd216TSpJfCZ",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a1d02001f01gc13BXTtRm1",
+          "callID": "call_422ce28c90f445cd87b969a6",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/runtime/generic_container.go",
+              "limit": 50,
+              "offset": 40
+            },
+            "output": "<path>/source/head/runtime/generic_container.go</path>\n<type>file</type>\n<content>\n40: }\n41: \n42: // RunExec executes a single command for a GenericContainer.\n43: func (gc *GenericContainer) RunExec(\n44: \tctx context.Context,\n45: \texecCmd *clabexec.ExecCmd,\n46: ) (*clabexec.ExecResult, error) {\n47: \tcontainerName := gc.Names[0]\n48: \texecResult, err := gc.Runtime.Exec(ctx, containerName, execCmd)\n49: \tif err != nil {\n50: \t\tlog.Errorf(\n51: \t\t\t\"%s: failed to execute cmd: %q with error %v\",\n52: \t\t\tcontainerName,\n53: \t\t\texecCmd.GetCmdString(),\n54: \t\t\terr,\n55: \t\t)\n56: \t\treturn nil, err\n57: \t}\n58: \treturn execResult, nil\n59: }\n60: \n61: func (ctr *GenericContainer) GetContainerIPv4() string {\n62: \tif ctr.NetworkSettings.IPv4addr == \"\" {\n63: \t\treturn clabconstants.NotApplicable\n64: \t}\n65: \treturn fmt.Sprintf(\"%s/%d\", ctr.NetworkSettings.IPv4addr, ctr.NetworkSettings.IPv4pLen)\n66: }\n67: \n68: func (ctr *GenericContainer) GetContainerIPv6() string {\n69: \tif ctr.NetworkSettings.IPv6addr == \"\" {\n70: \t\treturn clabconstants.NotApplicable\n71: \t}\n72: \treturn fmt.Sprintf(\"%s/%d\", ctr.NetworkSettings.IPv6addr, ctr.NetworkSettings.IPv6pLen)\n73: }\n74: \n75: type GenericMgmtIPs struct {\n76: \tIPv4addr string\n77: \tIPv4pLen int\n78: \tIPv4Gw   string\n79: \tIPv6addr string\n80: \tIPv6pLen int\n81: \tIPv6Gw   string\n82: }\n\n(End of file - total 82 lines)\n</content>",
+            "title": "source/head/runtime/generic_container.go",
+            "metadata": {
+              "preview": "}\n\n// RunExec executes a single command for a GenericContainer.\nfunc (gc *GenericContainer) RunExec(\n\tctx context.Context,\n\texecCmd *clabexec.ExecCmd,\n) (*clabexec.ExecResult, error) {\n\tcontainerName := gc.Names[0]\n\texecResult, err := gc.Runtime.Exec(ctx, containerName, execCmd)\n\tif err != nil {\n\t\tlog.Errorf(\n\t\t\t\"%s: failed to execute cmd: %q with error %v\",\n\t\t\tcontainerName,\n\t\t\texecCmd.GetCmdString(),\n\t\t\terr,\n\t\t)\n\t\treturn nil, err\n\t}\n\treturn execResult, nil\n}",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/runtime/generic_container.go",
+                "text": "}\n\n// RunExec executes a single command for a GenericContainer.\nfunc (gc *GenericContainer) RunExec(\n\tctx context.Context,\n\texecCmd *clabexec.ExecCmd,\n) (*clabexec.ExecResult, error) {\n\tcontainerName := gc.Names[0]\n\texecResult, err := gc.Runtime.Exec(ctx, containerName, execCmd)\n\tif err != nil {\n\t\tlog.Errorf(\n\t\t\t\"%s: failed to execute cmd: %q with error %v\",\n\t\t\tcontainerName,\n\t\t\texecCmd.GetCmdString(),\n\t\t\terr,\n\t\t)\n\t\treturn nil, err\n\t}\n\treturn execResult, nil\n}\n\nfunc (ctr *GenericContainer) GetContainerIPv4() string {\n\tif ctr.NetworkSettings.IPv4addr == \"\" {\n\t\treturn clabconstants.NotApplicable\n\t}\n\treturn fmt.Sprintf(\"%s/%d\", ctr.NetworkSettings.IPv4addr, ctr.NetworkSettings.IPv4pLen)\n}\n\nfunc (ctr *GenericContainer) GetContainerIPv6() string {\n\tif ctr.NetworkSettings.IPv6addr == \"\" {\n\t\treturn clabconstants.NotApplicable\n\t}\n\treturn fmt.Sprintf(\"%s/%d\", ctr.NetworkSettings.IPv6addr, ctr.NetworkSettings.IPv6pLen)\n}\n\ntype GenericMgmtIPs struct {\n\tIPv4addr string\n\tIPv4pLen int\n\tIPv4Gw   string\n\tIPv6addr string\n\tIPv6pLen int\n\tIPv6Gw   string\n}",
+                "lineStart": 40,
+                "lineEnd": 82,
+                "totalLines": 82,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795540264346,
+              "end": 1795540264352
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8a25a2001ZLpB5qGeGHCfup",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a1d02001f01gc13BXTtRm1",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 69413,
+            "input": 264,
+            "output": 28,
+            "reasoning": 1,
+            "cache": {
+              "read": 69120,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8a25ad001VHov8RwAW5sIwA",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540264365,
+          "completed": 1795540276241
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 71135,
+          "input": 489,
+          "output": 29,
+          "reasoning": 1241,
+          "cache": {
+            "read": 69376,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8a2de9001xkK6bI1kyuS6ia",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a25ad001VHov8RwAW5sIwA"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e8a2deb0012uo59xJ0oK42ze",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a25ad001VHov8RwAW5sIwA",
+          "text": "Note: `GetContainerIPv4` is a value-receiver method on `*GenericContainer` — `containers[idx].GetContainerIPv4()` on an addressable slice element auto-takes address. Fine.\n\nAlso important: the merged `NetworkSettings.IPv4pLen` — the holder's GenericMgmtIPs.IPv4pLen — is the holder's prefix length. In the srl node-pass version, srl.GetContainers merges holder settings including pLen. Equivalent. ✓\n\nBut wait — one more detail: in the logical merge, the CPM entry inherits the holder's `NetworkSettings` — including `IPv4Gw`. In base `-t` output, CPM A's NetworkSettings.IPv4Gw was set from distNodeMgmtIPs (also from the holder). ✓ Same.\n\nNow, let me finalize. Also double-check the `cmd/inspect_test.go` test file for a subtle problem: it sets `NodeName: \"\"` for the tool container but with `Containerlab: lab1`. In the second loop for the tool: ToolType != \"\" → skip ✓.\n\nOne more possible issue in the test: `ctr(\"lab1\", \"tailscale\", \"\", true, \"10.0.0.8\")` — InternalNode with no RootNodeName → first loop: key.node == \"\" → skip case (doesn't register holder). Second loop: key.node \"\" → then `if key.node == \"\" { key.node = name }` happens AFTER the skip check — the skip check `ctr.Labels[InternalNode] == \"true\"` happens before, so it's skipped. ✓\n\nNow — writing findings:\n\n**Finding 1 (P3)**: Deploy summary now lists internal tailscale sidecar containers.\n- Location: head cmd/inspect.go, PrintContainerInspect (removed skip) — but the introducing change is the diff hunk at PrintContainerInspect. Line range: the diff removed lines; in head, the loop starts at 521. I'll anchor at head cmd/inspect.go L517-L527.\n- Problem: The internal-container skip was removed from `PrintContainerInspect`, which is correct for `inspect` (filtering moved to `listContainers`) but is also called by `cmd/deploy.go` with `DeployResult.Containers` built by `core.ListNodesContainers`. That list includes containers of nodes registered in `c.Nodes` with the `clab-internal-node=true` label — currently the Tailscale sidecar injected by `core.injectTailscaleSidecars` (core/tailscale.go:68), which registers itself via `addTailscaleNode` → `initNode` → `c.Nodes`.\n- Trigger: `clab deploy` on a lab using Tailscale SSO sidecars (`tailscale-auth-key`), or a reconcile deploy of such a lab.\n- Impact: The post-deploy summary table/JSON now shows an internal `clab-<lab>-<node>-ts` row that was previously hidden, contradicting the PR's own \"one entry per topology node\" default and surprising users scripting the deploy output.\n- Correction: Filter internal containers out of the deploy summary — e.g., skip `InternalNode == \"true\"` entries when building `DeployResult.Containers` in `core.Deploy`/`finalize`, or pass the filter at the `cmd/deploy.go` call site; keep `PrintContainerInspect` generic.\n\nHmm wait, let me double check ONE more time that base's deploy output really hid the sidecar. Base `PrintContainerInspect` had the skip with `!o.Destroy.All` — deploy doesn't set Destroy.All... wait, does deploy use `o.Destroy.All`? `o.Destroy.All` is shared options; deploy command doesn't register --all on Destroy? Actually the `--all` flag is registered on destroy and inspect commands bound to `o.Destroy.All`. For deploy, `o.Destroy.All` remains default false. So base: skip applied → sidecar hidden. Head: shown. Confirmed.\n\nAlso — does `result.Containers` in the RECONCILE path include sidecars? `c.apply(...)` then `c.ListNodesContainers(ctx)` — yes, includes sidecar node's container.\n\n**Finding 2 (P4)**: Stale release-note text in `docs/rn/0.83.md:142`.\n- Problem: The release note still says the internal holder \"is hidden from `inspect` unless `--all` is set\", but this PR changes that rule to `--containers`/`--details` and updates `docs/manual/kinds/srl.md` accordingly; the RN paragraph contradicts the updated docs (and 0.83 appears to be the current, not-yet-superseded release notes).\n\nHmm — wait. Is 0.83 already released? The version.go says \"0.0.0\" (dev build). The RN 0.83.md exists with PR numbers — 0.83 could be the current dev release in progress. The RN entry \"Done in #3567\" describes the netns holder feature; this PR presumably lands in the same unreleased 0.83 cycle, so the RN text should be updated. I'll flag P4.\n\n**Coverage notes**: c9s runtime ignores `--containers` (docs note c9s inspect behavior separately; flag is a no-op there — acceptable, noted). Tests not executed (source-only review). No schema changes. Tool containers now hidden from default `inspect` output (documented; users need `--containers` to see them). Reviewed all 6 changed paths; traced callers (deploy, inspect_interfaces, graph), label producers (srl/sros netns, sros components, tools), and list-option semantics.\n\nActually, wait — one more check on Finding 1: are there other internal-labeled nodes in c.Nodes? Let me grep nodes for `InternalNode` label setting on registered nodes besides tailscale.",
+          "time": {
+            "start": 1795540266475,
+            "end": 1795540276212
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e8a53f60011SMu4WbLuCa4yt",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a25ad001VHov8RwAW5sIwA",
+          "callID": "call_048fec2c17914ef5ac6e7da0",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "include": "*.go",
+              "path": "/source/head",
+              "pattern": "clabconstants\\.InternalNode"
+            },
+            "output": "Found 23 matches\n/source/head/core/topology_reconcile.go:\n  Line 731: \t\ttopo.GetNodeLabels(nodeName)[clabconstants.InternalNode] == \"true\" {\n\n\n/source/head/core/tailscale_test.go:\n  Line 49: \t\t\t\tLabels: map[string]string{clabconstants.InternalNode: \"true\"},\n\n  Line 132: \tif sc.Labels[clabconstants.InternalNode] != \"true\" {\n\n  Line 513: \t\tcreated.Labels[clabconstants.InternalNode] != \"true\" ||\n\n  Line 652: \t\t\t\t\tclabconstants.InternalNode:     \"true\",\n\n\n/source/head/core/runtime_state.go:\n  Line 226: \taInternal := a.Labels[clabconstants.InternalNode] == \"true\"\n\n  Line 227: \tbInternal := b.Labels[clabconstants.InternalNode] == \"true\"\n\n\n/source/head/core/apply_test.go:\n  Line 1220: \t\t\t\t\tclabconstants.InternalNode: \"true\",\n\n  Line 1295: \t\t\t\t\tclabconstants.InternalNode: \"true\",\n\n\n/source/head/core/tailscale.go:\n  Line 26: \treturn n.Config().Labels[clabconstants.InternalNode] == \"true\"\n\n  Line 36: \tif cfg.Labels[clabconstants.InternalNode] == \"true\" {\n\n  Line 68: \t\t\t\tclabconstants.InternalNode:     \"true\",\n\n  Line 117: \t\tWithListFromCliArgs([]string{clabconstants.InternalNode + \"=true\"}),\n\n  Line 126: \t\t\tctr.Labels[clabconstants.InternalNode] == \"true\"\n\n  Line 247: \tcfg.Labels[clabconstants.InternalNode] = \"true\"\n\n\n/source/head/nodes/sros/sros_test.go:\n  Line 749: \tassert.Equal(t, \"true\", n.netnsNode.Config().Labels[clabconstants.InternalNode])\n\n\n/source/head/nodes/sros/netns.go:\n  Line 30: \tlabels[clabconstants.InternalNode] = \"true\"\n\n\n/source/head/nodes/srl/netns_test.go:\n  Line 72: \tassert.Equal(t, \"true\", holder.Labels[clabconstants.InternalNode])\n\n  Line 76: \tassert.Empty(t, n.Cfg.Labels[clabconstants.InternalNode])\n\n\n/source/head/nodes/srl/netns.go:\n  Line 47: \tlabels[clabconstants.InternalNode] = \"true\"\n\n\n/source/head/cmd/inspect_test.go:\n  Line 22: \t\t\tlabels[clabconstants.InternalNode] = \"true\"\n\n\n/source/head/cmd/inspect.go:\n  Line 245: \t\tcase l[clabconstants.InternalNode] == \"true\":\n\n  Line 265: \t\t\tctr.Labels[clabconstants.InternalNode] == \"true\" || (key.node != \"\" && !isCPM) {\n",
+            "title": "clabconstants\\.InternalNode",
+            "metadata": {
+              "matches": 23,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795540276218,
+              "end": 1795540276236
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8a540e00121jL1C5al6LxeU",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a25ad001VHov8RwAW5sIwA",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 71135,
+            "input": 489,
+            "output": 29,
+            "reasoning": 1241,
+            "cache": {
+              "read": 69376,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8a5418001WBW1zHdgs6DgcS",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540276248,
+          "completed": 1795540281785
+        },
+        "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-fwOrwN",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 71925,
+          "input": 68929,
+          "output": 28,
+          "reasoning": 152,
+          "cache": {
+            "read": 2816,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_20e8a64b30015Lggb9hi2YikYA",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a5418001WBW1zHdgs6DgcS"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_20e8a64b5001IJt3ribV8S6YRL",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a5418001WBW1zHdgs6DgcS",
+          "text": "Confirmed: only the Tailscale sidecar (core/tailscale.go:68) and the Tailscale proxy (line 247, but proxy isn't registered in `c.Nodes`) set `InternalNode` on nodes that could reach `ListNodesContainers`. So Finding 1 affects only Tailscale-SSO labs. Still a real output regression introduced by this PR.\n\nLet me double-check line 247 context — is the proxy registered in c.Nodes? Line 247: `cfg.Labels[clabconstants.InternalNode] = \"true\"` in `addProxyNode` or similar. Let me quickly view lines 220-260 of tailscale.go to see whether the proxy node gets registered via initNode.",
+          "time": {
+            "start": 1795540280501,
+            "end": 1795540281764
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_20e8a69a9001HJM4I4si2Se6Yq",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a5418001WBW1zHdgs6DgcS",
+          "callID": "call_5d2ec23802574fba8ffa4253",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/core/tailscale.go",
+              "limit": 75,
+              "offset": 215
+            },
+            "output": "<path>/source/head/core/tailscale.go</path>\n<type>file</type>\n<content>\n215: \t}\n216: \tif c.skipMgmtNetwork(c.tailscaleMgmtNet()) {\n217: \t\tlog.Warn(\"Tailscale SSO proxy needs the management network, skipping\",\n218: \t\t\t\"network\", c.tailscaleMgmtNet().Network)\n219: \t\treturn nil\n220: \t}\n221: \n222: \tclabutils.CreateDirectory(labDir, clabconstants.PermissionsOpen)\n223: \tif err := clabnodestailscale.WriteServeConfig(labDir, c.tailscaleNodes()); err != nil {\n224: \t\treturn fmt.Errorf(\"writing Tailscale Serve config: %w\", err)\n225: \t}\n226: \tif len(existing) > 0 {\n227: \t\treturn nil\n228: \t}\n229: \n230: \treturn c.createTailscaleProxy(ctx, labDir)\n231: }\n232: \n233: func (c *CLab) createTailscaleProxy(ctx context.Context, labDir string) error {\n234: \tts := c.tailscaleMgmtNet()\n235: \trt, err := c.mgmtRuntime(c.globalRuntimeName, ts)\n236: \tif err != nil {\n237: \t\treturn err\n238: \t}\n239: \tcfg := clabnodestailscale.ProxyConfig(\n240: \t\tc.Config.Name,\n241: \t\tc.nodeLongName(clabnodestailscale.ProxyName),\n242: \t\tts.Network,\n243: \t\tlabDir,\n244: \t)\n245: \tc.addDefaultLabels(cfg)\n246: \tcfg.Labels[clabconstants.ToolType] = clabnodestailscale.ToolType\n247: \tcfg.Labels[clabconstants.InternalNode] = \"true\"\n248: \n249: \tif err := rt.PullImage(ctx, cfg.Image, clabtypes.PullPolicyIfNotPresent); err != nil {\n250: \t\treturn fmt.Errorf(\"pulling Tailscale proxy image: %w\", err)\n251: \t}\n252: \tif err := c.AllocateToolManagementIPs(ctx, cfg); err != nil {\n253: \t\treturn fmt.Errorf(\"allocating Tailscale proxy management address: %w\", err)\n254: \t}\n255: \n256: \tlog.Info(\"Creating Tailscale SSO proxy\", \"container\", cfg.LongName)\n257: \tid, err := rt.CreateContainer(ctx, cfg)\n258: \tif err != nil {\n259: \t\treturn fmt.Errorf(\"creating Tailscale proxy: %w\", err)\n260: \t}\n261: \tif _, err := rt.StartContainer(ctx, id, clabruntime.NewEndpointlessNode(cfg)); err != nil {\n262: \t\trt.DeleteContainer(ctx, cfg.LongName)\n263: \t\treturn fmt.Errorf(\"starting Tailscale proxy: %w\", err)\n264: \t}\n265: \n266: \tlog.Info(\"Tailscale SSO proxy started; if it has not joined the tailnet yet, \"+\n267: \t\t\"open the login URL shown in its logs\",\n268: \t\t\"container\", cfg.LongName, \"logs\", \"docker logs \"+cfg.LongName)\n269: \n270: \treturn nil\n271: }\n272: \n273: // planTailscaleSidecarRecreates recreates the sidecars of recreated parents so that\n274: // TS_DEST_IP follows the parent's management address.\n275: func (c *CLab) planTailscaleSidecarRecreates(plan *applyPlan) {\n276: \tif plan == nil {\n277: \t\treturn\n278: \t}\n279: \n280: \tparents := make([]string, 0, len(plan.recreatedNodeSet))\n281: \tfor name := range plan.recreatedNodeSet {\n282: \t\tparents = append(parents, name)\n283: \t}\n284: \tfor _, parent := range parents {\n285: \t\tname := clabnodestailscale.SidecarName(parent)\n286: \t\tsidecar, ok := c.Nodes[name]\n287: \t\tif !ok || sidecar.Config().Labels[clabnodestailscale.ParentLabel] != parent {\n288: \t\t\tcontinue\n289: \t\t}\n\n(Showing lines 215-289 of 366. Use offset=290 to continue.)\n</content>",
+            "title": "source/head/core/tailscale.go",
+            "metadata": {
+              "preview": "\t}\n\tif c.skipMgmtNetwork(c.tailscaleMgmtNet()) {\n\t\tlog.Warn(\"Tailscale SSO proxy needs the management network, skipping\",\n\t\t\t\"network\", c.tailscaleMgmtNet().Network)\n\t\treturn nil\n\t}\n\n\tclabutils.CreateDirectory(labDir, clabconstants.PermissionsOpen)\n\tif err := clabnodestailscale.WriteServeConfig(labDir, c.tailscaleNodes()); err != nil {\n\t\treturn fmt.Errorf(\"writing Tailscale Serve config: %w\", err)\n\t}\n\tif len(existing) > 0 {\n\t\treturn nil\n\t}\n\n\treturn c.createTailscaleProxy(ctx, labDir)\n}\n\nfunc (c *CLab) createTailscaleProxy(ctx context.Context, labDir string) error {\n\tts := c.tailscaleMgmtNet()",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/core/tailscale.go",
+                "text": "\t}\n\tif c.skipMgmtNetwork(c.tailscaleMgmtNet()) {\n\t\tlog.Warn(\"Tailscale SSO proxy needs the management network, skipping\",\n\t\t\t\"network\", c.tailscaleMgmtNet().Network)\n\t\treturn nil\n\t}\n\n\tclabutils.CreateDirectory(labDir, clabconstants.PermissionsOpen)\n\tif err := clabnodestailscale.WriteServeConfig(labDir, c.tailscaleNodes()); err != nil {\n\t\treturn fmt.Errorf(\"writing Tailscale Serve config: %w\", err)\n\t}\n\tif len(existing) > 0 {\n\t\treturn nil\n\t}\n\n\treturn c.createTailscaleProxy(ctx, labDir)\n}\n\nfunc (c *CLab) createTailscaleProxy(ctx context.Context, labDir string) error {\n\tts := c.tailscaleMgmtNet()\n\trt, err := c.mgmtRuntime(c.globalRuntimeName, ts)\n\tif err != nil {\n\t\treturn err\n\t}\n\tcfg := clabnodestailscale.ProxyConfig(\n\t\tc.Config.Name,\n\t\tc.nodeLongName(clabnodestailscale.ProxyName),\n\t\tts.Network,\n\t\tlabDir,\n\t)\n\tc.addDefaultLabels(cfg)\n\tcfg.Labels[clabconstants.ToolType] = clabnodestailscale.ToolType\n\tcfg.Labels[clabconstants.InternalNode] = \"true\"\n\n\tif err := rt.PullImage(ctx, cfg.Image, clabtypes.PullPolicyIfNotPresent); err != nil {\n\t\treturn fmt.Errorf(\"pulling Tailscale proxy image: %w\", err)\n\t}\n\tif err := c.AllocateToolManagementIPs(ctx, cfg); err != nil {\n\t\treturn fmt.Errorf(\"allocating Tailscale proxy management address: %w\", err)\n\t}\n\n\tlog.Info(\"Creating Tailscale SSO proxy\", \"container\", cfg.LongName)\n\tid, err := rt.CreateContainer(ctx, cfg)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"creating Tailscale proxy: %w\", err)\n\t}\n\tif _, err := rt.StartContainer(ctx, id, clabruntime.NewEndpointlessNode(cfg)); err != nil {\n\t\trt.DeleteContainer(ctx, cfg.LongName)\n\t\treturn fmt.Errorf(\"starting Tailscale proxy: %w\", err)\n\t}\n\n\tlog.Info(\"Tailscale SSO proxy started; if it has not joined the tailnet yet, \"+\n\t\t\"open the login URL shown in its logs\",\n\t\t\"container\", cfg.LongName, \"logs\", \"docker logs \"+cfg.LongName)\n\n\treturn nil\n}\n\n// planTailscaleSidecarRecreates recreates the sidecars of recreated parents so that\n// TS_DEST_IP follows the parent's management address.\nfunc (c *CLab) planTailscaleSidecarRecreates(plan *applyPlan) {\n\tif plan == nil {\n\t\treturn\n\t}\n\n\tparents := make([]string, 0, len(plan.recreatedNodeSet))\n\tfor name := range plan.recreatedNodeSet {\n\t\tparents = append(parents, name)\n\t}\n\tfor _, parent := range parents {\n\t\tname := clabnodestailscale.SidecarName(parent)\n\t\tsidecar, ok := c.Nodes[name]\n\t\tif !ok || sidecar.Config().Labels[clabnodestailscale.ParentLabel] != parent {\n\t\t\tcontinue\n\t\t}",
+                "lineStart": 215,
+                "lineEnd": 289,
+                "totalLines": 366,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795540281773,
+              "end": 1795540281780
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_20e8a69b6001L71JZ6E8oDjLDj",
+          "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+          "messageID": "msg_20e8a5418001WBW1zHdgs6DgcS",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 71925,
+            "input": 68929,
+            "output": 28,
+            "reasoning": 152,
+            "cache": {
+              "read": 2816,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_20e8a69c000120xTDB1VOL1j4P",
+        "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
+        "time": {
+          "created": 1795540281792
         },
         "parentID": "msg_20e8683d8001a1RAPHPnaE16aS",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -6463,18 +8260,18 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_20e8819d4001xfMHShZF0l2UIZ",
+          "id": "prt_20e8a7240001RLKx8YKHz6ifFv",
           "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
-          "messageID": "msg_20e8812f1001f7wYB6l2uCLvOB"
+          "messageID": "msg_20e8a69c000120xTDB1VOL1j4P"
         },
         {
           "type": "reasoning",
-          "id": "prt_20e8819d5001dAVCiSKk3bXrst",
+          "id": "prt_20e8a7242001K51e2k66Z4Xorb",
           "sessionID": "ses_df17e7b15ffezqjn3qqGTFkXv0",
-          "messageID": "msg_20e8812f1001f7wYB6l2uCLvOB",
+          "messageID": "msg_20e8a69c000120xTDB1VOL1j4P",
           "text": "",
           "time": {
-            "start": 1795540130261
+            "start": 1795540283970
           }
         }
       ]
