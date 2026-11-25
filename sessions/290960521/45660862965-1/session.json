@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "9c4339862aaf88770cd98d951e994c7f5afb87f2",
-  "updatedAt": "2026-11-25T17:10:54.717Z",
-  "state": "running",
+  "updatedAt": "2026-11-25T17:11:20.434Z",
+  "state": "completed",
   "info": {
     "id": "ses_dec53fd80ffeqKDHlxqapIq1xM",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 529739,
-      "output": 9356,
-      "reasoning": 16797,
+      "input": 531085,
+      "output": 12455,
+      "reasoning": 17919,
       "cache": {
-        "read": 1168384,
+        "read": 1318656,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795626369664,
-      "updated": 1795626653825
+      "updated": 1795626680351
     }
   },
   "messages": [
@@ -4579,7 +4579,8 @@
         "id": "msg_213b0587d001AVd9Cp6NhcsD0B",
         "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
         "time": {
-          "created": 1795626653821
+          "created": 1795626653821,
+          "completed": 1795626655763
         },
         "parentID": "msg_213aeb04e001HPgU1SQQUSXgQA",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -4592,16 +4593,160 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 75329,
+          "input": 292,
+          "output": 28,
+          "reasoning": 1,
           "cache": {
-            "read": 0,
+            "read": 75008,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
-      "parts": []
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_213b05fa1001Xcl02S67Jpahrr",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0587d001AVd9Cp6NhcsD0B"
+        },
+        {
+          "type": "tool",
+          "id": "prt_213b06002001c3reCjAhVopeeg",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0587d001AVd9Cp6NhcsD0B",
+          "callID": "call_fe533b673c9f4f88928b9bbe",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/netem/netem.go",
+              "limit": 90,
+              "offset": 30
+            },
+            "output": "<path>/source/head/netem/netem.go</path>\n<type>file</type>\n<content>\n30: \n31: \treturn tcnl, nil\n32: }\n33: \n34: // SetImpairments sets the impairments on the given interface of a node and returns its qdisc.\n35: func SetImpairments(tcnl *tc.Tc, nodeName string, link *net.Interface, delay, jitter time.Duration,\n36: \tloss float64, rate uint64, probability float64,\n37: ) (*tc.Object, error) {\n38: \terr := ReplaceImpairments(tcnl, link, delay, jitter, loss, rate, probability)\n39: \tif err != nil {\n40: \t\treturn nil, err\n41: \t}\n42: \n43: \t// get qdisc of an interface after we set it\n44: \tqdiscs, err := tcnl.Qdisc().Get()\n45: \tif err != nil {\n46: \t\treturn nil, fmt.Errorf(\"could not get all qdiscs: %v\", err)\n47: \t}\n48: \n49: \tfor idx := range qdiscs {\n50: \t\tif qdiscs[idx].Ifindex == uint32(link.Index) {\n51: \t\t\treturn &qdiscs[idx], nil\n52: \t\t}\n53: \t}\n54: \n55: \treturn nil, fmt.Errorf(\"could not find qdisc for interface %q\", link.Name)\n56: }\n57: \n58: // ReplaceImpairments sets the impairments on the given interface, replacing the ones it has.\n59: func ReplaceImpairments(tcnl *tc.Tc, link *net.Interface, delay, jitter time.Duration,\n60: \tloss float64, rate uint64, probability float64,\n61: ) error {\n62: \tif delay < 0 || jitter < 0 {\n63: \t\treturn fmt.Errorf(\"delay and jitter must not be negative\")\n64: \t}\n65: \n66: \terr := tcnl.SetOption(netlink.ExtendedAcknowledge, true)\n67: \tif err != nil {\n68: \t\treturn fmt.Errorf(\"could not set option ExtendedAcknowledge: %v\", err)\n69: \t}\n70: \n71: \tqdisc := tc.Object{\n72: \t\tMsg: tc.Msg{\n73: \t\t\tFamily:  unix.AF_UNSPEC,\n74: \t\t\tIfindex: uint32(link.Index),\n75: \t\t\tHandle:  core.BuildHandle(0x1, 0x0),\n76: \t\t\tParent:  tc.HandleRoot,\n77: \t\t\tInfo:    0,\n78: \t\t},\n79: \t\tAttribute: tc.Attribute{\n80: \t\t\tKind: \"netem\",\n81: \t\t\tNetem: &tc.Netem{\n82: \t\t\t\tQopt: tc.NetemQopt{\n83: \t\t\t\t\tLimit: 10000, // max number of packets netem can hold during delay\n84: \t\t\t\t},\n85: \t\t\t},\n86: \t\t},\n87: \t}\n88: \n89: \tsetDelay(&qdisc, delay, jitter)\n90: \n91: \tsetLoss(&qdisc, loss)\n92: \n93: \tsetRate(&qdisc, rate)\n94: \n95: \t// Always set the corruption field (even if probability is 0) to allow resetting.\n96: \tsetCorruption(&qdisc, probability)\n97: \n98: \treturn tcnl.Qdisc().Replace(&qdisc)\n99: }\n100: \n101: // DeleteImpairments deletes the netem impairments from the given interface.\n102: func DeleteImpairments(tcnl *tc.Tc, link *net.Interface) error {\n103: \tqdisc := tc.Object{\n104: \t\tMsg: tc.Msg{\n105: \t\t\tFamily:  unix.AF_UNSPEC,\n106: \t\t\tIfindex: uint32(link.Index),\n107: \t\t\tHandle:  core.BuildHandle(0x1, 0x0),\n108: \t\t\tParent:  tc.HandleRoot,\n109: \t\t\tInfo:    0,\n110: \t\t},\n111: \t\tAttribute: tc.Attribute{\n112: \t\t\tKind:  \"netem\",\n113: \t\t\tNetem: &tc.Netem{},\n114: \t\t},\n115: \t}\n116: \treturn tcnl.Qdisc().Delete(&qdisc)\n117: }\n118: \n119: // setDelay sets delay and jitter to the qdisc.\n\n(Showing lines 30-119 of 185. Use offset=120 to continue.)\n</content>",
+            "title": "source/head/netem/netem.go",
+            "metadata": {
+              "preview": "\n\treturn tcnl, nil\n}\n\n// SetImpairments sets the impairments on the given interface of a node and returns its qdisc.\nfunc SetImpairments(tcnl *tc.Tc, nodeName string, link *net.Interface, delay, jitter time.Duration,\n\tloss float64, rate uint64, probability float64,\n) (*tc.Object, error) {\n\terr := ReplaceImpairments(tcnl, link, delay, jitter, loss, rate, probability)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\t// get qdisc of an interface after we set it\n\tqdiscs, err := tcnl.Qdisc().Get()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"could not get all qdiscs: %v\", err)\n\t}\n\n\tfor idx := range qdiscs {",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/netem/netem.go",
+                "text": "\n\treturn tcnl, nil\n}\n\n// SetImpairments sets the impairments on the given interface of a node and returns its qdisc.\nfunc SetImpairments(tcnl *tc.Tc, nodeName string, link *net.Interface, delay, jitter time.Duration,\n\tloss float64, rate uint64, probability float64,\n) (*tc.Object, error) {\n\terr := ReplaceImpairments(tcnl, link, delay, jitter, loss, rate, probability)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\t// get qdisc of an interface after we set it\n\tqdiscs, err := tcnl.Qdisc().Get()\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"could not get all qdiscs: %v\", err)\n\t}\n\n\tfor idx := range qdiscs {\n\t\tif qdiscs[idx].Ifindex == uint32(link.Index) {\n\t\t\treturn &qdiscs[idx], nil\n\t\t}\n\t}\n\n\treturn nil, fmt.Errorf(\"could not find qdisc for interface %q\", link.Name)\n}\n\n// ReplaceImpairments sets the impairments on the given interface, replacing the ones it has.\nfunc ReplaceImpairments(tcnl *tc.Tc, link *net.Interface, delay, jitter time.Duration,\n\tloss float64, rate uint64, probability float64,\n) error {\n\tif delay < 0 || jitter < 0 {\n\t\treturn fmt.Errorf(\"delay and jitter must not be negative\")\n\t}\n\n\terr := tcnl.SetOption(netlink.ExtendedAcknowledge, true)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"could not set option ExtendedAcknowledge: %v\", err)\n\t}\n\n\tqdisc := tc.Object{\n\t\tMsg: tc.Msg{\n\t\t\tFamily:  unix.AF_UNSPEC,\n\t\t\tIfindex: uint32(link.Index),\n\t\t\tHandle:  core.BuildHandle(0x1, 0x0),\n\t\t\tParent:  tc.HandleRoot,\n\t\t\tInfo:    0,\n\t\t},\n\t\tAttribute: tc.Attribute{\n\t\t\tKind: \"netem\",\n\t\t\tNetem: &tc.Netem{\n\t\t\t\tQopt: tc.NetemQopt{\n\t\t\t\t\tLimit: 10000, // max number of packets netem can hold during delay\n\t\t\t\t},\n\t\t\t},\n\t\t},\n\t}\n\n\tsetDelay(&qdisc, delay, jitter)\n\n\tsetLoss(&qdisc, loss)\n\n\tsetRate(&qdisc, rate)\n\n\t// Always set the corruption field (even if probability is 0) to allow resetting.\n\tsetCorruption(&qdisc, probability)\n\n\treturn tcnl.Qdisc().Replace(&qdisc)\n}\n\n// DeleteImpairments deletes the netem impairments from the given interface.\nfunc DeleteImpairments(tcnl *tc.Tc, link *net.Interface) error {\n\tqdisc := tc.Object{\n\t\tMsg: tc.Msg{\n\t\t\tFamily:  unix.AF_UNSPEC,\n\t\t\tIfindex: uint32(link.Index),\n\t\t\tHandle:  core.BuildHandle(0x1, 0x0),\n\t\t\tParent:  tc.HandleRoot,\n\t\t\tInfo:    0,\n\t\t},\n\t\tAttribute: tc.Attribute{\n\t\t\tKind:  \"netem\",\n\t\t\tNetem: &tc.Netem{},\n\t\t},\n\t}\n\treturn tcnl.Qdisc().Delete(&qdisc)\n}\n\n// setDelay sets delay and jitter to the qdisc.",
+                "lineStart": 30,
+                "lineEnd": 119,
+                "totalLines": 185,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795626655751,
+              "end": 1795626655757
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_213b06010001gsWk1ZfKfSs6PK",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0587d001AVd9Cp6NhcsD0B",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 75329,
+            "input": 292,
+            "output": 28,
+            "reasoning": 1,
+            "cache": {
+              "read": 75008,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_213b0601c001Nab0srYBKDtCFG",
+        "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+        "time": {
+          "created": 1795626655772,
+          "completed": 1795626680329
+        },
+        "parentID": "msg_213aeb04e001HPgU1SQQUSXgQA",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-0PyBiq",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 80510,
+          "input": 1054,
+          "output": 3071,
+          "reasoning": 1121,
+          "cache": {
+            "read": 75264,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_213b06a51001TzwNs08uiXuCNn",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0601c001Nab0srYBKDtCFG"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_213b06a52001hPc7gRSQ27z8aB",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0601c001Nab0srYBKDtCFG",
+          "text": "Local behavior with all-zero set: `ReplaceImpairments` replaces the qdisc with a zero netem qdisc (limit 10000) — so local set with all zeros installs a zero-impairment qdisc (netem still present, clab `tc qdisc show` would show `netem` but with no loss/delay... actually qdisc shows \"netem\" kind with default state). Whereas lab-runtime set with all zeros writes `netem: {}` — clabwire sees an empty netem and presumably doesn't install any qdisc; `show` reports nothing.\n\nThe divergence is real but minor and the degenerate call (`set` with no flags) has no meaningful impairment semantics either way. P4 stands.\n\nNow write the final review. Findings:\n\n1. P2 — Netem support check bypassed on the default Topology-CR deploy path.\n   Location: head labruntime/clabernetes/lifecycle.go L88-L106.\n   Problem: `Deploy` early-returns through `reconcileTopology` (L89-96) and `deployTopology` (L97-99) before the `linksDeclareNetem`/`ensureLinkNetemSupport` guard (L101-106), so only `--no-topology-cr` deploys run it. `SetImpairment` and `checkLabRuntimeLinkImpairments` gate separately.\n   Trigger: `deploy -r c9s -t lab.clab.yml` (default path) against clabernetes <0.12 with a topology declaring `netem`.\n   Impact: The controller (or Topology CRD pruning) drops the netem and the lab deploys silently unimpaired — exactly the failure mode the PR's own comments (`support.go` requiredClabernetesNetem) and docs (`docs/manual/clabernetes/runtime.md` \"containerlab checks the published Link schema the first time a lab uses them\") promise to prevent. Worse, on a Topology-owned lab `SetImpairment` rejects changes, so the user cannot discover or fix it with `tools netem`.\n   Correction: hoist the guard above the two early returns in `Deploy` — `prepared.primitives.links` is available on both paths since `prepareDesiredDeployment` (plan.go L27) always compiles primitives — and adjust the comment (\"The Links are written as compiled here\" applies only to the no-topology-cr branch).\n\n2. P4 — All-zero `tools netem set` on a lab runtime writes `netem: {}` and prints nothing.\n   Location: head labruntime/clabernetes/netem.go L204-L225 (`linkNetem`) with cmd/tools_netem_labruntime.go L42-L68.\n   Problem: `netemSetLabRuntime` always passes a non-nil `&Impairment{}`; with all-zero values `linkNetem` returns an empty map, which patches `netem: {}` onto the Link. `Impairments` (L141) skips endpoints whose `len(netem) == 0`, so the post-set confirmation table prints nothing, and `show` reports the interface as unimpaired. Local `tools netem set` instead replaces the qdisc with a zero-impairment netem qdisc (`netem/netem.go` ReplaceImpairments), so the two runtimes diverge on the same command.\n   Trigger: `tools netem set -r c9s -t lab.clab.yml -n r1 -i eth1` with no impairment flags.\n   Impact: Silent no-op with a leftover empty object in the CR; cosmetic inconsistency.\n   Correction: treat an all-zero impairment as a reset in `netemSetLabRuntime` (pass `nil`), or skip the patch when all fields are zero.\n\nCoverage notes:\n- Source-only review; tests were not executed.\n- All 22 changed paths reviewed.\n- Schema: `schemas/clab.schema.json` unchanged and already carries `netem` on links (pre-existing feature); the new `tests/14-clabernetes/03-link-netem.clab.yml` validates against it. The c9s Link CRD schema is external (clabernetes v0.12.0); the PR validates it at runtime via the OpenAPI check with a committed fixture.\n- Unverified by execution: clabernetes 0.11 behavior on Topology-CR admission with link-level netem (prune assumed; conclusion holds either way).\n- The 4m delay limit (32-bit kernel ticks) is documented in `docs/manual/clabernetes/runtime.md` but not validated client-side; local netem shares the same kernel constraint, treated as an external constraint, not a finding.\n- `docs/cmd/tools/netem/*.md` generated pages unchanged, consistent with unchanged Long help texts.\n\nNow produce Markdown review + JSON. Permalinks:\n- lifecycle.go: https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/lifecycle.go#L88-L106\n- netem.go: .../labruntime/clabernetes/netem.go#L204-L225\n- tools_netem_labruntime.go: .../cmd/tools_netem_labruntime.go#L42-L68\n\nJSON with same findings.",
+          "time": {
+            "start": 1795626658387,
+            "end": 1795626665757
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_213b08721001pG9EF0V19Qrnvc",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0601c001Nab0srYBKDtCFG",
+          "text": "All 22 changed paths have now been traced end-to-end, including the deploy-path flow, runtime capability wiring, support checks, tests, docs, and the local `tools netem` baseline. Here is the final review.\n\n---\n\n## Review: `tools netem` support under lab runtimes (clabernetes)\n\n**Head:** `9c4339862aaf88770cd98d951e994c7f5afb87f2` · **Base:** `e7f598179e26c61d406af854da48d39565f4aa7d`\n\n### Summary\n\nThe PR adds `tools netem` support for lab runtimes: a `LinkImpairer` capability on `labruntime.Runtime`, a clabernetes implementation that reads/writes `netem` on c9s Link endpoints, an OpenAPI-based schema check for clusters older than clabernetes 0.12, an exception in the lab-runtime command gate for `tools.netem`, tests, docs, and an e2e suite. The wiring is clean and well-tested. One correctness gap remains in where the new support check is executed.\n\n### Severity summary\n\n| Priority | Count | Summary |\n|---|---|---|\n| P2 | 1 | Netem support check is bypassed on the default Topology-CR deploy path |\n| P4 | 1 | All-zero `tools netem set` on a lab runtime leaves `netem: {}` and prints nothing |\n\n### Findings\n\n#### P2 — Netem support check is bypassed on the default Topology-CR deploy path\n\n**Location:** [`labruntime/clabernetes/lifecycle.go` L88-L106](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/lifecycle.go#L88-L106) (head)\n\n**Problem:** In `Deploy`, the new guard runs only after two early returns: `existingTopology != nil` returns through `reconcileTopology` (lines 89-96) and `!req.NoTopologyCR` returns through `deployTopology` (lines 97-99), both before the check:\n\n```go\nif linksDeclareNetem(primitives.links) {\n    if err = r.ensureLinkNetemSupport(ctx); err != nil { ... }\n}\n```\n\nNeither `deployTopology` ([reconcile.go L404-L497](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/reconcile.go#L404-L497)) nor `reconcileTopology` (L534-L593) runs the check. So the guard exists only for `--no-topology-cr` deploys (where containerlab itself writes the compiled Links) and for `SetImpairment`.\n\n**Trigger:** `containerlab -r c9s deploy -t lab.clab.yml` (the default path) with a topology that declares `netem`, against a cluster running clabernetes older than 0.12.\n\n**Impact:** An older controller (or Topology CRD pruning) drops the impairment and the lab deploys silently unimpaired — exactly the failure mode the PR is designed to catch, per its own comments in `support.go` (`requiredClabernetesNetem`: \"An older release prunes the unknown netem field from a Link, so a lab would deploy without its impairments instead of failing\") and the new docs in `docs/manual/clabernetes/runtime.md` (\"containerlab checks the published Link schema the first time a lab uses them\"). It is worse on this path than on the `--no-topology-cr` path: a Topology-owned lab rejects `SetImpairment` by design, so the user cannot even probe the missing support with `tools netem set`; only `show` would reveal it indirectly.\n\n**Correction:** Hoist the guard above the two early returns in `Deploy`. `prepareDesiredDeployment` ([plan.go L27](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/plan.go#L27)) always compiles `primitives` on both paths, so `prepared.primitives.links` is available there. Adjust the comment, which currently applies only to the `--no-topology-cr` branch (\"The Links are written as compiled here\"). A unit test asserting that `Deploy` fails on both paths with a netem-declaring topology and an unsupported cluster would pin the behavior.\n\n#### P4 — All-zero `tools netem set` on a lab runtime leaves `netem: {}` and prints nothing\n\n**Location:** [`labruntime/clabernetes/netem.go` L204-L225](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/netem.go#L204-L225) with [`cmd/tools_netem_labruntime.go` L42-L68](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/cmd/tools_netem_labruntime.go#L42-L68) (head)\n\n**Problem:** `netemSetLabRuntime` always passes a non-nil `&Impairment{}` built from the flags. When all flags are zero (the default), `linkNetem` returns an empty map, and the merge patch writes `netem: {}` onto the Link endpoint. `Impairments` skips endpoints whose `netem` is empty (line 141), so the post-set confirmation loop in `netemSetLabRuntime` prints nothing and a subsequent `show` reports the interface as unimpaired. For comparison, local `tools netem set` with all zeros replaces the interface's qdisc with a zero-impairment netem qdisc (`netem/netem.go`, `ReplaceImpairments`), so the same command behaves differently across runtimes.\n\n**Trigger:** `containerlab -r c9s tools netem set -t lab.clab.yml -n r1 -i eth1` with no impairment flags.\n\n**Impact:** A silent no-op that leaves an empty object in the CR; cosmetic inconsistency with the local runtime and with `reset`.\n\n**Correction:** Treat an all-zero impairment as a reset in `netemSetLabRuntime` (pass `nil` for `Impairment`), or skip the patch when all fields are zero. Either keeps `set`, `show`, and `reset` consistent.\n\n### Coverage notes\n\n- This was a source-only review; the snapshot does not permit executing tests, linters, or the formatter, and no CI results were supplied.\n- All 22 changed paths from `manifest.json` were reviewed, including the diff hunks for `cmd/root.go`, `cmd/root_test.go`, `cmd/tools_netem.go`, `core/labruntime.go`, `core/labruntime_gaps_test.go`, `labruntime/clabernetes/{clabernetes,lifecycle,support,netem}.go`, all test files, docs, `go.mod`/`go.sum`, and the e2e suite.\n- Command gating verified: `checkLabRuntimeCommandSupport` walks parent commands and `break`s on the `tools.netem` path in `labRuntimeSupportedCommands`; other `tools` subcommands (e.g., `tools sshx`) remain rejected, covered by `cmd/root_test.go`.\n- Schema check: `schemas/clab.schema.json` is unchanged and already carries `netem` on links (a pre-existing local feature); the new `tests/14-clabernetes/03-link-netem.clab.yml` validates against it, so no schema edit is needed. The c9s Link CRD schema is external (clabernetes v0.12.0, per `go.mod`), and the PR validates it at runtime through the OpenAPI check with a committed fixture and unit tests.\n- Unverified by execution: whether clabernetes 0.11 prunes or rejects link-level `netem` on Topology admission; the P2 conclusion (silent unimpaired deploy) holds either way.\n- The documented 4 m delay ceiling (32-bit kernel ticks) is not validated client-side in `linkNetem`; it is an external clabernetes/kernel constraint that the docs disclose, and local netem shares the same kernel limit, so it is recorded here rather than raised as a finding.\n- The generated `docs/cmd/tools/netem/*.md` pages are unchanged, which is consistent with the unchanged Long help texts of the netem commands.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P2\",\n      \"title\": \"Netem support check is bypassed on the default Topology-CR deploy path in `Deploy`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"labruntime/clabernetes/lifecycle.go\",\n        \"start\": 88,\n        \"end\": 106\n      },\n      \"problem\": \"In `Deploy`, the `linksDeclareNetem`/`ensureLinkNetemSupport` guard is placed after the early returns for `existingTopology != nil` (reconcileTopology) and `!req.NoTopologyCR` (deployTopology), so only the `--no-topology-cr` branch runs it. Neither `deployTopology` (labruntime/clabernetes/reconcile.go L404-L497) nor `reconcileTopology` (L534-L593) performs the check.\",\n      \"trigger\": \"Run `containerlab -r c9s deploy -t lab.clab.yml` (the default path that creates a Topology CR) with a topology declaring `netem` against a cluster running clabernetes older than 0.12.\",\n      \"impact\": \"An older controller (or Topology CRD pruning) drops the impairment and the lab deploys silently unimpaired, which is exactly the failure mode the PR's own comments in `support.go` (`requiredClabernetesNetem`) and the new docs in `docs/manual/clabernetes/runtime.md` promise to prevent. On a Topology-owned lab `SetImpairment` rejects changes by design, so the user cannot discover or work around the missing support with `tools netem` either.\",\n      \"suggestion\": \"Hoist the guard above the two early returns in `Deploy`; `prepareDesiredDeployment` (labruntime/clabernetes/plan.go L27) always compiles `primitives` on both paths, so `prepared.primitives.links` is available there. Adjust the comment, which currently describes only the `--no-topology-cr` branch, and add a unit test asserting that `Deploy` fails on both paths with a netem-declaring topology and an unsupported cluster.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"All-zero `tools netem set` on a lab runtime writes `netem: {}` and prints nothing\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"labruntime/clabernetes/netem.go\",\n        \"start\": 204,\n        \"end\": 225\n      },\n      \"problem\": \"`netemSetLabRuntime` (cmd/tools_netem_labruntime.go L42-L68) always passes a non-nil `&Impairment{}`; with all-zero values `linkNetem` returns an empty map, which the merge patch writes as `netem: {}`. `Impairments` skips endpoints with an empty `netem` (L141), so the post-set confirmation table prints nothing and `show` reports the interface as unimpaired. Local `tools netem set` with all zeros instead replaces the qdisc with a zero-impairment netem qdisc (`netem/netem.go`, `ReplaceImpairments`).\",\n      \"trigger\": \"Run `containerlab -r c9s tools netem set -t lab.clab.yml -n r1 -i eth1` without any impairment flags.\",\n      \"impact\": \"A silent no-op that leaves an empty object in the Link CR, and a cosmetic inconsistency between the local and lab-runtime behavior of the same command.\",\n      \"suggestion\": \"Treat an all-zero impairment as a reset in `netemSetLabRuntime` (pass `nil` for `Impairment`), or skip the patch when all fields are zero, so `set`, `show`, and `reset` stay consistent.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: tests, linters, and formatters were not executed and no CI results were supplied.\",\n      \"All 22 changed paths from manifest.json were reviewed, including every diff hunk, the deploy-path flow, capability wiring, support checks, tests, docs, go.mod/go.sum, and the e2e suite.\",\n      \"Command gating verified: `checkLabRuntimeCommandSupport` walks parent commands and breaks on the `tools.netem` path; other `tools` subcommands remain rejected, covered by `cmd/root_test.go`.\",\n      \"Schema check: `schemas/clab.schema.json` is unchanged and already carries `netem` on links; the new test topology validates against it. The c9s Link CRD schema is external (clabernetes v0.12.0) and is validated at runtime via the OpenAPI check with a committed fixture.\",\n      \"Unverified by execution: whether clabernetes 0.11 prunes or rejects link-level `netem` on Topology admission; the P2 conclusion (silent unimpaired deploy on the default path) holds either way.\",\n      \"The documented 4 m delay ceiling (32-bit kernel ticks) is not validated client-side; it is an external clabernetes/kernel constraint disclosed in `docs/manual/clabernetes/runtime.md` that local netem shares, recorded here rather than as a finding.\",\n      \"The generated `docs/cmd/tools/netem/*.md` pages are unchanged, consistent with the unchanged Long help texts of the netem commands.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1795626665761,
+            "end": 1795626680320
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_213b0c004001wi0cjfcnJOv4CU",
+          "sessionID": "ses_dec53fd80ffeqKDHlxqapIq1xM",
+          "messageID": "msg_213b0601c001Nab0srYBKDtCFG",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 80510,
+            "input": 1054,
+            "output": 3071,
+            "reasoning": 1121,
+            "cache": {
+              "read": 75264,
+              "write": 0
+            }
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P2 - Netem support check is bypassed on the default Topology-CR deploy path in `Deploy`** | [labruntime/clabernetes/lifecycle.go:88-106](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/lifecycle.go#L88-L106) |\n| **P4 - All-zero `tools netem set` on a lab runtime writes `netem: {}` and prints nothing** | [labruntime/clabernetes/netem.go:204-225](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/netem.go#L204-L225) |\n\n## P2 - Netem support check is bypassed on the default Topology-CR deploy path in `Deploy`\n\n**Location:** [labruntime/clabernetes/lifecycle.go:88-106](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/lifecycle.go#L88-L106)\n\n**Problem:** In `Deploy`, the `linksDeclareNetem`/`ensureLinkNetemSupport` guard is placed after the early returns for `existingTopology != nil` &#40;`reconcileTopology`&#41; and `!req.NoTopologyCR` &#40;`deployTopology`&#41;, so only the `--no-topology-cr` branch runs it. Neither `deployTopology` &#40;[`labruntime/clabernetes/reconcile.go`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/reconcile.go#L1-L1) L404-L497&#41; nor `reconcileTopology` &#40;L534-L593&#41; performs the check.\n\n**Trigger:** Run `containerlab -r c9s deploy -t lab.clab.yml` &#40;the default path that creates a Topology CR&#41; with a topology declaring `netem` against a cluster running clabernetes older than 0.12.\n\n**Impact:** An older controller &#40;or Topology CRD pruning&#41; drops the impairment and the lab deploys silently unimpaired, which is exactly the failure mode the PR&#39;s own comments in [`support.go`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/support.go#L1-L1) &#40;`requiredClabernetesNetem`&#41; and the new docs in [`docs/manual/clabernetes/runtime.md`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/docs/manual/clabernetes/runtime.md#L1-L1) promise to prevent. On a Topology-owned lab `SetImpairment` rejects changes by design, so the user cannot discover or work around the missing support with `tools netem` either.\n\n**Suggested correction:** Hoist the guard above the two early returns in `Deploy`; `prepareDesiredDeployment` &#40;[`labruntime/clabernetes/plan.go`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/plan.go#L1-L1) L27&#41; always compiles `primitives` on both paths, so `prepared.primitives.links` is available there. Adjust the comment, which currently describes only the `--no-topology-cr` branch, and add a unit test asserting that `Deploy` fails on both paths with a netem-declaring topology and an unsupported cluster.\n\n\n## P4 - All-zero `tools netem set` on a lab runtime writes `netem: {}` and prints nothing\n\n**Location:** [labruntime/clabernetes/netem.go:204-225](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/labruntime/clabernetes/netem.go#L204-L225)\n\n**Problem:** `netemSetLabRuntime` &#40;[`cmd/tools_netem_labruntime.go`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/cmd/tools_netem_labruntime.go#L1-L1) L42-L68&#41; always passes a non-nil `&Impairment{}`; with all-zero values `linkNetem` returns an empty map, which the merge patch writes as `netem: {}`. `Impairments` skips endpoints with an empty `netem` &#40;L141&#41;, so the post-set confirmation table prints nothing and `show` reports the interface as unimpaired. Local `tools netem set` with all zeros instead replaces the qdisc with a zero-impairment `netem` qdisc &#40;[`netem/netem.go`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/netem/netem.go#L1-L1), `ReplaceImpairments`&#41;.\n\n**Trigger:** Run `containerlab -r c9s tools netem set -t lab.clab.yml -n r1 -i eth1` without any impairment flags.\n\n**Impact:** A silent no-op that leaves an empty object in the Link CR, and a cosmetic inconsistency between the local and lab-runtime behavior of the same command.\n\n**Suggested correction:** Treat an all-zero impairment as a `reset` in `netemSetLabRuntime` &#40;pass `nil` for `Impairment`&#41;, or skip the patch when all fields are zero, so `set`, `show`, and `reset` stay consistent.\n\n\n## Coverage\n\n- Source-only review&#58; tests, linters, and formatters were not executed and no CI results were supplied.\n- All 22 changed paths from `manifest.json` were reviewed, including every diff hunk, the deploy-path flow, capability wiring, support checks, tests, docs, `go.mod/go.sum`, and the e2e suite.\n- Command gating verified&#58; `checkLabRuntimeCommandSupport` walks parent commands and breaks on the `tools.netem` path; other `tools` subcommands remain rejected, covered by [`cmd/root_test.go`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/cmd/root_test.go#L1-L1).\n- Schema check&#58; [`schemas/clab.schema.json`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/schemas/clab.schema.json#L1-L1) is unchanged and already carries `netem` on links; the new test topology validates against it. The c9s Link CRD schema is external &#40;clabernetes v0.12.0&#41; and is validated at runtime via the `OpenAPI` check with a committed fixture.\n- Unverified by execution&#58; whether clabernetes 0.11 prunes or rejects link-level `netem` on Topology admission; the P2 conclusion &#40;silent unimpaired deploy on the default path&#41; holds either way.\n- The documented 4 m delay ceiling &#40;32-bit kernel ticks&#41; is not validated client-side; it is an external clabernetes/kernel constraint disclosed in [`docs/manual/clabernetes/runtime.md`](https://github.com/srl-labs/containerlab/blob/9c4339862aaf88770cd98d951e994c7f5afb87f2/docs/manual/clabernetes/runtime.md#L1-L1) that local `netem` shares, recorded here rather than as a finding.\n- The generated `docs/cmd/tools/netem/*.md` pages are unchanged, consistent with the unchanged Long help texts of the `netem` commands.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P2\",\n      \"title\": \"Netem support check is bypassed on the default Topology-CR deploy path in `Deploy`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"labruntime/clabernetes/lifecycle.go\",\n        \"start\": 88,\n        \"end\": 106\n      },\n      \"problem\": \"In `Deploy`, the `linksDeclareNetem`/`ensureLinkNetemSupport` guard is placed after the early returns for `existingTopology != nil` (`reconcileTopology`) and `!req.NoTopologyCR` (`deployTopology`), so only the `--no-topology-cr` branch runs it. Neither `deployTopology` (`labruntime/clabernetes/reconcile.go` L404-L497) nor `reconcileTopology` (L534-L593) performs the check.\",\n      \"trigger\": \"Run `containerlab -r c9s deploy -t lab.clab.yml` (the default path that creates a Topology CR) with a topology declaring `netem` against a cluster running clabernetes older than 0.12.\",\n      \"impact\": \"An older controller (or Topology CRD pruning) drops the impairment and the lab deploys silently unimpaired, which is exactly the failure mode the PR's own comments in `support.go` (`requiredClabernetesNetem`) and the new docs in `docs/manual/clabernetes/runtime.md` promise to prevent. On a Topology-owned lab `SetImpairment` rejects changes by design, so the user cannot discover or work around the missing support with `tools netem` either.\",\n      \"suggestion\": \"Hoist the guard above the two early returns in `Deploy`; `prepareDesiredDeployment` (`labruntime/clabernetes/plan.go` L27) always compiles `primitives` on both paths, so `prepared.primitives.links` is available there. Adjust the comment, which currently describes only the `--no-topology-cr` branch, and add a unit test asserting that `Deploy` fails on both paths with a netem-declaring topology and an unsupported cluster.\"\n    },\n    {\n      \"priority\": \"P4\",\n      \"title\": \"All-zero `tools netem set` on a lab runtime writes `netem: {}` and prints nothing\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"labruntime/clabernetes/netem.go\",\n        \"start\": 204,\n        \"end\": 225\n      },\n      \"problem\": \"`netemSetLabRuntime` (`cmd/tools_netem_labruntime.go` L42-L68) always passes a non-nil `&Impairment{}`; with all-zero values `linkNetem` returns an empty map, which the merge patch writes as `netem: {}`. `Impairments` skips endpoints with an empty `netem` (L141), so the post-set confirmation table prints nothing and `show` reports the interface as unimpaired. Local `tools netem set` with all zeros instead replaces the qdisc with a zero-impairment `netem` qdisc (`netem/netem.go`, `ReplaceImpairments`).\",\n      \"trigger\": \"Run `containerlab -r c9s tools netem set -t lab.clab.yml -n r1 -i eth1` without any impairment flags.\",\n      \"impact\": \"A silent no-op that leaves an empty object in the Link CR, and a cosmetic inconsistency between the local and lab-runtime behavior of the same command.\",\n      \"suggestion\": \"Treat an all-zero impairment as a `reset` in `netemSetLabRuntime` (pass `nil` for `Impairment`), or skip the patch when all fields are zero, so `set`, `show`, and `reset` stay consistent.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: tests, linters, and formatters were not executed and no CI results were supplied.\",\n      \"All 22 changed paths from `manifest.json` were reviewed, including every diff hunk, the deploy-path flow, capability wiring, support checks, tests, docs, `go.mod/go.sum`, and the e2e suite.\",\n      \"Command gating verified: `checkLabRuntimeCommandSupport` walks parent commands and breaks on the `tools.netem` path; other `tools` subcommands remain rejected, covered by `cmd/root_test.go`.\",\n      \"Schema check: `schemas/clab.schema.json` is unchanged and already carries `netem` on links; the new test topology validates against it. The c9s Link CRD schema is external (clabernetes v0.12.0) and is validated at runtime via the `OpenAPI` check with a committed fixture.\",\n      \"Unverified by execution: whether clabernetes 0.11 prunes or rejects link-level `netem` on Topology admission; the P2 conclusion (silent unimpaired deploy on the default path) holds either way.\",\n      \"The documented 4 m delay ceiling (32-bit kernel ticks) is not validated client-side; it is an external clabernetes/kernel constraint disclosed in `docs/manual/clabernetes/runtime.md` that local `netem` shares, recorded here rather than as a finding.\",\n      \"The generated `docs/cmd/tools/netem/*.md` pages are unchanged, consistent with the unchanged Long help texts of the `netem` commands.\"\n    ]\n  }\n}\n```"
 }
