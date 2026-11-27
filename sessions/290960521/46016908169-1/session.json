@@ -2,7 +2,7 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "c9efc20f22a72a71ed528a9764268b31f79ab2b1",
-  "updatedAt": "2026-11-27T14:36:21.026Z",
+  "updatedAt": "2026-11-27T14:38:51.030Z",
   "state": "running",
   "info": {
     "id": "ses_de2927cdcffe3jh5Gj5AA9zWka",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 76230,
-      "output": 751,
-      "reasoning": 10277,
+      "input": 122224,
+      "output": 2477,
+      "reasoning": 12331,
       "cache": {
-        "read": 979008,
+        "read": 1082048,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795790045988,
-      "updated": 1795790149435
+      "updated": 1795790325264
     }
   },
   "messages": [
@@ -2388,9 +2388,479 @@
         "id": "msg_21d6f17380010vToDsScaMlj1f",
         "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
         "time": {
-          "created": 1795790149432
+          "created": 1795790149432,
+          "completed": 1795790264989
         },
         "parentID": "msg_21d6d8743001IDdVadhPFHojF7",
+        "modelID": "zai-org/GLM-5.3",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-1Dmo0t",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 86137,
+          "input": 818,
+          "output": 43,
+          "reasoning": 1820,
+          "cache": {
+            "read": 83456,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_21d6f1c5f001mOPzrt798ezbdY",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d6f17380010vToDsScaMlj1f"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_21d6f1c6100168HrmZrDfLc3uI",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d6f17380010vToDsScaMlj1f",
+          "text": "Runtimes: docker, podman, and lab runtimes (c9s etc.). So \"other runtimes such as Podman\" = podman. `globalRuntimeRequiresRoot(\"podman\")` = true. Good.\n\nNow, is there an issue with `graph --dot` under podman when topology file is in the lab dir or writes to TopoPaths... Let me check where TopologyLabDir is. Actually `clabconstants` — the lab dir is derived from the topo file path: `<topo-dir>/clab-<labname>`? In modern containerlab, lab-dir defaults to the directory of the topo file. So user-writable. OK.\n\nNow let me think about remaining possible findings more carefully — the deep ones:\n\n**Finding candidate A: `graph --dot` with git URL topology under podman non-root — `processGitTopoFile` `SetUIDAndGID`.** As non-root user running directly (not via sudo), GetRealUserIDs returns os.Getuid() (non-zero) → recursiveChown to own uid/gid → allowed for own files. Under sudo... wait, with podman + SUID binary: preRunFn skips root → the process after DropRootPrivs is euid=real user. If invoked via `sudo clab graph --dot -t git-url...`, SUDO_UID set, files cloned as the dropped user, chown to SUDO_UID user — hmm, euid is the real user (dropped), chowning to SUDO_UID — the same user if sudo clab run by that user. Fine.\n\nEdge: plain non-root (never root, no SUID): fine as analyzed.\n\nSo no defect there.\n\n**Finding candidate B: `validate` command and `--name` alone with non-lab runtime requires root — but `WithTopologyFromLab` lists containers via the runtime... which under podman as non-root user (rootless podman?) — the model says podman requires root in containerlab. OK consistent.\n\n**Finding candidate C: A subtle one — `commandIsRuntimeIndependent` is checked before `getTopoFilePath` mutates `o.Global.TopologyFile`... irrelevant; TopologyFile set later doesn't change the decision (decision is based on pre-getTopoFilePath state, which is the same state graphFn sees... wait, no! getTopoFilePath runs AFTER and may set `o.Global.TopologyFile` from glob discovery. The decision `topologyFromFile(o)` was computed with TopologyFile==\"\" and TopologyName==\"\" → true (independent). After getTopoFilePath, TopologyFile is set. Consistent — still from file. Good.\n\nBUT: consider `graph --name lab` (name alone, no flags): decision false → root required. getTopoFilePath: TopologyName != \"\" → early return at line 432 (after URL processing). Then graphFn: `NewContainerLab` → `WithTopologyFromLab` lists containers. Requires runtime → root. Correct.\n\n**Finding candidate D: `graph` with `--name lab -t file` where file is a URL?** TopologyFile set → topologyFromFile true → independent. Then getTopoFilePath: FileOrDirExists(URL) false → IsHttpURL → canonize... graphFn: NewContainerLab → WithTopoPath(URL) → ProcessTopoPath downloads? This is network but not runtime. OK.\n\n**Finding candidate E — the strongest so far: `graph --offline` without any other flag and `--srv` server: offline serves graph from topo file. Independent — correct.\n\n**Finding candidate F: What about `graph` default mode when there are zero containers?** graphFn: if not offline, lists containers — runtime. Even if lab isn't running, ListContainers call happens. Correctly runtime-dependent.\n\n**Finding candidate G: The test `TestRuntimeIndependentCommandsExist` splits on \".\" — command names could theoretically contain dots? None do. Fine.\n\n**Finding candidate H: `help` command path — but what about `clab --help`? `--help` handled by cobra help flag before PersistentPreRunE → shows root help without root check. Pre-existing. And `clab help deploy`: Find([\"help\",\"deploy\"]) — hmm, does Find return the `help` command? `root.Find([\"help\",\"deploy\"])` — the help command with args. getCommandPath(helpCmd) = \"help\". Good.\n\n**Finding candidate I — docs: \"generate (no `--deploy`)\"** — the map entry \"generate\" is unconditional, but generate --deploy self-checks root. Doc is accurate.\n\nBut wait — there IS something subtle with `generate --deploy` under podman! `generate` is runtime-independent → preRunFn skips root check → generate() calls CheckAndGetRootPrivs itself → obtains root → deployFn. Good. BUT: `DropRootPrivs()` was called in preRunFn, keeping suid. CheckAndGetRootPrivs: euid != 0 && suid == 0 → group check → obtainRootPrivs. Works. Same as version upgrade. OK.\n\n**Finding candidate J — check ordering issue in preRunFn: `commandIsRuntimeIndependent` consulted AFTER `DropRootPrivs`. If binary is SUID-root, DropRootPrivs drops euid to user, keeps suid root. For runtime-independent commands, we never re-escalate — process continues fully as user. Correct.\n\n**Finding candidate K — `tui --demo` and TUI operations:** In demo mode, the backend is fake; operations from keyboard — deploy etc. — does the TUI run actual containerlab commands? Long help: \"Operations that change a lab run the corresponding containerlab command in the background and need the same privileges it does.\" In demo mode, would operations on fake labs spawn real commands? If the fake backend simulates, operations are probably no-ops/simulated. If a user in demo TUI presses 'd' on a simulated lab and it tries to deploy... that would be weird but demo labs don't exist. I'll trust the demo backend handles it. Check quickly? The fake backend — internal/tui/backend/fake. Operations likely return simulated results. Not worth flagging without evidence.\n\n**Finding candidate L — test naming/cleanup:** `TestCommandIsRuntimeIndependent` doesn't reset `v` between subtests but Entrypoint re-initializes. Fine.\n\n**Finding candidate M — one potential real flake:** `TestRuntimeIndependentCommandsRunWithoutRootWithPodman` — \"tools cert ca create\" subtest runs full `root.Execute()`. `preRunFn` calls `initVersionManager(cobraCmd.Context())` — starts a goroutine fetching GitHub (disabled via env). Fine. But also `getTopoFilePath` — command \"create\" → nil. `checkLabRuntimeCommandSupport` — podman not lab runtime. `DropRootPrivs` — as non-root test user, changePrivileges(os.Getuid()...) — Setresuid(-1, uid, -1) — setting euid to real uid — allowed. Fine.\n\nWait, one thing: in that test, when running under `go test` as non-root WITHOUT SUID... `DropRootPrivs` is called unconditionally — setting euid to real uid when already equal is a no-op success. Fine.\n\n**Finding candidate N — POSSIBLE: the completion subtest writes to `out` buffer but cobra's `__complete` may write to stderr/out directly.** It checks `out.String()` contains \"cert\". `root.SetOut(&out)`. `__complete` writes completions to cmd.OutOrStdout(). OK.\n\n**Finding candidate O — Missing: `docs/cmd/graph.md`/`validate.md`/`tui.md` mention of root requirement?** The PR updated install.md. Do per-command docs claim root requirements anywhere? Let me grep docs for \"root\" in cmd docs to see if any stale statements. Quick grep.\n\nAlso check release notes requirement: `.cursor/rules/release-note-review.mdc` exists in repo — maybe PRs need a release note? The rules I was given are only karpathy + ponytail. There's a release-note-review rule in the repo but not part of my supplied standards. I can mention as coverage note if no rn file changed — but I can't verify repo convention requirement. The changed paths don't include a release note. Containerlab release notes are per-release files (docs/rn/*.md); PRs typically don't add them (maintainers do at release). I'll note it lightly or skip.\n\nLet me grep docs for stale root-requirement statements in cmd docs.",
+          "time": {
+            "start": 1795790150753,
+            "end": 1795790259540
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_21d70c557001f3BZA6ZBQTAIpv",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d6f17380010vToDsScaMlj1f",
+          "callID": "call_2323ec25ad914591a7bb0b73",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/cmd",
+              "pattern": "root|sudo"
+            },
+            "output": "Found 33 matches\n/source/head/docs/cmd/redeploy.md:\n  Line 14:     sudo containerlab redeploy -t mylab.clab.yml\n\n  Line 22:     sudo containerlab redeploy --cleanup -t mylab.clab.yml\n\n  Line 28:     sudo clab rdep -c -t mylab.clab.yml\n\n\n/source/head/docs/cmd/tui.md:\n  Line 26: When root privileges cannot be obtained — containerlab is neither installed with the SUID bit nor run with `sudo` — the UI still starts and can be used to watch labs, read logs, run commands in nodes and open sessions. The operations that need root are then unavailable and say so, and the status line shows `read-only (no root)`.\n\n  Line 36: It lists the labs of every namespace you may read, or of one namespace with the global `--namespace` flag, and uses the cluster your kubeconfig selects, like the other commands do. Nothing needs root privileges: what you can do is what the cluster lets you do.\n\n  Line 151: | `my computer` | Nothing is captured yet: the UI gives you a command to run on your own computer, which runs the capture through SSH and pipes it into the Wireshark there. Offered when the UI is used through SSH. Unless containerlab is installed with the setuid bit and you are a member of the `clab_admins` group, the command runs containerlab with `sudo -n`, which needs sudo without a password on the host: SSH gives sudo no terminal to ask for one. |\n\n  Line 274: `--demo` shows simulated labs with made-up traffic instead of the real ones: a data center fabric, a service provider core, a metro ring and a campus network. It needs neither a container runtime nor root, which makes it handy for a first look.\n\n\n/source/head/docs/cmd/start.md:\n  Line 51: - root-namespace-based nodes are not supported\n\n\n/source/head/docs/cmd/inspect/index.md:\n  Line 119: An owner is a linux user that started the lab. When `sudo` is used, the original user is displayed as the owner.\n\n  Line 141:       \"absLabPath\": \"/root/projects/srlinux-vlan-handling-lab/vlan.clab.yml\",\n\n  Line 150:       \"owner\": \"root\"\n\n  Line 155:       \"absLabPath\": \"/root/projects/srlinux-vlan-handling-lab/vlan.clab.yml\",\n\n  Line 164:       \"owner\": \"root\"\n\n  Line 175: vlan,srlinux-vlan-handling-lab/vlan.clab.yml,/root/srlinux-vlan-handling-lab/vlan.clab.yml,clab-vlan-client1,4a60ed6861ec,ghcr.io/srl-labs/alpine,linux,running,Up 47 seconds,172.20.20.7/24,3fff:172:20:20::7/64,root\n\n  Line 176: vlan,srlinux-vlan-handling-lab/vlan.clab.yml,/root/srlinux-vlan-handling-lab/vlan.clab.yml,clab-vlan-client2,77b34781d62e,ghcr.io/srl-labs/alpine,linux,running,Up 47 seconds,172.20.20.8/24,3fff:172:20:20::8/64,root\n\n  Line 177: vlan,srlinux-vlan-handling-lab/vlan.clab.yml,/root/srlinux-vlan-handling-lab/vlan.clab.yml,clab-vlan-srl1,2cedee35c8a2,ghcr.io/nokia/srlinux:24.10.1,nokia_srlinux,running,Up 47 seconds,172.20.20.6/24,3fff:172:20:20::6/64,root\n\n  Line 178: vlan,srlinux-vlan-handling-lab/vlan.clab.yml,/root/srlinux-vlan-handling-lab/vlan.clab.yml,clab-vlan-srl2,c8c66491e10c,ghcr.io/nokia/srlinux:24.10.1,nokia_srlinux,running,Up 47 seconds,172.20.20.9/24,3fff:172:20:20::9/64,root\n\n\n/source/head/docs/cmd/version/check.md:\n  Line 20: Run 'sudo clab version upgrade' or see https://containerlab.dev/install/ for installation options.\n\n\n/source/head/docs/cmd/deploy.md:\n  Line 129: - root-namespace-based and `ext-container` nodes can participate in link reconciliation; deploy\n\n  Line 176: | Link to github repository             | https://github.com/hellt/clab-test-repo/                            | An auto-find procedure will find a `clab.yml` in the repository root and deploy it |\n\n  Line 181: | Shortcut of a github project          | hellt/clab-test-repo                                                | An auto-find procedure will find a `clab.yml` in the repository root and deploy it |\n\n  Line 341: The extended File ACLs are provisioned for the lab directory by default, unless this flag is set. Extended File ACLs allow a sudo user to access the files in the lab directory that might be created by the `root` user from within the container node.\n\n  Line 562:     sudo containerlab deploy -t -\n\n\n/source/head/docs/cmd/exec.md:\n  Line 47: The filter must then match exactly one node, and `--cmd` can be given once. As with other exec commands, the command runs as root with Docker and Podman, and as the container's user with clabernetes, where Kubernetes doesn't allow choosing the user. `--format` is not supported with `--stdin` and `--tty`.\n\n  Line 99: ❯ sudo clab exec --label clab-node-kind=nokia_srlinux --cmd \"ip -4 addr show dummy-mgmt0\"\n\n\n/source/head/docs/cmd/tools/vxlan/create.md:\n  Line 5: The `create` sub-command under the `tools vxlan` command creates a VxLAN interface and sets `tc` rules to redirect traffic to/from a specified interface available in root namespace of a container host.\n\n  Line 56: # srl_e1-1 interface exists in root namespace\n\n\n/source/head/docs/cmd/tools/cert/ca/create.md:\n  Line 56: # create CA cert and key by the specified path with a filename root-ca\n\n  Line 58: containerlab tools cert ca create --path /tmp/certs/myca --name root-ca \\\n\n  Line 61: openssl x509 -in /tmp/certs/myca/root-ca.pem -text | grep -A 2 Validity\n\n\n/source/head/docs/cmd/tools/sshx/attach.md:\n  Line 38: <!-- TODO: ssh mounting removed for now, as it needs to work with non root users -->\n\n\n/source/head/docs/cmd/capture.md:\n  Line 9: - **Docker and Podman**: containerlab opens a packet socket on each interface inside the node's network namespace. Nothing runs in the node, the node image needs no capture tools, and no extra software is needed on the host: the command needs root, like `deploy`. See [How Docker and Podman captures work](#how-docker-and-podman-captures-work).\n\n  Line 97: The command needs root (to open packet sockets and enter network namespaces), as other lab commands do.\n",
+            "title": "root|sudo",
+            "metadata": {
+              "matches": 33,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795790259548,
+              "end": 1795790259559
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_21d70da860015x85Lg1qw2GlYi",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d6f17380010vToDsScaMlj1f",
+          "callID": "call_13e4632e3ac6406b8087fa95",
+          "tool": "grep",
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "/source/head/docs/manual",
+              "pattern": "Podman|podman"
+            },
+            "output": "Found 19 matches\n/source/head/docs/manual/dev/test.md:\n  Line 45: argument. The runtime can be `docker`, `podman`, or `c9s`. Containerlab\n\n  Line 47: for Docker outnumber the Podman and Clabernetes tests. When `c9s` is\n\n\n/source/head/docs/manual/network.md:\n  Line 198: - Runtime. Delegates to Docker/Podman IPAM.\n\n  Line 821: By default containerlab creates a docker network named `clab` and attaches all the nodes to this network. This network is used as a management network for the nodes and is managed by the container runtime such as docker or podman.\n\n\n/source/head/docs/manual/gui/vsc-extension.md:\n  Line 120: | `extras.fcli.extraDockerArgs` | `\"\"` | Extra Docker or Podman arguments appended to fcli commands. |\n\n\n/source/head/docs/manual/clabernetes/runtime.md:\n  Line 47: Podman containers for the lab nodes. It validates the rendered topology in\n\n  Line 545: These fields are only present for lab runtimes; Docker and Podman output is\n\n  Line 549: The other fields mean what they mean for Docker and Podman, so clients can treat\n\n  Line 612: `exec` does not check for a local Docker or Podman daemon; the outer host only\n\n  Line 1147: Podman.\n\n  Line 1197: none. This applies to Docker and Podman labs too, so a server can collect the\n\n  Line 1421: Podman runtime. Several containerlab features assume local containers, local\n\n  Line 1468:   container, so it needs Docker or Podman on the outer host.\n\n  Line 1472: - Per-node `runtime: docker` or `runtime: podman` is not the same as selecting\n\n\n/source/head/docs/manual/images.md:\n  Line 9: To keep things simple, containerlab adheres to the same principles of referencing container images as common tools like docker, podman, k8s do. The following example shows a clab file that references container images using various forms:\n\n\n/source/head/docs/manual/nodes.md:\n  Line 540: Podman supports this option for nodes using `network-mode: container:<node>`.\n\n  Line 718: By default containerlab nodes will be started by the `docker` container runtime. Besides that, containerlab has experimental support for the `podman` runtime.\n\n  Line 723: containerlab deploy -t mylab.clab.yml --runtime podman\n\n  Line 902: The `cgroup-parent` parameter places a node's container under the specified parent cgroup. It has the same semantics as Docker's [`--cgroup-parent`](https://docs.docker.com/reference/cli/docker/container/run/#cgroup-parent) option and is supported by the Docker and Podman runtimes. The value is passed to the runtime unchanged; its syntax and availability depend on the runtime's configured cgroup manager. For example, cgroupfs managers use a cgroup path, while systemd managers expect a slice name such as `my-lab.slice`.\n",
+            "title": "Podman|podman",
+            "metadata": {
+              "matches": 19,
+              "truncated": false
+            },
+            "time": {
+              "start": 1795790264971,
+              "end": 1795790264983
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_21d70da9900193nvWpe0ppbAeT",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d6f17380010vToDsScaMlj1f",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 86137,
+            "input": 818,
+            "output": 43,
+            "reasoning": 1820,
+            "cache": {
+              "read": 83456,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_21d70da9e001Un4rJ17hrHpz9D",
+        "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+        "time": {
+          "created": 1795790264990
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3"
+        }
+      },
+      "parts": [
+        {
+          "type": "compaction",
+          "id": "prt_21d70da9f001ynlsubNKX0FJ4j",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d70da9e001Un4rJ17hrHpz9D",
+          "auto": true,
+          "overflow": false,
+          "tail_start_id": "msg_21d6e64f60011PILl2FvV4oYnu"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_21d70dab1001j96yfdq4vN3yoD",
+        "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+        "time": {
+          "created": 1795790265010,
+          "completed": 1795790320544
+        },
+        "parentID": "msg_21d70da9e001Un4rJ17hrHpz9D",
+        "modelID": "zai-org/GLM-5.3",
+        "providerID": "tofarev",
+        "mode": "compaction",
+        "agent": "compaction",
+        "path": {
+          "cwd": "/tmp/tofarev-review-1Dmo0t",
+          "root": "/"
+        },
+        "summary": true,
+        "cost": 0,
+        "tokens": {
+          "total": 21998,
+          "input": 20283,
+          "output": 1654,
+          "reasoning": 61,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_21d711bff0018uxKjKLEj52Uch",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d70dab1001j96yfdq4vN3yoD"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_21d711c01001oJfJdm5UQXMOUe",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d70dab1001j96yfdq4vN3yoD",
+          "text": "Produce the summary. Need to capture the review state: source-only PR review of containerlab PR changing cmd/root.go, cmd/root_test.go, docs/install.md. Track key facts: runtimeIndependentCommands map, commandIsRuntimeIndependent, getCommandPath, checks done so far, next steps.",
+          "time": {
+            "start": 1795790281729,
+            "end": 1795790291419
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_21d7141dd0018tipXM9beXKzzm",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d70dab1001j96yfdq4vN3yoD",
+          "text": "## Objective\n- Source-only review of a read-only PR snapshot at /source (containerlab), head c9efc20f22a72a71ed528a9764268b31f79ab2b1 vs base 7230048b81ec4fc5565b39e668149cb1a49595e2.\n- Read standards.json + referenced rules, diff.txt, head/base files; complete checks for all 3 changed paths (cmd/root.go, cmd/root_test.go, docs/install.md) including callers, tests, docs; disclose that tests were not executed; return the trusted result schema.\n\n## Important Details\n- Changed paths (all M): cmd/root.go, cmd/root_test.go, docs/install.md.\n- PR change: preRunFn in cmd/root.go now gates `CheckAndGetRootPrivs()` with `!commandIsRuntimeIndependent(cobraCmd, o)`; adds `runtimeIndependentCommands` map {help, __complete, __completeNoDesc, version, version.check, completion, generate, tools.cert.ca.create, tools.cert.sign} and `commandIsRuntimeIndependent()` with flag-conditional logic for graph (dot/mermaid/offline, not drawio, not --name alone via `topologyFromFile`), validate (same topologyFromFile condition), tui --demo.\n- Standards: karpathy-guidelines.mdc (surgical changes, simplicity) and ponytail.mdc (lazy senior dev, minimal diff, root-cause fixes) — both read in full.\n- `getCommandPath(cmd)` lives in cmd/viper.go line 143; uses cmd.Name() so aliases (gen, val) resolve to canonical names — map keys work.\n- Root's PersistentPreRunE runs for `__complete` too — that's why cobra.ShellCompRequestCmd/ShellCompNoDescRequestCmd are in the map.\n- `updateOptionsFromViper` runs before the root check in preRunFn and updates bound flag vars (o.Graph.*, o.TUI.*, etc.), so env-driven flags (e.g. CLAB_GRAPH_DOT) are honored — tests in root_test.go cover env cases.\n- Verified facts so far:\n  - generate.go: `--deploy` calls CheckAndGetRootPrivs itself (comment in root.go is accurate).\n  - topo_select.go: `runningTopoFiles` is best-effort, returns empty map on runtime error — `graph --dot` multi-topo-file cwd flow won't fail as non-root.\n  - options.go ToClabOptions (~lines 305-308): `--name` alone (no topo file) triggers `WithTopologyFromLab` which reads running containers via runtime — confirms `topologyFromFile` semantics are correct (name alone is NOT runtime-independent).\n  - utils/sudo.go: CheckAndGetRootPrivs (SUID model, clab_admins group check), DropRootPrivs.\n  - version.go: \"version.upgrade\" (not in map, has own PreRunE root check) — correct; version.check is network-only — correct in map.\n  - tui.go --demo uses fake backend — correct in map.\n  - validate.go: from-file path avoids runtime state; lab-runtime path already skips root via commandSkipsRoot.\n  - graph.go flags are mutually exclusive (dot/mermaid/drawio), condition `!drawio && (dot||mermaid||offline)` matches docs wording.\n- Docs (docs/install.md) non-root command lists match the code map/conditions (Docker list and podman/other-runtime list) — verified for help, completion, tools cert, validate, graph conditions, generate no --deploy, tui --demo, version no upgrade.\n- Noted possible minor observations (pre-existing, not introduced by PR): bare `clab` with podman still demands root; `tools cert` under clabernetes runtime rejected by labRuntimeUnsupportedCommands despite being runtime-independent.\n- SetUIDAndGID (utils/file.go:824) chowns git-cloned topo dirs; as non-root, chown to own uid/gid of user-owned files is typically a no-op-safe — low risk edge for `graph/validate -t <git-url>`.\n- Source-only review: cannot execute tests; must disclose this limitation in final output.\n\n## Work State\n### Completed\n- Read standards.json, diff.txt, manifest.json, both standards files.\n- Read head cmd/root.go, cmd/viper.go, cmd/graph.go, cmd/topo_select.go, cmd/generate.go, cmd/validate.go, cmd/tui.go (partial), cmd/tools_cert.go (partial), cmd/version.go (partial), cmd/options.go (partial), cmd/root_test.go (partial), utils/sudo.go, utils/file.go (SetUIDAndGID region).\n- Verified getCommandPath existence/semantics and alias handling.\n- Verified generate --deploy self-checks root, runningTopoFiles best-effort behavior, WithTopologyFromLab semantics backing topologyFromFile, docs/code list consistency.\n- Grepped cmd/*.go inventory and DropRootPrivs/CheckAndGetRootPrivs/clab_admins usages.\n\n### Active\n- Still verifying edge cases: full cmd/root.go head (lines beyond first read, especially commandIsRuntimeIndependent full body incl. tui --demo and graph conditions), full cmd/root_test.go (test coverage of commandIsRuntimeIndependent, env var cases, TestRuntimeIndependentCommandsExist), full tools_cert.go (default output paths under non-root), full tui.go, docs/install.md head vs base diff hunks, base/cmd/root.go for pre-change context.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Read remaining portions of /source/head/cmd/root.go (from ~line 200 to end) to confirm full commandIsRuntimeIndependent implementation and any other new helpers.\n2. Read full /source/head/cmd/root_test.go (484 lines) and /source/base/cmd/root_test.go to assess test coverage of new behavior.\n3. Read /source/head/docs/install.md (diff hunks) and /source/base/docs/install.md to verify doc accuracy of both command lists.\n4. Finish reading cmd/tools_cert.go and cmd/tui.go; optionally check completion.go and version_manager.go; check diff.txt beyond first truncation (use read offsets).\n5. Compile findings into the trusted result schema, noting that tests were not executed (source-only review).\n\n## Relevant Files\n- /source/standards.json, /source/diff.txt, /source/manifest.json: task inputs; manifest lists all changed/snapshot files.\n- /source/standards/karpathy-guidelines.mdc, /source/standards/ponytail.mdc: review standards.\n- /source/head/cmd/root.go: primary changed file (preRunFn, runtimeIndependentCommands, commandIsRuntimeIndependent, globalRuntimeRequiresRoot, commandSkipsRoot).\n- /source/head/cmd/root_test.go: changed tests (TestRootRequirementHelpers, tests around getCommandPath/commandIsRuntimeIndependent).\n- /source/head/docs/install.md (+ /source/base/docs/install.md): changed docs on non-privileged commands.\n- /source/head/cmd/viper.go: getCommandPath, updateOptionsFromViper, bindFlags env handling.\n- /source/head/cmd/options.go: Options struct, GetOptions, ToClabOptions (WithTopologyFromLab condition).\n- /source/head/cmd/topo_select.go: runningTopoFiles best-effort guard.\n- /source/head/cmd/generate.go: deploy self root-check.\n- /source/head/cmd/graph.go: graph flags and mutual exclusivity.\n- /source/head/cmd/validate.go, tui.go, tools_cert.go, version.go: commands in the runtime-independent set.\n- /source/head/utils/sudo.go, /source/head/utils/file.go: root privilege and chown helpers.\n- /source/head/core/options_clab.go: WithTopoPath, WithTopologyFromLab semantics.",
+          "time": {
+            "start": 1795790291421,
+            "end": 1795790320536
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_21d71b39c001Z7UIWlk7vO3ZLs",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d70dab1001j96yfdq4vN3yoD",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 21998,
+            "input": 20283,
+            "output": 1654,
+            "reasoning": 61,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_21d71b3a20016h9Jmqad2LafYj",
+        "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+        "time": {
+          "created": 1795790320546
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3"
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_21d71b3a30010oGTZnG6g46PFO",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71b3a20016h9Jmqad2LafYj",
+          "text": "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+          "synthetic": true,
+          "time": {
+            "start": 1795790320547,
+            "end": 1795790320547
+          },
+          "metadata": {
+            "compaction_continue": true
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_21d71b3a9001uDoso9GoRQCyx4",
+        "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+        "time": {
+          "created": 1795790320553,
+          "completed": 1795790323219
+        },
+        "parentID": "msg_21d71b3a20016h9Jmqad2LafYj",
+        "modelID": "zai-org/GLM-5.3",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-1Dmo0t",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 19611,
+          "input": 19507,
+          "output": 14,
+          "reasoning": 90,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_21d71ba60001rTg7HCF30azF2K",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71b3a9001uDoso9GoRQCyx4"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_21d71ba620017cS31vO4F75d7O",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71b3a9001uDoso9GoRQCyx4",
+          "text": "Let me verify the diff completely to make sure I've covered everything, and read the key changed files in full: `cmd/root.go` (head, full), `cmd/root_test.go` (head, full), and the diff hunks for docs/install.md (base vs head). I've already read root.go once earlier and root_test.go partially. Let me re-verify the exact line numbers in head root.go for the findings.",
+          "time": {
+            "start": 1795790322274,
+            "end": 1795790323188
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_21d71bdf6001x8zk6jUnboBKPO",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71b3a9001uDoso9GoRQCyx4",
+          "callID": "call_3389aa37739d45949472ba99",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/cmd/root.go"
+            },
+            "output": "<path>/source/head/cmd/root.go</path>\n<type>file</type>\n<content>\n1: // Copyright 2020 Nokia\n2: // Licensed under the BSD 3-Clause License.\n3: // SPDX-License-Identifier: BSD-3-Clause\n4: \n5: package cmd\n6: \n7: import (\n8: \t\"errors\"\n9: \t\"fmt\"\n10: \t\"os\"\n11: \t\"path/filepath\"\n12: \t\"sort\"\n13: \t\"strings\"\n14: \t\"time\"\n15: \n16: \t\"github.com/charmbracelet/log\"\n17: \t\"github.com/charmbracelet/x/term\"\n18: \t\"github.com/spf13/cobra\"\n19: \tclabgit \"github.com/srl-labs/containerlab/git\"\n20: \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n21: \tclabruntimedocker \"github.com/srl-labs/containerlab/runtime/docker\"\n22: \tclabutils \"github.com/srl-labs/containerlab/utils\"\n23: )\n24: \n25: func subcommandRegisterFuncs() []func(*Options) (*cobra.Command, error) {\n26: \treturn []func(*Options) (*cobra.Command, error){\n27: \t\tversionCmd,\n28: \t\tcompletionCmd,\n29: \t\tdeployCmd,\n30: \t\tdestroyCmd,\n31: \t\tstartCmd,\n32: \t\tstopCmd,\n33: \t\trestartCmd,\n34: \t\ttuiCmd,\n35: \t\texecCmd,\n36: \t\tgenerateCmd,\n37: \t\tgraphCmd,\n38: \t\teventsCmd,\n39: \t\tinspectCmd,\n40: \t\tlogsCmd,\n41: \t\tcaptureCmd,\n42: \t\tredeployCmd,\n43: \t\tsaveCmd,\n44: \t\ttoolsCmd,\n45: \t\tvalidateCmd,\n46: \t}\n47: }\n48: \n49: // Entrypoint returns the root cobra command to be executed or errors if it cannot do so.\n50: func Entrypoint() (*cobra.Command, error) {\n51: \to := GetOptions()\n52: \n53: \tc := &cobra.Command{\n54: \t\tUse:   \"containerlab\",\n55: \t\tShort: \"deploy container based lab environments with a user-defined interconnections\",\n56: \t\tPersistentPreRunE: func(cobraCmd *cobra.Command, _ []string) error {\n57: \t\t\treturn preRunFn(cobraCmd, o)\n58: \t\t},\n59: \t\tAliases:      []string{\"clab\"},\n60: \t\tSilenceUsage: true,\n61: \t}\n62: \n63: \tc.PersistentFlags().CountVarP(\n64: \t\t&o.Global.DebugCount,\n65: \t\t\"debug\",\n66: \t\t\"d\",\n67: \t\t\"enable debug mode\",\n68: \t)\n69: \tc.PersistentFlags().StringVarP(\n70: \t\t&o.Global.TopologyFile,\n71: \t\t\"topo\",\n72: \t\t\"t\",\n73: \t\to.Global.TopologyFile,\n74: \t\t\"path to the topology definition file, a directory containing one, 'stdin', or a URL\",\n75: \t)\n76: \tc.PersistentFlags().StringArrayVarP(\n77: \t\t&o.Global.VarsFiles,\n78: \t\t\"vars\",\n79: \t\t\"\",\n80: \t\to.Global.VarsFiles,\n81: \t\t\"path to a topology template variables file (can be specified multiple times)\",\n82: \t)\n83: \tc.PersistentFlags().StringVarP(\n84: \t\t&o.Global.TopologyName,\n85: \t\t\"name\",\n86: \t\t\"\",\n87: \t\to.Global.TopologyName,\n88: \t\t\"lab/topology name\")\n89: \tc.PersistentFlags().StringVar(\n90: \t\t&o.Global.Namespace,\n91: \t\t\"namespace\",\n92: \t\to.Global.Namespace,\n93: \t\t\"Kubernetes namespace override for the clabernetes runtime\",\n94: \t)\n95: \tc.PersistentFlags().DurationVarP(\n96: \t\t&o.Global.Timeout,\n97: \t\t\"timeout\",\n98: \t\t\"\",\n99: \t\to.Global.Timeout,\n100: \t\t\"timeout for external API requests (e.g. container runtimes); lab runtimes default to 10m\",\n101: \t)\n102: \tc.PersistentFlags().StringVarP(\n103: \t\t&o.Global.Runtime,\n104: \t\t\"runtime\",\n105: \t\t\"r\",\n106: \t\to.Global.Runtime,\n107: \t\t\"container runtime\",\n108: \t)\n109: \tc.PersistentFlags().StringVarP(\n110: \t\t&o.Global.LogLevel,\n111: \t\t\"log-level\",\n112: \t\t\"\",\n113: \t\to.Global.LogLevel,\n114: \t\t\"logging level; one of [trace, debug, info, warning, error, fatal]\",\n115: \t)\n116: \n117: \terr := c.MarkPersistentFlagFilename(\"topo\", \"*.yaml\", \"*.yml\")\n118: \tif err != nil {\n119: \t\treturn nil, err\n120: \t}\n121: \n122: \tfor _, f := range subcommandRegisterFuncs() {\n123: \t\tcmd, err := f(o)\n124: \t\tif err != nil {\n125: \t\t\treturn nil, err\n126: \t\t}\n127: \n128: \t\tc.AddCommand(cmd)\n129: \t}\n130: \n131: \t// Initialize viper for environment variable support\n132: \tif err := initViper(c); err != nil {\n133: \t\treturn nil, err\n134: \t}\n135: \n136: \treturn c, nil\n137: }\n138: \n139: func preRunFn(cobraCmd *cobra.Command, o *Options) error {\n140: \t// Update options from viper (environment variables take precedence over defaults)\n141: \tif v != nil {\n142: \t\tupdateOptionsFromViper(cobraCmd, o)\n143: \t}\n144: \tapplyLabRuntimeDefaultTimeout(cobraCmd, o)\n145: \n146: \t// setting log level\n147: \tswitch {\n148: \tcase o.Global.DebugCount > 0:\n149: \t\tlog.SetLevel(log.DebugLevel)\n150: \tdefault:\n151: \t\tl, err := log.ParseLevel(o.Global.LogLevel)\n152: \t\tif err != nil {\n153: \t\t\treturn err\n154: \t\t}\n155: \n156: \t\tlog.SetLevel(l)\n157: \t}\n158: \n159: \t// initializes the version manager that goes off and fetches current version in\n160: \t// the background for us\n161: \tinitVersionManager(cobraCmd.Context())\n162: \n163: \t// setting output to stderr, so that json outputs can be parsed\n164: \tlog.SetOutput(os.Stderr)\n165: \n166: \tlog.SetTimeFormat(time.TimeOnly)\n167: \n168: \tif err := checkLabRuntimeCommandSupport(cobraCmd, o.Global.Runtime); err != nil {\n169: \t\treturn err\n170: \t}\n171: \n172: \terr := clabutils.DropRootPrivs()\n173: \tif err != nil {\n174: \t\treturn err\n175: \t}\n176: \tif globalRuntimeRequiresRoot(o.Global.Runtime) && !commandIsRuntimeIndependent(cobraCmd, o) {\n177: \t\terr := clabutils.CheckAndGetRootPrivs()\n178: \t\tif err != nil {\n179: \t\t\treturn err\n180: \t\t}\n181: \t}\n182: \n183: \treturn getTopoFilePath(cobraCmd, o)\n184: }\n185: \n186: // applyLabRuntimeDefaultTimeout gives remote, controller-driven lab runtimes enough time to load\n187: // large node images. An explicit flag or environment value always wins. Local Docker and Podman\n188: // retain their existing two-minute default.\n189: func applyLabRuntimeDefaultTimeout(cobraCmd *cobra.Command, o *Options) {\n190: \tif !clablabruntime.IsLabRuntimeName(o.Global.Runtime) {\n191: \t\treturn\n192: \t}\n193: \n194: \ttimeoutFlag := cobraCmd.Flag(\"timeout\")\n195: \tif timeoutFlag != nil && timeoutFlag.Changed {\n196: \t\treturn\n197: \t}\n198: \n199: \tif value, ok := os.LookupEnv(envPrefix + \"_TIMEOUT\"); ok && strings.TrimSpace(value) != \"\" {\n200: \t\treturn\n201: \t}\n202: \n203: \to.Global.Timeout = defaultLabRuntimeTimeout\n204: }\n205: \n206: func globalRuntimeRequiresRoot(name string) bool {\n207: \treturn name != \"\" &&\n208: \t\tname != clabruntimedocker.RuntimeName &&\n209: \t\t!commandSkipsRoot(name)\n210: }\n211: \n212: func commandSkipsRoot(name string) bool {\n213: \treturn clablabruntime.IsLabRuntimeName(name)\n214: }\n215: \n216: // runtimeIndependentCommands don't use the container runtime, so they don't need root\n217: // privileges with any runtime. Commands in this list that can still need root, such as\n218: // generate --deploy, check for it themselves.\n219: var runtimeIndependentCommands = map[string]struct{}{ //nolint:gochecknoglobals\n220: \t\"help\":                          {},\n221: \tcobra.ShellCompRequestCmd:       {},\n222: \tcobra.ShellCompNoDescRequestCmd: {},\n223: \t\"version\":                       {},\n224: \t\"version.check\":                 {},\n225: \t\"completion\":                    {},\n226: \t\"generate\":                      {},\n227: \t\"tools.cert.ca.create\":          {},\n228: \t\"tools.cert.sign\":               {},\n229: }\n230: \n231: // commandIsRuntimeIndependent reports whether a command runs without the container runtime,\n232: // so that it doesn't need root privileges. Some commands only do so with certain flags.\n233: func commandIsRuntimeIndependent(cobraCmd *cobra.Command, o *Options) bool {\n234: \tcommandPath := getCommandPath(cobraCmd)\n235: \tif _, ok := runtimeIndependentCommands[commandPath]; ok {\n236: \t\treturn true\n237: \t}\n238: \n239: \tswitch commandPath {\n240: \tcase \"graph\":\n241: \t\t// drawio runs the clab-io-draw container through Docker\n242: \t\treturn topologyFromFile(o) && !o.Graph.GenerateDrawIO &&\n243: \t\t\t(o.Graph.GenerateDotFile || o.Graph.GenerateMermaid || o.Graph.Offline)\n244: \tcase \"validate\":\n245: \t\treturn topologyFromFile(o)\n246: \tcase \"tui\":\n247: \t\treturn o.TUI.Demo\n248: \t}\n249: \n250: \treturn false\n251: }\n252: \n253: // topologyFromFile reports whether the topology is read from a file. A lab given by its name\n254: // alone is read from its containers.\n255: func topologyFromFile(o *Options) bool {\n256: \treturn o.Global.TopologyFile != \"\" || o.Global.TopologyName == \"\"\n257: }\n258: \n259: // labRuntimeUnsupportedCommands operate on local containers or host networking\n260: // and have no lab runtime equivalent.\n261: var labRuntimeUnsupportedCommands = map[string]struct{}{\n262: \t\"tools\": {},\n263: }\n264: \n265: // labRuntimeSupportedCommands are the commands of an unsupported group that lab runtimes do\n266: // support, by command path.\n267: var labRuntimeSupportedCommands = map[string]struct{}{ //nolint:gochecknoglobals\n268: \t\"tools.netem\": {},\n269: }\n270: \n271: // graphTopologyFileFlags select graph modes that render from the topology file alone, without\n272: // running containers. Lab runtimes support only these modes.\n273: var graphTopologyFileFlags = []string{ //nolint:gochecknoglobals\n274: \t\"dot\",\n275: \t\"mermaid\",\n276: \t\"drawio\",\n277: \t\"offline\",\n278: }\n279: \n280: // labRuntimeUnsupportedFlags is the explicit CLI compatibility contract for controller-driven\n281: // runtimes. A flag listed here must fail before topology parsing or remote mutation instead of\n282: // being accepted and silently ignored by the adapter.\n283: var labRuntimeUnsupportedFlags = map[string][]string{ //nolint:gochecknoglobals\n284: \t\"deploy\": {\n285: \t\t\"graph\", \"ipv4-subnet\", \"ipv6-subnet\", \"network\", \"node-filter\",\n286: \t\t\"restore\", \"restore-all\", \"skip-labdir-acl\", \"skip-post-deploy\", \"export-template\",\n287: \t},\n288: \t\"destroy\": {\n289: \t\t\"graceful\", \"keep-mgmt-net\", \"node-filter\",\n290: \t},\n291: \t\"graph\": {\n292: \t\t\"node-filter\",\n293: \t},\n294: \t\"redeploy\": {\n295: \t\t\"graceful\", \"graph\", \"ipv4-subnet\", \"ipv6-subnet\", \"keep-mgmt-net\",\n296: \t\t\"network\", \"skip-labdir-acl\", \"skip-post-deploy\", \"export-template\",\n297: \t},\n298: }\n299: \n300: func checkLabRuntimeCommandSupport(cobraCmd *cobra.Command, runtimeName string) error {\n301: \tif !clablabruntime.IsLabRuntimeName(runtimeName) {\n302: \t\treturn nil\n303: \t}\n304: \n305: \tfor cmd := cobraCmd; cmd != nil; cmd = cmd.Parent() {\n306: \t\tif _, ok := labRuntimeSupportedCommands[getCommandPath(cmd)]; ok {\n307: \t\t\tbreak\n308: \t\t}\n309: \t\tif _, ok := labRuntimeUnsupportedCommands[cmd.Name()]; ok {\n310: \t\t\treturn fmt.Errorf(\"the %q command is not supported with lab runtime %q\",\n311: \t\t\t\tcmd.Name(), runtimeName)\n312: \t\t}\n313: \t}\n314: \n315: \tif getCommandPath(cobraCmd) == \"graph\" && !graphRendersFromTopologyFile(cobraCmd) {\n316: \t\treturn fmt.Errorf(\n317: \t\t\t\"the %q command needs running containers with lab runtime %q unless it renders \"+\n318: \t\t\t\t\"from the topology file alone; use --offline, --dot, --mermaid or --drawio\",\n319: \t\t\t\"graph\", runtimeName)\n320: \t}\n321: \n322: \tvar unsupported []string\n323: \tfor _, flagName := range labRuntimeUnsupportedFlags[getCommandPath(cobraCmd)] {\n324: \t\tif labRuntimeFlagWasSet(cobraCmd, flagName) {\n325: \t\t\tunsupported = append(unsupported, \"--\"+flagName)\n326: \t\t}\n327: \t}\n328: \tif len(unsupported) != 0 {\n329: \t\tsort.Strings(unsupported)\n330: \n331: \t\treturn fmt.Errorf(\n332: \t\t\t\"flag(s) %s are not supported with the %q command and lab runtime %q\",\n333: \t\t\tstrings.Join(unsupported, \", \"),\n334: \t\t\tcobraCmd.Name(),\n335: \t\t\truntimeName,\n336: \t\t)\n337: \t}\n338: \n339: \treturn nil\n340: }\n341: \n342: func graphRendersFromTopologyFile(cobraCmd *cobra.Command) bool {\n343: \tfor _, flagName := range graphTopologyFileFlags {\n344: \t\tflag := cobraCmd.Flag(flagName)\n345: \t\tif flag != nil && flag.Value.String() == \"true\" &&\n346: \t\t\tlabRuntimeFlagWasSet(cobraCmd, flagName) {\n347: \t\t\treturn true\n348: \t\t}\n349: \t}\n350: \n351: \treturn false\n352: }\n353: \n354: func labRuntimeFlagWasSet(cobraCmd *cobra.Command, flagName string) bool {\n355: \tflag := cobraCmd.Flag(flagName)\n356: \tif flag == nil {\n357: \t\treturn false\n358: \t}\n359: \n360: \tif flag.Changed {\n361: \t\treturn true\n362: \t}\n363: \n364: \tif v == nil {\n365: \t\treturn false\n366: \t}\n367: \n368: \tcommandKey := getCommandPath(cobraCmd) + \".\" + flagName\n369: \tif v.IsSet(commandKey) {\n370: \t\treturn true\n371: \t}\n372: \n373: \treturn v.IsSet(flagName)\n374: }\n375: \n376: // getTopoFilePath finds *.clab.y*ml file in the current working directory\n377: // if the file was not specified.\n378: // If the topology file refers to a git repository, it will be cloned to the current directory.\n379: // Errors if more than one file is found by the glob path.\n380: func getTopoFilePath(cobraCmd *cobra.Command, o *Options) error { // skipcq: GO-R1005\n381: \t// set commands which may use topo file find functionality, the rest don't need it\n382: \tif cobraCmd.Name() != \"deploy\" &&\n383: \t\tcobraCmd.Name() != \"destroy\" &&\n384: \t\tcobraCmd.Name() != \"start\" &&\n385: \t\tcobraCmd.Name() != \"stop\" &&\n386: \t\tcobraCmd.Name() != \"restart\" &&\n387: \t\tcobraCmd.Name() != \"redeploy\" &&\n388: \t\tcobraCmd.Name() != \"inspect\" &&\n389: \t\tcobraCmd.Name() != \"save\" &&\n390: \t\tcobraCmd.Name() != \"graph\" &&\n391: \t\tcobraCmd.Name() != \"validate\" &&\n392: \t\tcobraCmd.Name() != \"logs\" &&\n393: \t\tcobraCmd.Name() != \"capture\" &&\n394: \t\tcobraCmd.Name() != \"interfaces\" {\n395: \t\treturn nil\n396: \t}\n397: \n398: \t// start/stop/restart topology lookup applies only to top-level lifecycle commands.\n399: \t// nested commands like tools api-server start|stop are excluded.\n400: \tif (cobraCmd.Name() == \"start\" || cobraCmd.Name() == \"stop\" || cobraCmd.Name() == \"restart\") &&\n401: \t\t(cobraCmd.Parent() == nil || cobraCmd.Parent().Name() != \"containerlab\") {\n402: \t\treturn nil\n403: \t}\n404: \n405: \t// inspect and destroy commands with --all flag don't use file find functionality\n406: \tif (cobraCmd.Name() == \"inspect\" || cobraCmd.Name() == \"destroy\") &&\n407: \t\tcobraCmd.Flag(\"all\") != nil &&\n408: \t\tcobraCmd.Flag(\"all\").Value.String() == \"true\" {\n409: \t\treturn nil\n410: \t}\n411: \n412: \tvar err error\n413: \t// perform topology clone/fetch if the topo file is not available locally\n414: \tif !clabutils.FileOrDirExists(o.Global.TopologyFile) {\n415: \t\tswitch {\n416: \t\tcase clabgit.IsGitHubOrGitLabURL(o.Global.TopologyFile) ||\n417: \t\t\tclabgit.IsGitHubShortURL(o.Global.TopologyFile):\n418: \t\t\to.Global.TopologyFile, err = processGitTopoFile(o.Global.TopologyFile)\n419: \t\t\tif err != nil {\n420: \t\t\t\treturn err\n421: \t\t\t}\n422: \t\tcase clabutils.IsHttpURL(o.Global.TopologyFile, true):\n423: \t\t\t// canonize the passed topo as URL by adding https schema if it was missing\n424: \t\t\tif !strings.HasPrefix(o.Global.TopologyFile, \"http://\") &&\n425: \t\t\t\t!strings.HasPrefix(o.Global.TopologyFile, \"https://\") {\n426: \t\t\t\to.Global.TopologyFile = \"https://\" + o.Global.TopologyFile\n427: \t\t\t}\n428: \t\t}\n429: \t}\n430: \n431: \t// if topo or name flags have been provided, don't try to derive the topo file\n432: \tif o.Global.TopologyFile != \"\" || o.Global.TopologyName != \"\" {\n433: \t\treturn nil\n434: \t}\n435: \n436: \tlog.Debugf(\"trying to find topology files automatically\")\n437: \n438: \tfiles, err := filepath.Glob(\"*.clab.y*ml\")\n439: \n440: \tif len(files) == 0 {\n441: \t\treturn errors.New(\"no topology files matching the pattern *.clab.yml or *.clab.yaml found\")\n442: \t}\n443: \n444: \tif len(files) > 1 {\n445: \t\tif !term.IsTerminal(os.Stdin.Fd()) {\n446: \t\t\treturn fmt.Errorf(\n447: \t\t\t\t\"more than one topology file matching the pattern *.clab.yml or *.clab.yaml found, \"+\n448: \t\t\t\t\t\"can't pick one: %q\",\n449: \t\t\t\tfiles,\n450: \t\t\t)\n451: \t\t}\n452: \n453: \t\trunning := runningTopoFiles(cobraCmd.Context(), o)\n454: \n455: \t\tselected, err := selectTopoFile(files, running)\n456: \t\tif err != nil {\n457: \t\t\treturn err\n458: \t\t}\n459: \n460: \t\to.Global.TopologyFile = selected\n461: \n462: \t\tlog.Info(\"Using topology file\", \"file\", selected)\n463: \n464: \t\treturn nil\n465: \t}\n466: \n467: \to.Global.TopologyFile = files[0]\n468: \n469: \tlog.Debugf(\"topology file found: %s\", files[0])\n470: \n471: \treturn err\n472: }\n473: \n474: func processGitTopoFile(topo string) (string, error) {\n475: \t// for short github urls, prepend https://github.com\n476: \t// note that short notation only works for github links\n477: \tif clabgit.IsGitHubShortURL(topo) {\n478: \t\ttopo = \"https://github.com/\" + topo\n479: \t}\n480: \n481: \trepo, err := clabgit.NewRepo(topo)\n482: \tif err != nil {\n483: \t\treturn \"\", err\n484: \t}\n485: \n486: \t// Instantiate the git implementation to use.\n487: \tgitImpl := clabgit.NewGoGit(repo)\n488: \n489: \t// clone the repo via the Git Implementation\n490: \terr = gitImpl.Clone()\n491: \tif err != nil {\n492: \t\treturn \"\", err\n493: \t}\n494: \n495: \t// adjust permissions for the checked out repo\n496: \t// it would belong to root/root otherwise\n497: \terr = clabutils.SetUIDAndGID(repo.GetName())\n498: \tif err != nil {\n499: \t\tlog.Errorf(\"error adjusting repository permissions %v. Continuing anyways\", err)\n500: \t}\n501: \n502: \t// prepare the path with the repo based path\n503: \tpath := filepath.Join(repo.GetPath()...)\n504: \t// prepend that path with the repo base directory\n505: \tpath = filepath.Join(repo.GetName(), path)\n506: \n507: \t// change dir to the\n508: \terr = os.Chdir(path)\n509: \tif err != nil {\n510: \t\treturn \"\", err\n511: \t}\n512: \n513: \treturn repo.GetFilename(), err\n514: }\n\n(End of file - total 514 lines)\n</content>",
+            "title": "source/head/cmd/root.go",
+            "metadata": {
+              "preview": "// Copyright 2020 Nokia\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage cmd\n\nimport (\n\t\"errors\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sort\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\t\"github.com/charmbracelet/x/term\"\n\t\"github.com/spf13/cobra\"\n\tclabgit \"github.com/srl-labs/containerlab/git\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/cmd/root.go",
+                "text": "// Copyright 2020 Nokia\n// Licensed under the BSD 3-Clause License.\n// SPDX-License-Identifier: BSD-3-Clause\n\npackage cmd\n\nimport (\n\t\"errors\"\n\t\"fmt\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sort\"\n\t\"strings\"\n\t\"time\"\n\n\t\"github.com/charmbracelet/log\"\n\t\"github.com/charmbracelet/x/term\"\n\t\"github.com/spf13/cobra\"\n\tclabgit \"github.com/srl-labs/containerlab/git\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n\tclabruntimedocker \"github.com/srl-labs/containerlab/runtime/docker\"\n\tclabutils \"github.com/srl-labs/containerlab/utils\"\n)\n\nfunc subcommandRegisterFuncs() []func(*Options) (*cobra.Command, error) {\n\treturn []func(*Options) (*cobra.Command, error){\n\t\tversionCmd,\n\t\tcompletionCmd,\n\t\tdeployCmd,\n\t\tdestroyCmd,\n\t\tstartCmd,\n\t\tstopCmd,\n\t\trestartCmd,\n\t\ttuiCmd,\n\t\texecCmd,\n\t\tgenerateCmd,\n\t\tgraphCmd,\n\t\teventsCmd,\n\t\tinspectCmd,\n\t\tlogsCmd,\n\t\tcaptureCmd,\n\t\tredeployCmd,\n\t\tsaveCmd,\n\t\ttoolsCmd,\n\t\tvalidateCmd,\n\t}\n}\n\n// Entrypoint returns the root cobra command to be executed or errors if it cannot do so.\nfunc Entrypoint() (*cobra.Command, error) {\n\to := GetOptions()\n\n\tc := &cobra.Command{\n\t\tUse:   \"containerlab\",\n\t\tShort: \"deploy container based lab environments with a user-defined interconnections\",\n\t\tPersistentPreRunE: func(cobraCmd *cobra.Command, _ []string) error {\n\t\t\treturn preRunFn(cobraCmd, o)\n\t\t},\n\t\tAliases:      []string{\"clab\"},\n\t\tSilenceUsage: true,\n\t}\n\n\tc.PersistentFlags().CountVarP(\n\t\t&o.Global.DebugCount,\n\t\t\"debug\",\n\t\t\"d\",\n\t\t\"enable debug mode\",\n\t)\n\tc.PersistentFlags().StringVarP(\n\t\t&o.Global.TopologyFile,\n\t\t\"topo\",\n\t\t\"t\",\n\t\to.Global.TopologyFile,\n\t\t\"path to the topology definition file, a directory containing one, 'stdin', or a URL\",\n\t)\n\tc.PersistentFlags().StringArrayVarP(\n\t\t&o.Global.VarsFiles,\n\t\t\"vars\",\n\t\t\"\",\n\t\to.Global.VarsFiles,\n\t\t\"path to a topology template variables file (can be specified multiple times)\",\n\t)\n\tc.PersistentFlags().StringVarP(\n\t\t&o.Global.TopologyName,\n\t\t\"name\",\n\t\t\"\",\n\t\to.Global.TopologyName,\n\t\t\"lab/topology name\")\n\tc.PersistentFlags().StringVar(\n\t\t&o.Global.Namespace,\n\t\t\"namespace\",\n\t\to.Global.Namespace,\n\t\t\"Kubernetes namespace override for the clabernetes runtime\",\n\t)\n\tc.PersistentFlags().DurationVarP(\n\t\t&o.Global.Timeout,\n\t\t\"timeout\",\n\t\t\"\",\n\t\to.Global.Timeout,\n\t\t\"timeout for external API requests (e.g. container runtimes); lab runtimes default to 10m\",\n\t)\n\tc.PersistentFlags().StringVarP(\n\t\t&o.Global.Runtime,\n\t\t\"runtime\",\n\t\t\"r\",\n\t\to.Global.Runtime,\n\t\t\"container runtime\",\n\t)\n\tc.PersistentFlags().StringVarP(\n\t\t&o.Global.LogLevel,\n\t\t\"log-level\",\n\t\t\"\",\n\t\to.Global.LogLevel,\n\t\t\"logging level; one of [trace, debug, info, warning, error, fatal]\",\n\t)\n\n\terr := c.MarkPersistentFlagFilename(\"topo\", \"*.yaml\", \"*.yml\")\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\tfor _, f := range subcommandRegisterFuncs() {\n\t\tcmd, err := f(o)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\n\t\tc.AddCommand(cmd)\n\t}\n\n\t// Initialize viper for environment variable support\n\tif err := initViper(c); err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn c, nil\n}\n\nfunc preRunFn(cobraCmd *cobra.Command, o *Options) error {\n\t// Update options from viper (environment variables take precedence over defaults)\n\tif v != nil {\n\t\tupdateOptionsFromViper(cobraCmd, o)\n\t}\n\tapplyLabRuntimeDefaultTimeout(cobraCmd, o)\n\n\t// setting log level\n\tswitch {\n\tcase o.Global.DebugCount > 0:\n\t\tlog.SetLevel(log.DebugLevel)\n\tdefault:\n\t\tl, err := log.ParseLevel(o.Global.LogLevel)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tlog.SetLevel(l)\n\t}\n\n\t// initializes the version manager that goes off and fetches current version in\n\t// the background for us\n\tinitVersionManager(cobraCmd.Context())\n\n\t// setting output to stderr, so that json outputs can be parsed\n\tlog.SetOutput(os.Stderr)\n\n\tlog.SetTimeFormat(time.TimeOnly)\n\n\tif err := checkLabRuntimeCommandSupport(cobraCmd, o.Global.Runtime); err != nil {\n\t\treturn err\n\t}\n\n\terr := clabutils.DropRootPrivs()\n\tif err != nil {\n\t\treturn err\n\t}\n\tif globalRuntimeRequiresRoot(o.Global.Runtime) && !commandIsRuntimeIndependent(cobraCmd, o) {\n\t\terr := clabutils.CheckAndGetRootPrivs()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n\n\treturn getTopoFilePath(cobraCmd, o)\n}\n\n// applyLabRuntimeDefaultTimeout gives remote, controller-driven lab runtimes enough time to load\n// large node images. An explicit flag or environment value always wins. Local Docker and Podman\n// retain their existing two-minute default.\nfunc applyLabRuntimeDefaultTimeout(cobraCmd *cobra.Command, o *Options) {\n\tif !clablabruntime.IsLabRuntimeName(o.Global.Runtime) {\n\t\treturn\n\t}\n\n\ttimeoutFlag := cobraCmd.Flag(\"timeout\")\n\tif timeoutFlag != nil && timeoutFlag.Changed {\n\t\treturn\n\t}\n\n\tif value, ok := os.LookupEnv(envPrefix + \"_TIMEOUT\"); ok && strings.TrimSpace(value) != \"\" {\n\t\treturn\n\t}\n\n\to.Global.Timeout = defaultLabRuntimeTimeout\n}\n\nfunc globalRuntimeRequiresRoot(name string) bool {\n\treturn name != \"\" &&\n\t\tname != clabruntimedocker.RuntimeName &&\n\t\t!commandSkipsRoot(name)\n}\n\nfunc commandSkipsRoot(name string) bool {\n\treturn clablabruntime.IsLabRuntimeName(name)\n}\n\n// runtimeIndependentCommands don't use the container runtime, so they don't need root\n// privileges with any runtime. Commands in this list that can still need root, such as\n// generate --deploy, check for it themselves.\nvar runtimeIndependentCommands = map[string]struct{}{ //nolint:gochecknoglobals\n\t\"help\":                          {},\n\tcobra.ShellCompRequestCmd:       {},\n\tcobra.ShellCompNoDescRequestCmd: {},\n\t\"version\":                       {},\n\t\"version.check\":                 {},\n\t\"completion\":                    {},\n\t\"generate\":                      {},\n\t\"tools.cert.ca.create\":          {},\n\t\"tools.cert.sign\":               {},\n}\n\n// commandIsRuntimeIndependent reports whether a command runs without the container runtime,\n// so that it doesn't need root privileges. Some commands only do so with certain flags.\nfunc commandIsRuntimeIndependent(cobraCmd *cobra.Command, o *Options) bool {\n\tcommandPath := getCommandPath(cobraCmd)\n\tif _, ok := runtimeIndependentCommands[commandPath]; ok {\n\t\treturn true\n\t}\n\n\tswitch commandPath {\n\tcase \"graph\":\n\t\t// drawio runs the clab-io-draw container through Docker\n\t\treturn topologyFromFile(o) && !o.Graph.GenerateDrawIO &&\n\t\t\t(o.Graph.GenerateDotFile || o.Graph.GenerateMermaid || o.Graph.Offline)\n\tcase \"validate\":\n\t\treturn topologyFromFile(o)\n\tcase \"tui\":\n\t\treturn o.TUI.Demo\n\t}\n\n\treturn false\n}\n\n// topologyFromFile reports whether the topology is read from a file. A lab given by its name\n// alone is read from its containers.\nfunc topologyFromFile(o *Options) bool {\n\treturn o.Global.TopologyFile != \"\" || o.Global.TopologyName == \"\"\n}\n\n// labRuntimeUnsupportedCommands operate on local containers or host networking\n// and have no lab runtime equivalent.\nvar labRuntimeUnsupportedCommands = map[string]struct{}{\n\t\"tools\": {},\n}\n\n// labRuntimeSupportedCommands are the commands of an unsupported group that lab runtimes do\n// support, by command path.\nvar labRuntimeSupportedCommands = map[string]struct{}{ //nolint:gochecknoglobals\n\t\"tools.netem\": {},\n}\n\n// graphTopologyFileFlags select graph modes that render from the topology file alone, without\n// running containers. Lab runtimes support only these modes.\nvar graphTopologyFileFlags = []string{ //nolint:gochecknoglobals\n\t\"dot\",\n\t\"mermaid\",\n\t\"drawio\",\n\t\"offline\",\n}\n\n// labRuntimeUnsupportedFlags is the explicit CLI compatibility contract for controller-driven\n// runtimes. A flag listed here must fail before topology parsing or remote mutation instead of\n// being accepted and silently ignored by the adapter.\nvar labRuntimeUnsupportedFlags = map[string][]string{ //nolint:gochecknoglobals\n\t\"deploy\": {\n\t\t\"graph\", \"ipv4-subnet\", \"ipv6-subnet\", \"network\", \"node-filter\",\n\t\t\"restore\", \"restore-all\", \"skip-labdir-acl\", \"skip-post-deploy\", \"export-template\",\n\t},\n\t\"destroy\": {\n\t\t\"graceful\", \"keep-mgmt-net\", \"node-filter\",\n\t},\n\t\"graph\": {\n\t\t\"node-filter\",\n\t},\n\t\"redeploy\": {\n\t\t\"graceful\", \"graph\", \"ipv4-subnet\", \"ipv6-subnet\", \"keep-mgmt-net\",\n\t\t\"network\", \"skip-labdir-acl\", \"skip-post-deploy\", \"export-template\",\n\t},\n}\n\nfunc checkLabRuntimeCommandSupport(cobraCmd *cobra.Command, runtimeName string) error {\n\tif !clablabruntime.IsLabRuntimeName(runtimeName) {\n\t\treturn nil\n\t}\n\n\tfor cmd := cobraCmd; cmd != nil; cmd = cmd.Parent() {\n\t\tif _, ok := labRuntimeSupportedCommands[getCommandPath(cmd)]; ok {\n\t\t\tbreak\n\t\t}\n\t\tif _, ok := labRuntimeUnsupportedCommands[cmd.Name()]; ok {\n\t\t\treturn fmt.Errorf(\"the %q command is not supported with lab runtime %q\",\n\t\t\t\tcmd.Name(), runtimeName)\n\t\t}\n\t}\n\n\tif getCommandPath(cobraCmd) == \"graph\" && !graphRendersFromTopologyFile(cobraCmd) {\n\t\treturn fmt.Errorf(\n\t\t\t\"the %q command needs running containers with lab runtime %q unless it renders \"+\n\t\t\t\t\"from the topology file alone; use --offline, --dot, --mermaid or --drawio\",\n\t\t\t\"graph\", runtimeName)\n\t}\n\n\tvar unsupported []string\n\tfor _, flagName := range labRuntimeUnsupportedFlags[getCommandPath(cobraCmd)] {\n\t\tif labRuntimeFlagWasSet(cobraCmd, flagName) {\n\t\t\tunsupported = append(unsupported, \"--\"+flagName)\n\t\t}\n\t}\n\tif len(unsupported) != 0 {\n\t\tsort.Strings(unsupported)\n\n\t\treturn fmt.Errorf(\n\t\t\t\"flag(s) %s are not supported with the %q command and lab runtime %q\",\n\t\t\tstrings.Join(unsupported, \", \"),\n\t\t\tcobraCmd.Name(),\n\t\t\truntimeName,\n\t\t)\n\t}\n\n\treturn nil\n}\n\nfunc graphRendersFromTopologyFile(cobraCmd *cobra.Command) bool {\n\tfor _, flagName := range graphTopologyFileFlags {\n\t\tflag := cobraCmd.Flag(flagName)\n\t\tif flag != nil && flag.Value.String() == \"true\" &&\n\t\t\tlabRuntimeFlagWasSet(cobraCmd, flagName) {\n\t\t\treturn true\n\t\t}\n\t}\n\n\treturn false\n}\n\nfunc labRuntimeFlagWasSet(cobraCmd *cobra.Command, flagName string) bool {\n\tflag := cobraCmd.Flag(flagName)\n\tif flag == nil {\n\t\treturn false\n\t}\n\n\tif flag.Changed {\n\t\treturn true\n\t}\n\n\tif v == nil {\n\t\treturn false\n\t}\n\n\tcommandKey := getCommandPath(cobraCmd) + \".\" + flagName\n\tif v.IsSet(commandKey) {\n\t\treturn true\n\t}\n\n\treturn v.IsSet(flagName)\n}\n\n// getTopoFilePath finds *.clab.y*ml file in the current working directory\n// if the file was not specified.\n// If the topology file refers to a git repository, it will be cloned to the current directory.\n// Errors if more than one file is found by the glob path.\nfunc getTopoFilePath(cobraCmd *cobra.Command, o *Options) error { // skipcq: GO-R1005\n\t// set commands which may use topo file find functionality, the rest don't need it\n\tif cobraCmd.Name() != \"deploy\" &&\n\t\tcobraCmd.Name() != \"destroy\" &&\n\t\tcobraCmd.Name() != \"start\" &&\n\t\tcobraCmd.Name() != \"stop\" &&\n\t\tcobraCmd.Name() != \"restart\" &&\n\t\tcobraCmd.Name() != \"redeploy\" &&\n\t\tcobraCmd.Name() != \"inspect\" &&\n\t\tcobraCmd.Name() != \"save\" &&\n\t\tcobraCmd.Name() != \"graph\" &&\n\t\tcobraCmd.Name() != \"validate\" &&\n\t\tcobraCmd.Name() != \"logs\" &&\n\t\tcobraCmd.Name() != \"capture\" &&\n\t\tcobraCmd.Name() != \"interfaces\" {\n\t\treturn nil\n\t}\n\n\t// start/stop/restart topology lookup applies only to top-level lifecycle commands.\n\t// nested commands like tools api-server start|stop are excluded.\n\tif (cobraCmd.Name() == \"start\" || cobraCmd.Name() == \"stop\" || cobraCmd.Name() == \"restart\") &&\n\t\t(cobraCmd.Parent() == nil || cobraCmd.Parent().Name() != \"containerlab\") {\n\t\treturn nil\n\t}\n\n\t// inspect and destroy commands with --all flag don't use file find functionality\n\tif (cobraCmd.Name() == \"inspect\" || cobraCmd.Name() == \"destroy\") &&\n\t\tcobraCmd.Flag(\"all\") != nil &&\n\t\tcobraCmd.Flag(\"all\").Value.String() == \"true\" {\n\t\treturn nil\n\t}\n\n\tvar err error\n\t// perform topology clone/fetch if the topo file is not available locally\n\tif !clabutils.FileOrDirExists(o.Global.TopologyFile) {\n\t\tswitch {\n\t\tcase clabgit.IsGitHubOrGitLabURL(o.Global.TopologyFile) ||\n\t\t\tclabgit.IsGitHubShortURL(o.Global.TopologyFile):\n\t\t\to.Global.TopologyFile, err = processGitTopoFile(o.Global.TopologyFile)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\tcase clabutils.IsHttpURL(o.Global.TopologyFile, true):\n\t\t\t// canonize the passed topo as URL by adding https schema if it was missing\n\t\t\tif !strings.HasPrefix(o.Global.TopologyFile, \"http://\") &&\n\t\t\t\t!strings.HasPrefix(o.Global.TopologyFile, \"https://\") {\n\t\t\t\to.Global.TopologyFile = \"https://\" + o.Global.TopologyFile\n\t\t\t}\n\t\t}\n\t}\n\n\t// if topo or name flags have been provided, don't try to derive the topo file\n\tif o.Global.TopologyFile != \"\" || o.Global.TopologyName != \"\" {\n\t\treturn nil\n\t}\n\n\tlog.Debugf(\"trying to find topology files automatically\")\n\n\tfiles, err := filepath.Glob(\"*.clab.y*ml\")\n\n\tif len(files) == 0 {\n\t\treturn errors.New(\"no topology files matching the pattern *.clab.yml or *.clab.yaml found\")\n\t}\n\n\tif len(files) > 1 {\n\t\tif !term.IsTerminal(os.Stdin.Fd()) {\n\t\t\treturn fmt.Errorf(\n\t\t\t\t\"more than one topology file matching the pattern *.clab.yml or *.clab.yaml found, \"+\n\t\t\t\t\t\"can't pick one: %q\",\n\t\t\t\tfiles,\n\t\t\t)\n\t\t}\n\n\t\trunning := runningTopoFiles(cobraCmd.Context(), o)\n\n\t\tselected, err := selectTopoFile(files, running)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\to.Global.TopologyFile = selected\n\n\t\tlog.Info(\"Using topology file\", \"file\", selected)\n\n\t\treturn nil\n\t}\n\n\to.Global.TopologyFile = files[0]\n\n\tlog.Debugf(\"topology file found: %s\", files[0])\n\n\treturn err\n}\n\nfunc processGitTopoFile(topo string) (string, error) {\n\t// for short github urls, prepend https://github.com\n\t// note that short notation only works for github links\n\tif clabgit.IsGitHubShortURL(topo) {\n\t\ttopo = \"https://github.com/\" + topo\n\t}\n\n\trepo, err := clabgit.NewRepo(topo)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\t// Instantiate the git implementation to use.\n\tgitImpl := clabgit.NewGoGit(repo)\n\n\t// clone the repo via the Git Implementation\n\terr = gitImpl.Clone()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\t// adjust permissions for the checked out repo\n\t// it would belong to root/root otherwise\n\terr = clabutils.SetUIDAndGID(repo.GetName())\n\tif err != nil {\n\t\tlog.Errorf(\"error adjusting repository permissions %v. Continuing anyways\", err)\n\t}\n\n\t// prepare the path with the repo based path\n\tpath := filepath.Join(repo.GetPath()...)\n\t// prepend that path with the repo base directory\n\tpath = filepath.Join(repo.GetName(), path)\n\n\t// change dir to the\n\terr = os.Chdir(path)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\n\treturn repo.GetFilename(), err\n}",
+                "lineStart": 1,
+                "lineEnd": 514,
+                "totalLines": 514,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795790323195,
+              "end": 1795790323201
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_21d71be0e001H8Q6qlLRpmnR3c",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71b3a9001uDoso9GoRQCyx4",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 19611,
+            "input": 19507,
+            "output": 14,
+            "reasoning": 90,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_21d71be18001kLu1eFbbO4kb7H",
+        "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+        "time": {
+          "created": 1795790323224,
+          "completed": 1795790325257
+        },
+        "parentID": "msg_21d71b3a20016h9Jmqad2LafYj",
+        "modelID": "zai-org/GLM-5.3",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-1Dmo0t",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 25068,
+          "input": 5386,
+          "output": 15,
+          "reasoning": 83,
+          "cache": {
+            "read": 19584,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_21d71c301001qwyRZRVo81XqND",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71be18001kLu1eFbbO4kb7H"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_21d71c303001aBiyGfSD1i63ps",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71be18001kLu1eFbbO4kb7H",
+          "text": "Now I have the full head root.go. Key new code: lines 176-181 (root check with `commandIsRuntimeIndependent`), lines 216-257 (map, `commandIsRuntimeIndependent`, `topologyFromFile`).\n\nLet me now read the full head `cmd/root_test.go` to assess test coverage precisely, and also look at base root_test.go for what tests changed.",
+          "time": {
+            "start": 1795790324483,
+            "end": 1795790325241
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_21d71c5fb001P1vQKwqUQr6g9E",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71be18001kLu1eFbbO4kb7H",
+          "callID": "call_2ecb53684f304fae8bd237ff",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/cmd/root_test.go"
+            },
+            "output": "<path>/source/head/cmd/root_test.go</path>\n<type>file</type>\n<content>\n1: package cmd\n2: \n3: import (\n4: \t\"bytes\"\n5: \t\"os\"\n6: \t\"strings\"\n7: \t\"testing\"\n8: \t\"time\"\n9: \n10: \t\"github.com/spf13/cobra\"\n11: \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n12: )\n13: \n14: func TestRootRequirementHelpers(t *testing.T) {\n15: \ttests := []struct {\n16: \t\tname               string\n17: \t\truntime            string\n18: \t\twantGlobalRoot     bool\n19: \t\twantCommandSkipped bool\n20: \t}{\n21: \t\t{\n22: \t\t\tname:               \"default runtime\",\n23: \t\t\truntime:            \"\",\n24: \t\t\twantGlobalRoot:     false,\n25: \t\t\twantCommandSkipped: false,\n26: \t\t},\n27: \t\t{\n28: \t\t\tname:               \"docker runtime\",\n29: \t\t\truntime:            \"docker\",\n30: \t\t\twantGlobalRoot:     false,\n31: \t\t\twantCommandSkipped: false,\n32: \t\t},\n33: \t\t{\n34: \t\t\tname:               \"podman runtime\",\n35: \t\t\truntime:            \"podman\",\n36: \t\t\twantGlobalRoot:     true,\n37: \t\t\twantCommandSkipped: false,\n38: \t\t},\n39: \t\t{\n40: \t\t\tname:               \"clabernetes runtime\",\n41: \t\t\truntime:            clablabruntime.ClabernetesRuntimeName,\n42: \t\t\twantGlobalRoot:     false,\n43: \t\t\twantCommandSkipped: true,\n44: \t\t},\n45: \t}\n46: \n47: \tfor _, tt := range tests {\n48: \t\tt.Run(tt.name, func(t *testing.T) {\n49: \t\t\tif got := globalRuntimeRequiresRoot(tt.runtime); got != tt.wantGlobalRoot {\n50: \t\t\t\tt.Fatalf(\"globalRuntimeRequiresRoot(%q) = %v, want %v\",\n51: \t\t\t\t\ttt.runtime, got, tt.wantGlobalRoot)\n52: \t\t\t}\n53: \n54: \t\t\tif got := commandSkipsRoot(tt.runtime); got != tt.wantCommandSkipped {\n55: \t\t\t\tt.Fatalf(\"commandSkipsRoot(%q) = %v, want %v\",\n56: \t\t\t\t\ttt.runtime, got, tt.wantCommandSkipped)\n57: \t\t\t}\n58: \t\t})\n59: \t}\n60: }\n61: \n62: func TestNamespaceFlagHasNoShorthand(t *testing.T) {\n63: \toptionsInstance = nil\n64: \tt.Cleanup(func() { optionsInstance = nil })\n65: \n66: \troot, err := Entrypoint()\n67: \tif err != nil {\n68: \t\tt.Fatal(err)\n69: \t}\n70: \n71: \tflag := root.PersistentFlags().Lookup(\"namespace\")\n72: \tif flag == nil {\n73: \t\tt.Fatal(\"--namespace flag was not registered\")\n74: \t}\n75: \tif flag.Shorthand != \"\" {\n76: \t\tt.Fatalf(\"--namespace shorthand = %q, want none\", flag.Shorthand)\n77: \t}\n78: \tif err := root.PersistentFlags().Set(\"namespace\", \"default\"); err != nil {\n79: \t\tt.Fatal(err)\n80: \t}\n81: \tif got := GetOptions().Global.Namespace; got != \"default\" {\n82: \t\tt.Fatalf(\"namespace option = %q, want default\", got)\n83: \t}\n84: }\n85: \n86: func TestApplyLabRuntimeDefaultTimeout(t *testing.T) {\n87: \ttests := []struct {\n88: \t\tname            string\n89: \t\truntime         string\n90: \t\texplicitFlag    string\n91: \t\texplicitEnv     string\n92: \t\tinitialTimeout  time.Duration\n93: \t\texpectedTimeout time.Duration\n94: \t}{\n95: \t\t{\n96: \t\t\tname:            \"clabernetes default\",\n97: \t\t\truntime:         clablabruntime.ClabernetesRuntimeName,\n98: \t\t\tinitialTimeout:  defaultTimeout,\n99: \t\t\texpectedTimeout: defaultLabRuntimeTimeout,\n100: \t\t},\n101: \t\t{\n102: \t\t\tname:            \"docker default unchanged\",\n103: \t\t\truntime:         \"docker\",\n104: \t\t\tinitialTimeout:  defaultTimeout,\n105: \t\t\texpectedTimeout: defaultTimeout,\n106: \t\t},\n107: \t\t{\n108: \t\t\tname:            \"explicit flag wins\",\n109: \t\t\truntime:         clablabruntime.ClabernetesRuntimeName,\n110: \t\t\texplicitFlag:    \"45s\",\n111: \t\t\tinitialTimeout:  defaultTimeout,\n112: \t\t\texpectedTimeout: 45 * time.Second,\n113: \t\t},\n114: \t\t{\n115: \t\t\tname:            \"explicit environment wins\",\n116: \t\t\truntime:         clablabruntime.ClabernetesRuntimeName,\n117: \t\t\texplicitEnv:     \"3m\",\n118: \t\t\tinitialTimeout:  3 * time.Minute,\n119: \t\t\texpectedTimeout: 3 * time.Minute,\n120: \t\t},\n121: \t}\n122: \n123: \tfor _, tt := range tests {\n124: \t\tt.Run(tt.name, func(t *testing.T) {\n125: \t\t\toriginalTimeout, timeoutWasSet := os.LookupEnv(\"CLAB_TIMEOUT\")\n126: \t\t\tif tt.explicitEnv == \"\" {\n127: \t\t\t\tif err := os.Unsetenv(\"CLAB_TIMEOUT\"); err != nil {\n128: \t\t\t\t\tt.Fatal(err)\n129: \t\t\t\t}\n130: \t\t\t} else {\n131: \t\t\t\tt.Setenv(\"CLAB_TIMEOUT\", tt.explicitEnv)\n132: \t\t\t}\n133: \t\t\tt.Cleanup(func() {\n134: \t\t\t\tif timeoutWasSet {\n135: \t\t\t\t\t_ = os.Setenv(\"CLAB_TIMEOUT\", originalTimeout)\n136: \t\t\t\t} else {\n137: \t\t\t\t\t_ = os.Unsetenv(\"CLAB_TIMEOUT\")\n138: \t\t\t\t}\n139: \t\t\t})\n140: \n141: \t\t\troot := &cobra.Command{Use: \"containerlab\"}\n142: \t\t\toptions := &Options{Global: &GlobalOptions{\n143: \t\t\t\tRuntime: tt.runtime,\n144: \t\t\t\tTimeout: tt.initialTimeout,\n145: \t\t\t}}\n146: \t\t\troot.PersistentFlags().DurationVar(\n147: \t\t\t\t&options.Global.Timeout,\n148: \t\t\t\t\"timeout\",\n149: \t\t\t\toptions.Global.Timeout,\n150: \t\t\t\t\"timeout\",\n151: \t\t\t)\n152: \t\t\tdeploy := &cobra.Command{Use: \"deploy\"}\n153: \t\t\troot.AddCommand(deploy)\n154: \t\t\tif tt.explicitFlag != \"\" {\n155: \t\t\t\tif err := root.PersistentFlags().Set(\"timeout\", tt.explicitFlag); err != nil {\n156: \t\t\t\t\tt.Fatal(err)\n157: \t\t\t\t}\n158: \t\t\t}\n159: \n160: \t\t\tapplyLabRuntimeDefaultTimeout(deploy, options)\n161: \t\t\tif options.Global.Timeout != tt.expectedTimeout {\n162: \t\t\t\tt.Fatalf(\n163: \t\t\t\t\t\"timeout = %s, want %s\",\n164: \t\t\t\t\toptions.Global.Timeout,\n165: \t\t\t\t\ttt.expectedTimeout,\n166: \t\t\t\t)\n167: \t\t\t}\n168: \t\t})\n169: \t}\n170: }\n171: \n172: func TestCheckLabRuntimeCommandSupport(t *testing.T) {\n173: \troot := &cobra.Command{Use: \"containerlab\"}\n174: \tgraph := &cobra.Command{Use: \"graph\"}\n175: \ttools := &cobra.Command{Use: \"tools\"}\n176: \tsshx := &cobra.Command{Use: \"sshx\"}\n177: \tnetem := &cobra.Command{Use: \"netem\"}\n178: \tnetemSet := &cobra.Command{Use: \"set\"}\n179: \tdeploy := &cobra.Command{Use: \"deploy\"}\n180: \n181: \troot.AddCommand(graph, tools, deploy)\n182: \ttools.AddCommand(sshx, netem)\n183: \tnetem.AddCommand(netemSet)\n184: \n185: \ttests := []struct {\n186: \t\tname    string\n187: \t\truntime string\n188: \t\tcmd     *cobra.Command\n189: \t\twantErr bool\n190: \t}{\n191: \t\t{\n192: \t\t\tname:    \"graph with docker runtime\",\n193: \t\t\truntime: \"docker\",\n194: \t\t\tcmd:     graph,\n195: \t\t\twantErr: false,\n196: \t\t},\n197: \t\t{\n198: \t\t\tname:    \"deploy with clabernetes runtime\",\n199: \t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n200: \t\t\tcmd:     deploy,\n201: \t\t\twantErr: false,\n202: \t\t},\n203: \t\t{\n204: \t\t\tname:    \"graph with clabernetes runtime\",\n205: \t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n206: \t\t\tcmd:     graph,\n207: \t\t\twantErr: true,\n208: \t\t},\n209: \t\t{\n210: \t\t\tname:    \"tools subcommand with clabernetes runtime\",\n211: \t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n212: \t\t\tcmd:     sshx,\n213: \t\t\twantErr: true,\n214: \t\t},\n215: \t\t{\n216: \t\t\tname:    \"tools netem with clabernetes runtime\",\n217: \t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n218: \t\t\tcmd:     netemSet,\n219: \t\t\twantErr: false,\n220: \t\t},\n221: \t}\n222: \n223: \tfor _, tt := range tests {\n224: \t\tt.Run(tt.name, func(t *testing.T) {\n225: \t\t\terr := checkLabRuntimeCommandSupport(tt.cmd, tt.runtime)\n226: \t\t\tif (err != nil) != tt.wantErr {\n227: \t\t\t\tt.Fatalf(\"checkLabRuntimeCommandSupport(%q, %q) error = %v, wantErr %v\",\n228: \t\t\t\t\ttt.cmd.Name(), tt.runtime, err, tt.wantErr)\n229: \t\t\t}\n230: \t\t})\n231: \t}\n232: }\n233: \n234: func TestCheckLabRuntimeFlagAndNestedCommandSupport(t *testing.T) {\n235: \ttests := []struct {\n236: \t\tname      string\n237: \t\tcommand   string\n238: \t\tflag      string\n239: \t\tflagValue string\n240: \t\twantErr   bool\n241: \t}{\n242: \t\t{name: \"deploy dry-run supported\", command: \"deploy\", flag: \"dry-run\", flagValue: \"true\"},\n243: \t\t{\n244: \t\t\tname:      \"deploy worker controls supported\",\n245: \t\t\tcommand:   \"deploy\",\n246: \t\t\tflag:      \"max-workers\",\n247: \t\t\tflagValue: \"4\",\n248: \t\t},\n249: \t\t{\n250: \t\t\tname:      \"deploy node filter rejected\",\n251: \t\t\tcommand:   \"deploy\",\n252: \t\t\tflag:      \"node-filter\",\n253: \t\t\tflagValue: \"n1\",\n254: \t\t\twantErr:   true,\n255: \t\t},\n256: \t\t{\n257: \t\t\tname:      \"destroy graceful rejected\",\n258: \t\t\tcommand:   \"destroy\",\n259: \t\t\tflag:      \"graceful\",\n260: \t\t\tflagValue: \"true\",\n261: \t\t\twantErr:   true,\n262: \t\t},\n263: \t\t{\n264: \t\t\tname:      \"destroy worker controls supported\",\n265: \t\t\tcommand:   \"destroy\",\n266: \t\t\tflag:      \"max-workers\",\n267: \t\t\tflagValue: \"4\",\n268: \t\t},\n269: \t\t{\n270: \t\t\tname:      \"destroy node filter rejected\",\n271: \t\t\tcommand:   \"destroy\",\n272: \t\t\tflag:      \"node-filter\",\n273: \t\t\tflagValue: \"n1\",\n274: \t\t\twantErr:   true,\n275: \t\t},\n276: \t}\n277: \n278: \tfor _, tt := range tests {\n279: \t\tt.Run(tt.name, func(t *testing.T) {\n280: \t\t\tv = nil\n281: \t\t\tt.Cleanup(func() { v = nil })\n282: \n283: \t\t\troot := &cobra.Command{Use: \"containerlab\"}\n284: \t\t\tcommand := &cobra.Command{Use: tt.command}\n285: \t\t\troot.AddCommand(command)\n286: \t\t\tswitch tt.flag {\n287: \t\t\tcase \"dry-run\", \"graceful\":\n288: \t\t\t\tcommand.Flags().Bool(tt.flag, false, \"\")\n289: \t\t\tcase \"max-workers\":\n290: \t\t\t\tcommand.Flags().Uint(tt.flag, 0, \"\")\n291: \t\t\tcase \"node-filter\":\n292: \t\t\t\tcommand.Flags().StringSlice(tt.flag, nil, \"\")\n293: \t\t\t}\n294: \t\t\tif err := command.Flags().Set(tt.flag, tt.flagValue); err != nil {\n295: \t\t\t\tt.Fatal(err)\n296: \t\t\t}\n297: \n298: \t\t\terr := checkLabRuntimeCommandSupport(command, clablabruntime.ClabernetesRuntimeName)\n299: \t\t\tif (err != nil) != tt.wantErr {\n300: \t\t\t\tt.Fatalf(\"checkLabRuntimeCommandSupport() error = %v, wantErr %v\", err, tt.wantErr)\n301: \t\t\t}\n302: \t\t})\n303: \t}\n304: \n305: \tt.Run(\"inspect interfaces and capture accepted\", func(t *testing.T) {\n306: \t\troot := &cobra.Command{Use: \"containerlab\"}\n307: \t\tinspect := &cobra.Command{Use: \"inspect\"}\n308: \t\tinterfaces := &cobra.Command{Use: \"interfaces\"}\n309: \t\tcapture := &cobra.Command{Use: \"capture\"}\n310: \t\troot.AddCommand(inspect, capture)\n311: \t\tinspect.AddCommand(interfaces)\n312: \n313: \t\tfor _, cmd := range []*cobra.Command{interfaces, capture} {\n314: \t\t\tif err := checkLabRuntimeCommandSupport(\n315: \t\t\t\tcmd,\n316: \t\t\t\tclablabruntime.ClabernetesRuntimeName,\n317: \t\t\t); err != nil {\n318: \t\t\t\tt.Fatalf(\"%s rejected for clabernetes: %v\", cmd.Name(), err)\n319: \t\t\t}\n320: \t\t}\n321: \t})\n322: }\n323: \n324: func TestRuntimeIndependentCommandsExist(t *testing.T) {\n325: \toptionsInstance = nil\n326: \tt.Cleanup(func() { optionsInstance = nil })\n327: \n328: \troot, err := Entrypoint()\n329: \tif err != nil {\n330: \t\tt.Fatal(err)\n331: \t}\n332: \troot.InitDefaultHelpCmd()\n333: \n334: \tfor commandPath := range runtimeIndependentCommands {\n335: \t\t// Cobra adds the completion request commands only when it executes\n336: \t\tif strings.HasPrefix(commandPath, \"__\") {\n337: \t\t\tcontinue\n338: \t\t}\n339: \n340: \t\tfound, _, err := root.Find(strings.Split(commandPath, \".\"))\n341: \t\tif err != nil || getCommandPath(found) != commandPath {\n342: \t\t\tt.Errorf(\"runtime independent command %q is not a command\", commandPath)\n343: \t\t}\n344: \t}\n345: }\n346: \n347: func TestCommandIsRuntimeIndependent(t *testing.T) {\n348: \ttests := []struct {\n349: \t\targs []string\n350: \t\tenv  map[string]string\n351: \t\twant bool\n352: \t}{\n353: \t\t{args: []string{\"help\"}, want: true},\n354: \t\t{args: []string{\"help\", \"deploy\"}, want: true},\n355: \t\t{args: []string{\"version\"}, want: true},\n356: \t\t{args: []string{\"version\", \"check\"}, want: true},\n357: \t\t{args: []string{\"version\", \"upgrade\"}, want: false},\n358: \t\t{args: []string{\"completion\", \"bash\"}, want: true},\n359: \t\t{args: []string{\"generate\", \"--name\", \"lab\", \"--nodes\", \"2\"}, want: true},\n360: \t\t{args: []string{\"tools\", \"cert\", \"ca\", \"create\"}, want: true},\n361: \t\t{args: []string{\"tools\", \"cert\", \"sign\"}, want: true},\n362: \t\t{args: []string{\"deploy\"}, want: false},\n363: \t\t{args: []string{\"inspect\", \"--all\"}, want: false},\n364: \t\t{args: []string{\"exec\", \"--cmd\", \"ls\"}, want: false},\n365: \t\t{args: []string{\"tools\", \"sshx\", \"list\"}, want: false},\n366: \t\t{args: []string{\"tools\", \"netem\", \"set\"}, want: false},\n367: \t\t{args: []string{\"graph\"}, want: false},\n368: \t\t{args: []string{\"graph\", \"--dot\"}, want: true},\n369: \t\t{args: []string{\"graph\", \"--mermaid\"}, want: true},\n370: \t\t{args: []string{\"graph\", \"--offline\"}, want: true},\n371: \t\t{args: []string{\"graph\", \"--offline=false\"}, want: false},\n372: \t\t{args: []string{\"graph\", \"--drawio\"}, want: false},\n373: \t\t{args: []string{\"graph\", \"--offline\", \"--drawio\"}, want: false},\n374: \t\t{args: []string{\"graph\", \"--dot\", \"--name\", \"lab\"}, want: false},\n375: \t\t{args: []string{\"graph\", \"--dot\", \"--name\", \"lab\", \"-t\", \"lab.clab.yml\"}, want: true},\n376: \t\t{args: []string{\"graph\"}, env: map[string]string{\"CLAB_GRAPH_DOT\": \"true\"}, want: true},\n377: \t\t{\n378: \t\t\targs: []string{\"graph\"},\n379: \t\t\tenv:  map[string]string{\"CLAB_GRAPH_OFFLINE\": \"false\"},\n380: \t\t\twant: false,\n381: \t\t},\n382: \t\t{args: []string{\"validate\"}, want: true},\n383: \t\t{args: []string{\"validate\", \"-t\", \"lab.clab.yml\"}, want: true},\n384: \t\t{args: []string{\"validate\", \"--name\", \"lab\"}, want: false},\n385: \t\t{args: []string{\"validate\", \"--name\", \"lab\", \"-t\", \"lab.clab.yml\"}, want: true},\n386: \t\t{args: []string{\"validate\"}, env: map[string]string{\"CLAB_NAME\": \"lab\"}, want: false},\n387: \t\t{\n388: \t\t\targs: []string{\"validate\"},\n389: \t\t\tenv:  map[string]string{\"CLAB_NAME\": \"lab\", \"CLAB_TOPO\": \"lab.clab.yml\"},\n390: \t\t\twant: true,\n391: \t\t},\n392: \t\t{args: []string{\"tui\"}, want: false},\n393: \t\t{args: []string{\"tui\", \"--demo\"}, want: true},\n394: \t\t{args: []string{\"tui\"}, env: map[string]string{\"CLAB_TUI_DEMO\": \"true\"}, want: true},\n395: \t}\n396: \n397: \tfor _, tt := range tests {\n398: \t\tname := strings.Join(tt.args, \" \")\n399: \t\tfor key, value := range tt.env {\n400: \t\t\tname = key + \"=\" + value + \" \" + name\n401: \t\t}\n402: \n403: \t\tt.Run(name, func(t *testing.T) {\n404: \t\t\tfor key, value := range tt.env {\n405: \t\t\t\tt.Setenv(key, value)\n406: \t\t\t}\n407: \t\t\toptionsInstance = nil\n408: \t\t\tt.Cleanup(func() { optionsInstance = nil })\n409: \n410: \t\t\troot, err := Entrypoint()\n411: \t\t\tif err != nil {\n412: \t\t\t\tt.Fatal(err)\n413: \t\t\t}\n414: \t\t\troot.InitDefaultHelpCmd()\n415: \n416: \t\t\tcobraCmd, flags, err := root.Find(tt.args)\n417: \t\t\tif err != nil {\n418: \t\t\t\tt.Fatal(err)\n419: \t\t\t}\n420: \t\t\tif err := cobraCmd.ParseFlags(flags); err != nil {\n421: \t\t\t\tt.Fatal(err)\n422: \t\t\t}\n423: \t\t\t// preRunFn applies the environment to the options before it checks for root\n424: \t\t\tupdateOptionsFromViper(cobraCmd, GetOptions())\n425: \n426: \t\t\tif got := commandIsRuntimeIndependent(cobraCmd, GetOptions()); got != tt.want {\n427: \t\t\t\tt.Fatalf(\"commandIsRuntimeIndependent(%s) = %v, want %v\", name, got, tt.want)\n428: \t\t\t}\n429: \t\t})\n430: \t}\n431: }\n432: \n433: func TestRuntimeIndependentCommandsRunWithoutRootWithPodman(t *testing.T) {\n434: \tif os.Geteuid() == 0 {\n435: \t\tt.Skip(\"the root check passes as root, this test needs a non-root user\")\n436: \t}\n437: \tt.Setenv(\"CLAB_VERSION_CHECK\", \"disable\")\n438: \tt.Setenv(\"CLAB_RUNTIME\", \"podman\")\n439: \n440: \tt.Run(\"tools cert ca create\", func(t *testing.T) {\n441: \t\toptionsInstance = nil\n442: \t\tt.Cleanup(func() { optionsInstance = nil })\n443: \n444: \t\troot, err := Entrypoint()\n445: \t\tif err != nil {\n446: \t\t\tt.Fatal(err)\n447: \t\t}\n448: \n449: \t\tdir := t.TempDir()\n450: \t\troot.SetArgs([]string{\"tools\", \"cert\", \"ca\", \"create\", \"--path\", dir})\n451: \t\tif err := root.Execute(); err != nil {\n452: \t\t\tt.Fatal(err)\n453: \t\t}\n454: \n455: \t\tfiles, err := os.ReadDir(dir)\n456: \t\tif err != nil {\n457: \t\t\tt.Fatal(err)\n458: \t\t}\n459: \t\tif len(files) == 0 {\n460: \t\t\tt.Fatal(\"tools cert ca create wrote no files\")\n461: \t\t}\n462: \t})\n463: \n464: \tt.Run(\"shell completion\", func(t *testing.T) {\n465: \t\toptionsInstance = nil\n466: \t\tt.Cleanup(func() { optionsInstance = nil })\n467: \n468: \t\troot, err := Entrypoint()\n469: \t\tif err != nil {\n470: \t\t\tt.Fatal(err)\n471: \t\t}\n472: \n473: \t\tvar out bytes.Buffer\n474: \t\troot.SetOut(&out)\n475: \t\troot.SetArgs([]string{cobra.ShellCompRequestCmd, \"tools\", \"\"})\n476: \t\tif err := root.Execute(); err != nil {\n477: \t\t\tt.Fatal(err)\n478: \t\t}\n479: \n480: \t\tif !strings.Contains(out.String(), \"cert\") {\n481: \t\t\tt.Fatalf(\"completion of tools doesn't offer cert: %q\", out.String())\n482: \t\t}\n483: \t})\n484: }\n\n(End of file - total 484 lines)\n</content>",
+            "title": "source/head/cmd/root_test.go",
+            "metadata": {
+              "preview": "package cmd\n\nimport (\n\t\"bytes\"\n\t\"os\"\n\t\"strings\"\n\t\"testing\"\n\t\"time\"\n\n\t\"github.com/spf13/cobra\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n)\n\nfunc TestRootRequirementHelpers(t *testing.T) {\n\ttests := []struct {\n\t\tname               string\n\t\truntime            string\n\t\twantGlobalRoot     bool\n\t\twantCommandSkipped bool\n\t}{",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/cmd/root_test.go",
+                "text": "package cmd\n\nimport (\n\t\"bytes\"\n\t\"os\"\n\t\"strings\"\n\t\"testing\"\n\t\"time\"\n\n\t\"github.com/spf13/cobra\"\n\tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n)\n\nfunc TestRootRequirementHelpers(t *testing.T) {\n\ttests := []struct {\n\t\tname               string\n\t\truntime            string\n\t\twantGlobalRoot     bool\n\t\twantCommandSkipped bool\n\t}{\n\t\t{\n\t\t\tname:               \"default runtime\",\n\t\t\truntime:            \"\",\n\t\t\twantGlobalRoot:     false,\n\t\t\twantCommandSkipped: false,\n\t\t},\n\t\t{\n\t\t\tname:               \"docker runtime\",\n\t\t\truntime:            \"docker\",\n\t\t\twantGlobalRoot:     false,\n\t\t\twantCommandSkipped: false,\n\t\t},\n\t\t{\n\t\t\tname:               \"podman runtime\",\n\t\t\truntime:            \"podman\",\n\t\t\twantGlobalRoot:     true,\n\t\t\twantCommandSkipped: false,\n\t\t},\n\t\t{\n\t\t\tname:               \"clabernetes runtime\",\n\t\t\truntime:            clablabruntime.ClabernetesRuntimeName,\n\t\t\twantGlobalRoot:     false,\n\t\t\twantCommandSkipped: true,\n\t\t},\n\t}\n\n\tfor _, tt := range tests {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\tif got := globalRuntimeRequiresRoot(tt.runtime); got != tt.wantGlobalRoot {\n\t\t\t\tt.Fatalf(\"globalRuntimeRequiresRoot(%q) = %v, want %v\",\n\t\t\t\t\ttt.runtime, got, tt.wantGlobalRoot)\n\t\t\t}\n\n\t\t\tif got := commandSkipsRoot(tt.runtime); got != tt.wantCommandSkipped {\n\t\t\t\tt.Fatalf(\"commandSkipsRoot(%q) = %v, want %v\",\n\t\t\t\t\ttt.runtime, got, tt.wantCommandSkipped)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestNamespaceFlagHasNoShorthand(t *testing.T) {\n\toptionsInstance = nil\n\tt.Cleanup(func() { optionsInstance = nil })\n\n\troot, err := Entrypoint()\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\n\tflag := root.PersistentFlags().Lookup(\"namespace\")\n\tif flag == nil {\n\t\tt.Fatal(\"--namespace flag was not registered\")\n\t}\n\tif flag.Shorthand != \"\" {\n\t\tt.Fatalf(\"--namespace shorthand = %q, want none\", flag.Shorthand)\n\t}\n\tif err := root.PersistentFlags().Set(\"namespace\", \"default\"); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif got := GetOptions().Global.Namespace; got != \"default\" {\n\t\tt.Fatalf(\"namespace option = %q, want default\", got)\n\t}\n}\n\nfunc TestApplyLabRuntimeDefaultTimeout(t *testing.T) {\n\ttests := []struct {\n\t\tname            string\n\t\truntime         string\n\t\texplicitFlag    string\n\t\texplicitEnv     string\n\t\tinitialTimeout  time.Duration\n\t\texpectedTimeout time.Duration\n\t}{\n\t\t{\n\t\t\tname:            \"clabernetes default\",\n\t\t\truntime:         clablabruntime.ClabernetesRuntimeName,\n\t\t\tinitialTimeout:  defaultTimeout,\n\t\t\texpectedTimeout: defaultLabRuntimeTimeout,\n\t\t},\n\t\t{\n\t\t\tname:            \"docker default unchanged\",\n\t\t\truntime:         \"docker\",\n\t\t\tinitialTimeout:  defaultTimeout,\n\t\t\texpectedTimeout: defaultTimeout,\n\t\t},\n\t\t{\n\t\t\tname:            \"explicit flag wins\",\n\t\t\truntime:         clablabruntime.ClabernetesRuntimeName,\n\t\t\texplicitFlag:    \"45s\",\n\t\t\tinitialTimeout:  defaultTimeout,\n\t\t\texpectedTimeout: 45 * time.Second,\n\t\t},\n\t\t{\n\t\t\tname:            \"explicit environment wins\",\n\t\t\truntime:         clablabruntime.ClabernetesRuntimeName,\n\t\t\texplicitEnv:     \"3m\",\n\t\t\tinitialTimeout:  3 * time.Minute,\n\t\t\texpectedTimeout: 3 * time.Minute,\n\t\t},\n\t}\n\n\tfor _, tt := range tests {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\toriginalTimeout, timeoutWasSet := os.LookupEnv(\"CLAB_TIMEOUT\")\n\t\t\tif tt.explicitEnv == \"\" {\n\t\t\t\tif err := os.Unsetenv(\"CLAB_TIMEOUT\"); err != nil {\n\t\t\t\t\tt.Fatal(err)\n\t\t\t\t}\n\t\t\t} else {\n\t\t\t\tt.Setenv(\"CLAB_TIMEOUT\", tt.explicitEnv)\n\t\t\t}\n\t\t\tt.Cleanup(func() {\n\t\t\t\tif timeoutWasSet {\n\t\t\t\t\t_ = os.Setenv(\"CLAB_TIMEOUT\", originalTimeout)\n\t\t\t\t} else {\n\t\t\t\t\t_ = os.Unsetenv(\"CLAB_TIMEOUT\")\n\t\t\t\t}\n\t\t\t})\n\n\t\t\troot := &cobra.Command{Use: \"containerlab\"}\n\t\t\toptions := &Options{Global: &GlobalOptions{\n\t\t\t\tRuntime: tt.runtime,\n\t\t\t\tTimeout: tt.initialTimeout,\n\t\t\t}}\n\t\t\troot.PersistentFlags().DurationVar(\n\t\t\t\t&options.Global.Timeout,\n\t\t\t\t\"timeout\",\n\t\t\t\toptions.Global.Timeout,\n\t\t\t\t\"timeout\",\n\t\t\t)\n\t\t\tdeploy := &cobra.Command{Use: \"deploy\"}\n\t\t\troot.AddCommand(deploy)\n\t\t\tif tt.explicitFlag != \"\" {\n\t\t\t\tif err := root.PersistentFlags().Set(\"timeout\", tt.explicitFlag); err != nil {\n\t\t\t\t\tt.Fatal(err)\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tapplyLabRuntimeDefaultTimeout(deploy, options)\n\t\t\tif options.Global.Timeout != tt.expectedTimeout {\n\t\t\t\tt.Fatalf(\n\t\t\t\t\t\"timeout = %s, want %s\",\n\t\t\t\t\toptions.Global.Timeout,\n\t\t\t\t\ttt.expectedTimeout,\n\t\t\t\t)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestCheckLabRuntimeCommandSupport(t *testing.T) {\n\troot := &cobra.Command{Use: \"containerlab\"}\n\tgraph := &cobra.Command{Use: \"graph\"}\n\ttools := &cobra.Command{Use: \"tools\"}\n\tsshx := &cobra.Command{Use: \"sshx\"}\n\tnetem := &cobra.Command{Use: \"netem\"}\n\tnetemSet := &cobra.Command{Use: \"set\"}\n\tdeploy := &cobra.Command{Use: \"deploy\"}\n\n\troot.AddCommand(graph, tools, deploy)\n\ttools.AddCommand(sshx, netem)\n\tnetem.AddCommand(netemSet)\n\n\ttests := []struct {\n\t\tname    string\n\t\truntime string\n\t\tcmd     *cobra.Command\n\t\twantErr bool\n\t}{\n\t\t{\n\t\t\tname:    \"graph with docker runtime\",\n\t\t\truntime: \"docker\",\n\t\t\tcmd:     graph,\n\t\t\twantErr: false,\n\t\t},\n\t\t{\n\t\t\tname:    \"deploy with clabernetes runtime\",\n\t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n\t\t\tcmd:     deploy,\n\t\t\twantErr: false,\n\t\t},\n\t\t{\n\t\t\tname:    \"graph with clabernetes runtime\",\n\t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n\t\t\tcmd:     graph,\n\t\t\twantErr: true,\n\t\t},\n\t\t{\n\t\t\tname:    \"tools subcommand with clabernetes runtime\",\n\t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n\t\t\tcmd:     sshx,\n\t\t\twantErr: true,\n\t\t},\n\t\t{\n\t\t\tname:    \"tools netem with clabernetes runtime\",\n\t\t\truntime: clablabruntime.ClabernetesRuntimeName,\n\t\t\tcmd:     netemSet,\n\t\t\twantErr: false,\n\t\t},\n\t}\n\n\tfor _, tt := range tests {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\terr := checkLabRuntimeCommandSupport(tt.cmd, tt.runtime)\n\t\t\tif (err != nil) != tt.wantErr {\n\t\t\t\tt.Fatalf(\"checkLabRuntimeCommandSupport(%q, %q) error = %v, wantErr %v\",\n\t\t\t\t\ttt.cmd.Name(), tt.runtime, err, tt.wantErr)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestCheckLabRuntimeFlagAndNestedCommandSupport(t *testing.T) {\n\ttests := []struct {\n\t\tname      string\n\t\tcommand   string\n\t\tflag      string\n\t\tflagValue string\n\t\twantErr   bool\n\t}{\n\t\t{name: \"deploy dry-run supported\", command: \"deploy\", flag: \"dry-run\", flagValue: \"true\"},\n\t\t{\n\t\t\tname:      \"deploy worker controls supported\",\n\t\t\tcommand:   \"deploy\",\n\t\t\tflag:      \"max-workers\",\n\t\t\tflagValue: \"4\",\n\t\t},\n\t\t{\n\t\t\tname:      \"deploy node filter rejected\",\n\t\t\tcommand:   \"deploy\",\n\t\t\tflag:      \"node-filter\",\n\t\t\tflagValue: \"n1\",\n\t\t\twantErr:   true,\n\t\t},\n\t\t{\n\t\t\tname:      \"destroy graceful rejected\",\n\t\t\tcommand:   \"destroy\",\n\t\t\tflag:      \"graceful\",\n\t\t\tflagValue: \"true\",\n\t\t\twantErr:   true,\n\t\t},\n\t\t{\n\t\t\tname:      \"destroy worker controls supported\",\n\t\t\tcommand:   \"destroy\",\n\t\t\tflag:      \"max-workers\",\n\t\t\tflagValue: \"4\",\n\t\t},\n\t\t{\n\t\t\tname:      \"destroy node filter rejected\",\n\t\t\tcommand:   \"destroy\",\n\t\t\tflag:      \"node-filter\",\n\t\t\tflagValue: \"n1\",\n\t\t\twantErr:   true,\n\t\t},\n\t}\n\n\tfor _, tt := range tests {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\tv = nil\n\t\t\tt.Cleanup(func() { v = nil })\n\n\t\t\troot := &cobra.Command{Use: \"containerlab\"}\n\t\t\tcommand := &cobra.Command{Use: tt.command}\n\t\t\troot.AddCommand(command)\n\t\t\tswitch tt.flag {\n\t\t\tcase \"dry-run\", \"graceful\":\n\t\t\t\tcommand.Flags().Bool(tt.flag, false, \"\")\n\t\t\tcase \"max-workers\":\n\t\t\t\tcommand.Flags().Uint(tt.flag, 0, \"\")\n\t\t\tcase \"node-filter\":\n\t\t\t\tcommand.Flags().StringSlice(tt.flag, nil, \"\")\n\t\t\t}\n\t\t\tif err := command.Flags().Set(tt.flag, tt.flagValue); err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\n\t\t\terr := checkLabRuntimeCommandSupport(command, clablabruntime.ClabernetesRuntimeName)\n\t\t\tif (err != nil) != tt.wantErr {\n\t\t\t\tt.Fatalf(\"checkLabRuntimeCommandSupport() error = %v, wantErr %v\", err, tt.wantErr)\n\t\t\t}\n\t\t})\n\t}\n\n\tt.Run(\"inspect interfaces and capture accepted\", func(t *testing.T) {\n\t\troot := &cobra.Command{Use: \"containerlab\"}\n\t\tinspect := &cobra.Command{Use: \"inspect\"}\n\t\tinterfaces := &cobra.Command{Use: \"interfaces\"}\n\t\tcapture := &cobra.Command{Use: \"capture\"}\n\t\troot.AddCommand(inspect, capture)\n\t\tinspect.AddCommand(interfaces)\n\n\t\tfor _, cmd := range []*cobra.Command{interfaces, capture} {\n\t\t\tif err := checkLabRuntimeCommandSupport(\n\t\t\t\tcmd,\n\t\t\t\tclablabruntime.ClabernetesRuntimeName,\n\t\t\t); err != nil {\n\t\t\t\tt.Fatalf(\"%s rejected for clabernetes: %v\", cmd.Name(), err)\n\t\t\t}\n\t\t}\n\t})\n}\n\nfunc TestRuntimeIndependentCommandsExist(t *testing.T) {\n\toptionsInstance = nil\n\tt.Cleanup(func() { optionsInstance = nil })\n\n\troot, err := Entrypoint()\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\troot.InitDefaultHelpCmd()\n\n\tfor commandPath := range runtimeIndependentCommands {\n\t\t// Cobra adds the completion request commands only when it executes\n\t\tif strings.HasPrefix(commandPath, \"__\") {\n\t\t\tcontinue\n\t\t}\n\n\t\tfound, _, err := root.Find(strings.Split(commandPath, \".\"))\n\t\tif err != nil || getCommandPath(found) != commandPath {\n\t\t\tt.Errorf(\"runtime independent command %q is not a command\", commandPath)\n\t\t}\n\t}\n}\n\nfunc TestCommandIsRuntimeIndependent(t *testing.T) {\n\ttests := []struct {\n\t\targs []string\n\t\tenv  map[string]string\n\t\twant bool\n\t}{\n\t\t{args: []string{\"help\"}, want: true},\n\t\t{args: []string{\"help\", \"deploy\"}, want: true},\n\t\t{args: []string{\"version\"}, want: true},\n\t\t{args: []string{\"version\", \"check\"}, want: true},\n\t\t{args: []string{\"version\", \"upgrade\"}, want: false},\n\t\t{args: []string{\"completion\", \"bash\"}, want: true},\n\t\t{args: []string{\"generate\", \"--name\", \"lab\", \"--nodes\", \"2\"}, want: true},\n\t\t{args: []string{\"tools\", \"cert\", \"ca\", \"create\"}, want: true},\n\t\t{args: []string{\"tools\", \"cert\", \"sign\"}, want: true},\n\t\t{args: []string{\"deploy\"}, want: false},\n\t\t{args: []string{\"inspect\", \"--all\"}, want: false},\n\t\t{args: []string{\"exec\", \"--cmd\", \"ls\"}, want: false},\n\t\t{args: []string{\"tools\", \"sshx\", \"list\"}, want: false},\n\t\t{args: []string{\"tools\", \"netem\", \"set\"}, want: false},\n\t\t{args: []string{\"graph\"}, want: false},\n\t\t{args: []string{\"graph\", \"--dot\"}, want: true},\n\t\t{args: []string{\"graph\", \"--mermaid\"}, want: true},\n\t\t{args: []string{\"graph\", \"--offline\"}, want: true},\n\t\t{args: []string{\"graph\", \"--offline=false\"}, want: false},\n\t\t{args: []string{\"graph\", \"--drawio\"}, want: false},\n\t\t{args: []string{\"graph\", \"--offline\", \"--drawio\"}, want: false},\n\t\t{args: []string{\"graph\", \"--dot\", \"--name\", \"lab\"}, want: false},\n\t\t{args: []string{\"graph\", \"--dot\", \"--name\", \"lab\", \"-t\", \"lab.clab.yml\"}, want: true},\n\t\t{args: []string{\"graph\"}, env: map[string]string{\"CLAB_GRAPH_DOT\": \"true\"}, want: true},\n\t\t{\n\t\t\targs: []string{\"graph\"},\n\t\t\tenv:  map[string]string{\"CLAB_GRAPH_OFFLINE\": \"false\"},\n\t\t\twant: false,\n\t\t},\n\t\t{args: []string{\"validate\"}, want: true},\n\t\t{args: []string{\"validate\", \"-t\", \"lab.clab.yml\"}, want: true},\n\t\t{args: []string{\"validate\", \"--name\", \"lab\"}, want: false},\n\t\t{args: []string{\"validate\", \"--name\", \"lab\", \"-t\", \"lab.clab.yml\"}, want: true},\n\t\t{args: []string{\"validate\"}, env: map[string]string{\"CLAB_NAME\": \"lab\"}, want: false},\n\t\t{\n\t\t\targs: []string{\"validate\"},\n\t\t\tenv:  map[string]string{\"CLAB_NAME\": \"lab\", \"CLAB_TOPO\": \"lab.clab.yml\"},\n\t\t\twant: true,\n\t\t},\n\t\t{args: []string{\"tui\"}, want: false},\n\t\t{args: []string{\"tui\", \"--demo\"}, want: true},\n\t\t{args: []string{\"tui\"}, env: map[string]string{\"CLAB_TUI_DEMO\": \"true\"}, want: true},\n\t}\n\n\tfor _, tt := range tests {\n\t\tname := strings.Join(tt.args, \" \")\n\t\tfor key, value := range tt.env {\n\t\t\tname = key + \"=\" + value + \" \" + name\n\t\t}\n\n\t\tt.Run(name, func(t *testing.T) {\n\t\t\tfor key, value := range tt.env {\n\t\t\t\tt.Setenv(key, value)\n\t\t\t}\n\t\t\toptionsInstance = nil\n\t\t\tt.Cleanup(func() { optionsInstance = nil })\n\n\t\t\troot, err := Entrypoint()\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\troot.InitDefaultHelpCmd()\n\n\t\t\tcobraCmd, flags, err := root.Find(tt.args)\n\t\t\tif err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\tif err := cobraCmd.ParseFlags(flags); err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t\t// preRunFn applies the environment to the options before it checks for root\n\t\t\tupdateOptionsFromViper(cobraCmd, GetOptions())\n\n\t\t\tif got := commandIsRuntimeIndependent(cobraCmd, GetOptions()); got != tt.want {\n\t\t\t\tt.Fatalf(\"commandIsRuntimeIndependent(%s) = %v, want %v\", name, got, tt.want)\n\t\t\t}\n\t\t})\n\t}\n}\n\nfunc TestRuntimeIndependentCommandsRunWithoutRootWithPodman(t *testing.T) {\n\tif os.Geteuid() == 0 {\n\t\tt.Skip(\"the root check passes as root, this test needs a non-root user\")\n\t}\n\tt.Setenv(\"CLAB_VERSION_CHECK\", \"disable\")\n\tt.Setenv(\"CLAB_RUNTIME\", \"podman\")\n\n\tt.Run(\"tools cert ca create\", func(t *testing.T) {\n\t\toptionsInstance = nil\n\t\tt.Cleanup(func() { optionsInstance = nil })\n\n\t\troot, err := Entrypoint()\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\n\t\tdir := t.TempDir()\n\t\troot.SetArgs([]string{\"tools\", \"cert\", \"ca\", \"create\", \"--path\", dir})\n\t\tif err := root.Execute(); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\n\t\tfiles, err := os.ReadDir(dir)\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t\tif len(files) == 0 {\n\t\t\tt.Fatal(\"tools cert ca create wrote no files\")\n\t\t}\n\t})\n\n\tt.Run(\"shell completion\", func(t *testing.T) {\n\t\toptionsInstance = nil\n\t\tt.Cleanup(func() { optionsInstance = nil })\n\n\t\troot, err := Entrypoint()\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\n\t\tvar out bytes.Buffer\n\t\troot.SetOut(&out)\n\t\troot.SetArgs([]string{cobra.ShellCompRequestCmd, \"tools\", \"\"})\n\t\tif err := root.Execute(); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\n\t\tif !strings.Contains(out.String(), \"cert\") {\n\t\t\tt.Fatalf(\"completion of tools doesn't offer cert: %q\", out.String())\n\t\t}\n\t})\n}",
+                "lineStart": 1,
+                "lineEnd": 484,
+                "totalLines": 484,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795790325247,
+              "end": 1795790325252
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_21d71c606001h9egNzOTx73h6c",
+          "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+          "messageID": "msg_21d71be18001kLu1eFbbO4kb7H",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 25068,
+            "input": 5386,
+            "output": 15,
+            "reasoning": 83,
+            "cache": {
+              "read": 19584,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_21d71c60e0014uSz85FLxI4PgA",
+        "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
+        "time": {
+          "created": 1795790325262
+        },
+        "parentID": "msg_21d71b3a20016h9Jmqad2LafYj",
         "modelID": "zai-org/GLM-5.3",
         "providerID": "tofarev",
         "mode": "tofarev",
@@ -2413,18 +2883,18 @@
       "parts": [
         {
           "type": "step-start",
-          "id": "prt_21d6f1c5f001mOPzrt798ezbdY",
+          "id": "prt_21d71cb09001e1ri281z3TUtd2",
           "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
-          "messageID": "msg_21d6f17380010vToDsScaMlj1f"
+          "messageID": "msg_21d71c60e0014uSz85FLxI4PgA"
         },
         {
           "type": "reasoning",
-          "id": "prt_21d6f1c6100168HrmZrDfLc3uI",
+          "id": "prt_21d71cb0a001pbqSrdISMIh4h7",
           "sessionID": "ses_de2927cdcffe3jh5Gj5AA9zWka",
-          "messageID": "msg_21d6f17380010vToDsScaMlj1f",
+          "messageID": "msg_21d71c60e0014uSz85FLxI4PgA",
           "text": "",
           "time": {
-            "start": 1795790150753
+            "start": 1795790326538
           }
         }
       ]
