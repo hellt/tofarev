@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "ffb224edfdf561661adac339b26ce3bc693ad5b3",
-  "updatedAt": "2026-11-27T08:33:19.507Z",
-  "state": "running",
+  "updatedAt": "2026-11-27T08:33:52.841Z",
+  "state": "completed",
   "info": {
     "id": "ses_de3e36ccaffeIDDY74TNzm4lXe",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 232632,
-      "output": 6854,
-      "reasoning": 31925,
+      "input": 234039,
+      "output": 11026,
+      "reasoning": 32864,
       "cache": {
-        "read": 2932864,
+        "read": 3007424,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795767964470,
-      "updated": 1795768399217
+      "updated": 1795768432788
     }
   },
   "messages": [
@@ -6534,7 +6534,8 @@
         "id": "msg_21c23356d001zDZxhYAzHD1L2f",
         "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
         "time": {
-          "created": 1795768399213
+          "created": 1795768399213,
+          "completed": 1795768418559
         },
         "parentID": "msg_21c225bae001S3A3TqWifJwU3w",
         "modelID": "zai-org/GLM-5.3",
@@ -6547,16 +6548,173 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 39071,
+          "input": 1333,
+          "output": 1594,
+          "reasoning": 624,
           "cache": {
-            "read": 0,
+            "read": 35520,
             "write": 0
           }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_21c233c17001sPkgQyNwD5d0Oq",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c23356d001zDZxhYAzHD1L2f"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_21c233c19001gqqEiEnIOy6MMm",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c23356d001zDZxhYAzHD1L2f",
+          "text": "All files are now fully reviewed. The implementation is complete and my coverage is complete. Final verdict: one P4 finding (fraction test gap).\n\nLet me now also double check line numbers for the finding location: `port_speeds.go:36-48` (`UnmarshalYAML`). And the test gap anchors to `port_speeds_test.go:146-164` (`TestDecodePortSpeeds` cases) — but findings should anchor to the introducing change; the guard is at head port_speeds.go:36-48.\n\nNow write the final Markdown review and the JSON.\n\nSummary table:\n| P4 | No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML` |\n\nDetails with location, problem, trigger, impact, suggestion.\n\nCoverage notes:\n- Source-only review; tests were read but not executed.\n- Verified: decode paths (createNodeCfg / reconcile / AddPlaceholderNode) never deliver an invalid config to Init; `MergeStringMaps` non-nil; schema consistency (mikrotik def = union of all other kind-specific keys minus port-speeds; all other kinds' defs gained the port-speeds exclusion; node-config property + if/then + kinds map entry + groups ref); docs claims match implementation (10G default, group precedence/whole-value replacement via GetNodeKindSpecificConfig, arch limits, container log line, `#port-speed` anchor); launcher changes (data_nic_speed matching, data_nic_device suffix on both PCI layouts, replug via device_add data_nic_device preserves speed, per-port LACP group_fwd_mask with graceful log fallback, log() defined before use); QEMU speed/duplex are VirtIONet base properties valid on both transports; yaml.v2 edge cases (2..25 string, 1G string rejection, 26.0 rejection via Itoa round-trip, fraction guard).\n- Not verifiable from source: RouterOS 802.3ad full-duplex requirement and the ARM64 TCG 22-NIC observation are author-reported and documented as such; the mikrotik/chr image's QEMU version support for speed/duplex props.\n- Performance: O(ports × pairs) shell loop ≤ ~4k iterations at the 63-port limit — negligible.\n\nThe markdown review per the system prompt: summary table ordered P0-P4, details, coverage notes. Then the final JSON block.\n\nFor the JSON finding:\n- priority: P4\n- title: \"No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\"\n- location: head, nodes/mikrotik_chr/port_speeds.go, 36-48\n- problem, trigger, impact, suggestion as composed.\n\nSuggestion: add one case to TestDecodePortSpeeds:\n```go\n\"speed-fraction\": {\n    yaml:    \"- port: 2\\n  speed: 1000.5\\n\",\n    errText: \"whole number\",\n},\n```\n\nNote: I must not claim tests ran. State they were not executed.",
+          "time": {
+            "start": 1795768400921,
+            "end": 1795768406663
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_21c2352890014kbA1elJzQgsmC",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c23356d001zDZxhYAzHD1L2f",
+          "text": "All remaining verification steps are complete. Here is the final review.\n\n# Review: `port-speeds` kind-specific config key for `mikrotik_chr`\n\n## Summary\n\n| Priority | Finding |\n|---|---|\n| P4 | No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML` |\n\nThis PR adds a `port-speeds` key (per-port/range speeds in Mb/s) to the `mikrotik_chr` kind: YAML decode into a typed `KindSpecificConfig` via the existing kind-specific-config framework, validation in `portSpeeds()`/`portRange()`, handoff to the launcher through `CHR_PORT_SPEEDS`, QEMU `speed=`/`duplex=full` on every data NIC (including the re-plug path), per-port LACP forwarding on the data bridges, plus schema, docs, and thorough tests. The change is surgical, reuses the existing framework and helpers, and every claim I could check against source holds. I found no correctness, schema, performance, or documentation defects — only one optional test-coverage gap.\n\n## Findings\n\n### P4 — No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\n\n**Location:** [`nodes/mikrotik_chr/port_speeds.go` lines 36-48](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/nodes/mikrotik_chr/port_speeds.go#L36-L48), introduced by this PR.\n\n**Problem:** `UnmarshalYAML` exists solely to catch `speed: 1000.5` before yaml.v2 silently truncates the float into the `int` field (`Speed int`), which would accept `1000.5` as `1000` with no error. `TestDecodePortSpeeds` in `port_speeds_test.go` covers a numeric port, a range, a string speed (`1G`), and an unknown field, but has no case with a fractional speed, so this guard is untested.\n\n**Trigger:** A future refactor of the decode path — for example dropping `UnmarshalYAML`, switching the second pass to a different decode mode, or changing `Speed` to a float-typed intermediate — would let `speed: 1000.5` decode to `1000` without any test failing.\n\n**Impact:** Silent acceptance of a typo like `speed: 2.5` (meaning 2.5 Gbit/s) as 2 Mb/s, reintroducing exactly the truncation the guard was written to prevent. Low likelihood, but the guard's entire purpose is this one edge, so nothing currently pins it.\n\n**Suggestion:** Add one case to the table in `TestDecodePortSpeeds`:\n\n```go\n\"speed-fraction\": {\n    yaml:    \"- port: 2\\n  speed: 1000.5\\n\",\n    errText: \"whole number\",\n},\n```\n\nThis is the smallest useful check; the error text matches `speed must be a whole number of Mb/s, got 1000.5` at line 43.\n\n## Coverage notes\n\n**Verified from source (read-only, no code executed):**\n\n- **Decode and Init paths:** `DecodeKindSpecificConfig` always produces `*KindSpecificConfig` for this kind, so `kindSpecificConfig.Of(n.Cfg)` cannot panic; `createNodeCfg` (core/config.go) returns decode errors before `Init` runs; the reconcile path's `createNodeConfig` is only used for `ComputeDiff`; `AddPlaceholderNode` is called only from `cmd/tools_veth.go` with placeholder kinds. `MergeStringMaps` (utils/env.go) returns a non-nil map because `USERNAME`/`PASSWORD` are always merged, so `n.Cfg.Env[portSpeedsEnv] = speeds` in `Init` cannot panic on a nil map.\n- **Validation:** `portRange` rejects `ether1` (`InterfaceOffset = 2`), ports above the arch limit (`dataNICLimit+1` = 64/30), descending/half ranges, non-numeric and zero-padded ports (via the `strconv.Itoa` round-trip), and duplicates across ranges; speeds are bounded to `1..math.MaxInt32`, matching QEMU's int32 property and the docs. `portSpeeds` output is sorted, and `Init` always overwrites `CHR_PORT_SPEEDS` (test `replaces-env`), so only validated values reach QEMU.\n- **Launcher:** `data_nic_speed` does exact string equality on the port number (no prefix false positives; tested), defaults to 10000, and `data_nic_device` appends `speed=...,duplex=full` on both PCI layouts; the re-plug path (line 530) rebuilds via `device_add $(data_nic_device ...)`, so speed survives re-plug (tested by `TestDataNICDeviceSpeed`). Per-port `group_fwd_mask` writes (bit 2, LACP `01:80:c2:00:00:02`) fall back to a `log` message on failure, and `log()` is defined at line 112, before first use. The `data NIC speeds (Mb/s)` log line matches the docs claim. The loop is O(ports × pairs) with at most 63 ports — negligible.\n- **Schema:** the new `port-speeds` node property sits before `additionalProperties: false`; the node-level `if kind == mikrotik_chr / then` ref, the `kinds.mikrotik_chr` map entry, and the new `kind-specific-config-mikrotik_chr` definition (which rejects all 16 other kind-specific keys) are consistent, and every other kind definition — including `kind-specific-config-other` — gained the `port-speeds` exclusion, so the sets match exactly. The `port` pattern matches Go's `2..64` domain. `defaults` allowing all kind-specific keys is a pre-existing pattern, not introduced here.\n- **Docs:** the group/node precedence description matches `GetNodeKindSpecificConfig` semantics (a node that sets the key replaces the group's whole list; `[]` restores defaults because an empty list is a \"set\"), the `#port-speed` anchor matches the schema's markdown link, arch limits and the ARM64 TCG caveat are stated as limitations, and no stale references remain in `nodes.md` or `kinds/index.md`.\n- **Framework consistency:** yaml.v2 edge cases behave as intended — `port: 2` (int) and `port: 2..25` (string) both decode, `speed: 1G` and `port: 26.0` are rejected, `0.5e3` decodes to 500, and unknown fields are rejected by the strict second pass (tested).\n\n**Not verifiable from source:** the RouterOS 802.3ad full-duplex requirement and the ARM64 TCG 22-NIC observation are author-reported runtime behavior, documented as such; whether the `mikrotik/chr` image's bundled QEMU accepts `speed`/`duplex` on `virtio-net` (base VirtIONet properties, valid on both PCI and MMIO transports) could not be confirmed without running the image. No shellcheck CI gate exists for the launcher, and none is required by this repository's hooks.\n\n**Tests:** all new and modified test files were read in full; they were not executed as part of this review.",
+          "time": {
+            "start": 1795768406665,
+            "end": 1795768418551
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_21c2380fb001id5E5q3NIlNiov",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c23356d001zDZxhYAzHD1L2f",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 39071,
+            "input": 1333,
+            "output": 1594,
+            "reasoning": 624,
+            "cache": {
+              "read": 35520,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "id": "msg_21c238456001OeB755zBFMUIBQ",
+        "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+        "time": {
+          "created": 1795768419414
+        },
+        "summary": {
+          "diffs": []
+        },
+        "agent": "tofarev",
+        "model": {
+          "providerID": "tofarev",
+          "modelID": "zai-org/GLM-5.3"
         }
       },
-      "parts": []
+      "parts": [
+        {
+          "type": "text",
+          "id": "prt_21c238457001E38ldK4jiZz16Y",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c238456001OeB755zBFMUIBQ",
+          "text": "Your previous output was invalid. Use your existing investigation, recheck any invalid locations, and return the complete Markdown review followed by a final fenced JSON result matching the system schema. Do not restart the review."
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_21c238464001B2kTE6vjv0FJ40",
+        "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+        "time": {
+          "created": 1795768419428,
+          "completed": 1795768432775
+        },
+        "parentID": "msg_21c238456001OeB755zBFMUIBQ",
+        "modelID": "zai-org/GLM-5.3",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-Z8GlRV",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 42007,
+          "input": 74,
+          "output": 2578,
+          "reasoning": 315,
+          "cache": {
+            "read": 39040,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_21c238a620010lYSKH1eUc1KaT",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c238464001B2kTE6vjv0FJ40"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_21c238a64001qu6Eb5h9WvPvti",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c238464001B2kTE6vjv0FJ40",
+          "text": "The previous output was flagged invalid. I need to recheck locations and produce the complete Markdown review plus the final JSON block. The likely invalidity: JSON location line numbers, or the markdown table/JSON mismatch. Let me recheck the finding's location precisely.\n\nFinding P4: `UnmarshalYAML` in `port_speeds.go` — lines 36-48 confirmed from my read (line 36 is the comment, 37-48 the function). That's valid. Location revision: head. Path: `nodes/mikrotik_chr/port_speeds.go`. start 36, end 48. Fine.\n\nMaybe the issue was that the previous message ended with the Markdown review but no JSON block? Actually I did not emit the JSON block last time — I ended with \"Tests: ... not executed\" and never emitted the fenced JSON. That's the invalid part. So now I must emit the full Markdown review again followed by the final JSON.\n\nLet me produce the same review, ensuring the JSON matches. One finding, P4.\n\nJSON:\n- priority \"P4\"\n- title: \"No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\"\n- location: {revision: \"head\", path: \"nodes/mikrotik_chr/port_speeds.go\", start: 36, end: 48}\n- problem, trigger, impact, suggestion — complete sentences with inline code.\n- coverage: complete true, notes array.\n\nNotes should be concise (≤2000 chars each, ≤100 items).",
+          "time": {
+            "start": 1795768420964,
+            "end": 1795768423457
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_21c239423001oCHZ0oIqHMoR05",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c238464001B2kTE6vjv0FJ40",
+          "text": "# Review: `port-speeds` kind-specific config key for `mikrotik_chr`\n\n## Summary\n\n| Priority | Finding |\n|---|---|\n| P4 | No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML` |\n\nThis PR adds a `port-speeds` key (per-port/range speeds in Mb/s) to the `mikrotik_chr` kind: YAML decode into a typed `KindSpecificConfig` via the existing kind-specific-config framework, validation in `portSpeeds()`/`portRange()`, handoff to the launcher through `CHR_PORT_SPEEDS`, QEMU `speed=`/`duplex=full` on every data NIC (including the re-plug path), per-port LACP forwarding on the data bridges, plus schema, docs, and thorough tests. The change is surgical, reuses the existing framework and helpers, and every claim I could check against source holds. I found no correctness, schema, performance, or documentation defects — only one optional test-coverage gap.\n\n## Findings\n\n### P4 — No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\n\n**Location:** [`nodes/mikrotik_chr/port_speeds.go` lines 36-48](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/nodes/mikrotik_chr/port_speeds.go#L36-L48), introduced by this PR.\n\n**Problem:** `UnmarshalYAML` exists solely to catch `speed: 1000.5` before yaml.v2 silently truncates the float into the `int` field (`Speed int`), which would accept `1000.5` as `1000` with no error. `TestDecodePortSpeeds` in `port_speeds_test.go` covers a numeric port, a range, a string speed (`1G`), and an unknown field, but has no case with a fractional speed, so this guard is untested.\n\n**Trigger:** A future refactor of the decode path — for example dropping `UnmarshalYAML`, switching the second pass to a different decode mode, or changing `Speed` to a float-typed intermediate — would let `speed: 1000.5` decode to `1000` without any test failing.\n\n**Impact:** Silent acceptance of a typo like `speed: 2.5` (meaning 2.5 Gbit/s) as 2 Mb/s, reintroducing exactly the truncation the guard was written to prevent. Low likelihood, but the guard's entire purpose is this one edge, so nothing currently pins it.\n\n**Suggestion:** Add one case to the table in `TestDecodePortSpeeds`:\n\n```go\n\"speed-fraction\": {\n    yaml:    \"- port: 2\\n  speed: 1000.5\\n\",\n    errText: \"whole number\",\n},\n```\n\nThis is the smallest useful check; the error text matches `speed must be a whole number of Mb/s, got 1000.5` at line 43.\n\n## Coverage notes\n\n**Verified from source (read-only, no code executed):**\n\n- **Decode and Init paths:** `DecodeKindSpecificConfig` always produces `*KindSpecificConfig` for this kind, so `kindSpecificConfig.Of(n.Cfg)` cannot panic; `createNodeCfg` (core/config.go) returns decode errors before `Init` runs; the reconcile path's `createNodeConfig` is only used for `ComputeDiff`; `AddPlaceholderNode` is called only from `cmd/tools_veth.go` with placeholder kinds. `MergeStringMaps` (utils/env.go) returns a non-nil map because `USERNAME`/`PASSWORD` are always merged, so `n.Cfg.Env[portSpeedsEnv] = speeds` in `Init` cannot panic on a nil map.\n- **Validation:** `portRange` rejects `ether1` (`InterfaceOffset = 2`), ports above the arch limit (`dataNICLimit+1` = 64/30), descending/half ranges, non-numeric and zero-padded ports (via the `strconv.Itoa` round-trip), and duplicates across ranges; speeds are bounded to `1..math.MaxInt32`, matching QEMU's int32 property and the docs. `portSpeeds` output is sorted, and `Init` always overwrites `CHR_PORT_SPEEDS` (test `replaces-env`), so only validated values reach QEMU.\n- **Launcher:** `data_nic_speed` does exact string equality on the port number (no prefix false positives; tested), defaults to 10000, and `data_nic_device` appends `speed=...,duplex=full` on both PCI layouts; the re-plug path (line 530) rebuilds via `device_add $(data_nic_device ...)`, so speed survives re-plug (tested by `TestDataNICDeviceSpeed`). Per-port `group_fwd_mask` writes (bit 2, LACP `01:80:c2:00:00:02`) fall back to a `log` message on failure, and `log()` is defined at line 112, before first use. The `data NIC speeds (Mb/s)` log line matches the docs claim. The loop is O(ports × pairs) with at most 63 ports — negligible.\n- **Schema:** the new `port-speeds` node property sits before `additionalProperties: false`; the node-level `if kind == mikrotik_chr / then` ref, the `kinds.mikrotik_chr` map entry, and the new `kind-specific-config-mikrotik_chr` definition (which rejects all 16 other kind-specific keys) are consistent, and every other kind definition — including `kind-specific-config-other` — gained the `port-speeds` exclusion, so the key sets match exactly. The `port` pattern matches Go's `2..64` domain. `defaults` allowing all kind-specific keys is a pre-existing pattern, not introduced here.\n- **Docs:** the group/node precedence description matches `GetNodeKindSpecificConfig` semantics (a node that sets the key replaces the group's whole list; `port-speeds: []` restores defaults because an empty list is a \"set\"), the `#port-speed` anchor matches the schema's markdown link, arch limits and the ARM64 TCG caveat are stated as limitations, and no stale references remain in `nodes.md` or `kinds/index.md`.\n- **Framework consistency:** yaml.v2 edge cases behave as intended — `port: 2` (int) and `port: 2..25` (string) both decode, `speed: 1G` and `port: 26.0` are rejected, `0.5e3` decodes to 500, and unknown fields are rejected by the strict second pass (tested).\n\n**Not verifiable from source:** the RouterOS 802.3ad full-duplex requirement and the ARM64 TCG 22-NIC observation are author-reported runtime behavior, documented as such; whether the `mikrotik/chr` image's bundled QEMU accepts `speed`/`duplex` on `virtio-net` (base VirtIONet properties, valid on both PCI and MMIO transports) could not be confirmed without running the image. No shellcheck CI gate exists for the launcher, and none is required by this repository's hooks.\n\n**Tests:** all new and modified test files were read in full; they were not executed as part of this review.\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/mikrotik_chr/port_speeds.go\",\n        \"start\": 36,\n        \"end\": 48\n      },\n      \"problem\": \"`UnmarshalYAML` on `PortSpeed` exists solely to reject a fractional `speed` before yaml.v2 silently truncates it into the `int` field, which would accept `speed: 1000.5` as `1000` with no error. `TestDecodePortSpeeds` in `port_speeds_test.go` covers a numeric `port`, a range, a string speed (`1G`), and an unknown field, but has no case with a fractional speed, so this guard is untested.\",\n      \"trigger\": \"A future refactor of the decode path, such as dropping `UnmarshalYAML`, switching the second decode pass to a different mode, or changing `Speed` to a float-typed intermediate, would let `speed: 1000.5` decode to `1000` without any test failing.\",\n      \"impact\": \"Silent acceptance of a typo like `speed: 2.5` (intended as 2.5 Gbit/s) as 2 Mb/s, reintroducing exactly the truncation the guard was written to prevent. The likelihood is low, but the guard's entire purpose is this one edge, so nothing currently pins it.\",\n      \"suggestion\": \"Add one case to the table in `TestDecodePortSpeeds`: `\\\"speed-fraction\\\": {yaml: \\\"- port: 2\\\\n  speed: 1000.5\\\\n\\\", errText: \\\"whole number\\\"}`. This is the smallest useful check; the error text matches `speed must be a whole number of Mb/s, got 1000.5` produced at `port_speeds.go` line 43.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review; all changed paths and tests were read but not executed.\",\n      \"Decode/Init paths traced: `DecodeKindSpecificConfig` always yields `*KindSpecificConfig`, so `kindSpecificConfig.Of(n.Cfg)` cannot panic; `createNodeCfg` returns decode errors before `Init`; the reconcile `createNodeConfig` is only used for `ComputeDiff`; `AddPlaceholderNode` only runs with placeholder kinds; `MergeStringMaps` keeps `n.Cfg.Env` non-nil.\",\n      \"Validation verified: `portRange` rejects `ether1`, over-limit ports, descending/half/non-numeric/zero-padded ranges, and duplicates; speeds bounded to `1..math.MaxInt32`; `Init` always overwrites `CHR_PORT_SPEEDS` (test `replaces-env`).\",\n      \"Launcher verified: `data_nic_speed` exact-match with10000 default; `data_nic_device` appends `speed=...,duplex=full` on both PCI layouts; re-plug via `device_add $(data_nic_device ...)` keeps the speed; per-port LACP `group_fwd_mask` writes fall back to `log`; `log()` defined before first use; O(ports x pairs) loop is negligible at the 63-port limit.\",\n      \"Schema verified: `port-speeds` node property, node if/then, `kinds.mikrotik_chr` entry, and new `kind-specific-config-mikrotik_chr` definition are mutually consistent; every other kind definition including `kind-specific-config-other` gained the `port-speeds` exclusion; `defaults` accepting all keys is a pre-existing pattern.\",\n      \"Docs verified: precedence/`port-speeds: []` reset semantics match `GetNodeKindSpecificConfig`, `#port-speed` anchor matches the schema link, arch limits and ARM64 TCG caveat documented; no stale references in `nodes.md` or `kinds/index.md`.\",\n      \"yaml.v2 edges verified: int and string `port` both decode; `1G`, `26.0`, hex rejected; `0.5e3` decodes to 500; unknown fields rejected by the strict pass (tested).\",\n      \"Not verifiable from source: RouterOS 802.3ad full-duplex requirement and ARM64 TCG 22-NIC observation are author-reported and documented as such; the image's QEMU version support for `speed`/`duplex` could not be confirmed without running the image.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1795768423459,
+            "end": 1795768432767
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_21c23b883001dn07P59fEJ3739",
+          "sessionID": "ses_de3e36ccaffeIDDY74TNzm4lXe",
+          "messageID": "msg_21c238464001B2kTE6vjv0FJ40",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 42007,
+            "input": 74,
+            "output": 2578,
+            "reasoning": 315,
+            "cache": {
+              "read": 39040,
+              "write": 0
+            }
+          }
+        }
+      ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`** | [nodes/mikrotik&#95;chr/port&#95;speeds.go:36-48](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/nodes/mikrotik_chr/port_speeds.go#L36-L48) |\n\n## P4 - No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\n\n**Location:** [nodes/mikrotik&#95;chr/port&#95;speeds.go:36-48](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/nodes/mikrotik_chr/port_speeds.go#L36-L48)\n\n**Problem:** `UnmarshalYAML` on `PortSpeed` exists solely to reject a fractional `speed` before `yaml.v2` silently truncates it into the `int` field, which would accept `speed: 1000.5` as `1000` with no error. `TestDecodePortSpeeds` in [`port_speeds_test.go`](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/nodes/mikrotik_chr/port_speeds_test.go#L1-L1) covers a numeric `port`, a range, a string `speed` &#40;`1G`&#41;, and an unknown field, but has no case with a fractional `speed`, so this guard is untested.\n\n**Trigger:** A future refactor of the decode path, such as dropping `UnmarshalYAML`, switching the second decode pass to a different mode, or changing `Speed` to a float-typed intermediate, would let `speed: 1000.5` decode to `1000` without any test failing.\n\n**Impact:** Silent acceptance of a typo like `speed: 2.5` &#40;intended as 2.5 Gbit/s&#41; as 2 Mb/s, reintroducing exactly the truncation the guard was written to prevent. The likelihood is low, but the guard&#39;s entire purpose is this one edge, so nothing currently pins it.\n\n**Suggested correction:** Add one case to the table in `TestDecodePortSpeeds`&#58; `\"speed-fraction\": {yaml: \"- port: 2\\n  speed: 1000.5\\n\", errText: \"whole number\"}`. This is the smallest useful check; the error text matches `speed must be a whole number of Mb/s, got 1000.5` produced at [`port_speeds.go`](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/nodes/mikrotik_chr/port_speeds.go#L1-L1) line 43.\n\n\n## Coverage\n\n- Source-only review; all changed paths and tests were read but not executed.\n- Decode/`Init` paths traced&#58; `DecodeKindSpecificConfig` always yields `*KindSpecificConfig`, so `kindSpecificConfig.Of(n.Cfg)` cannot panic; `createNodeCfg` returns decode errors before `Init`; the reconcile `createNodeConfig` is only used for `ComputeDiff`; `AddPlaceholderNode` only runs with placeholder kinds; `MergeStringMaps` keeps `n.Cfg.Env` non-nil.\n- Validation verified&#58; `portRange` rejects `ether1`, over-limit ports, descending/half/non-numeric/zero-padded ranges, and duplicates; speeds bounded to `1..math.MaxInt32`; `Init` always overwrites `CHR_PORT_SPEEDS` &#40;test `replaces-env`&#41;.\n- Launcher verified&#58; `data_nic_speed` exact-match with10000 default; `data_nic_device` appends `speed=...,duplex=full` on both PCI layouts; re-plug via `device_add $(data_nic_device ...)` keeps the `speed`; per-port LACP `group_fwd_mask` writes fall back to `log`; `log()` defined before first use; O&#40;ports x pairs&#41; loop is negligible at the 63-port limit.\n- Schema verified&#58; `port-speeds` node property, node if/then, `kinds.mikrotik_chr` entry, and new `kind-specific-config-mikrotik_chr` definition are mutually consistent; every other kind definition including `kind-specific-config-other` gained the `port-speeds` exclusion; `defaults` accepting all keys is a pre-existing pattern.\n- Docs verified&#58; precedence/`port-speeds: []` reset semantics match `GetNodeKindSpecificConfig`, `#port-speed` anchor matches the schema link, arch limits and ARM64 TCG caveat documented; no stale references in [`nodes.md`](https://github.com/srl-labs/containerlab/blob/ffb224edfdf561661adac339b26ce3bc693ad5b3/docs/manual/nodes.md#L1-L1) or `kinds/index.md`.\n- `yaml.v2` edges verified&#58; `int` and string `port` both decode; `1G`, `26.0`, hex rejected; `0.5e3` decodes to 500; unknown fields rejected by the strict pass &#40;tested&#41;.\n- Not verifiable from source&#58; `RouterOS` 802.3ad full-duplex requirement and ARM64 TCG 22-NIC observation are author-reported and documented as such; the image&#39;s QEMU version support for `speed`/`duplex` could not be confirmed without running the image.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"No test covers the fractional-speed guard in `PortSpeed.UnmarshalYAML`\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"nodes/mikrotik_chr/port_speeds.go\",\n        \"start\": 36,\n        \"end\": 48\n      },\n      \"problem\": \"`UnmarshalYAML` on `PortSpeed` exists solely to reject a fractional `speed` before `yaml.v2` silently truncates it into the `int` field, which would accept `speed: 1000.5` as `1000` with no error. `TestDecodePortSpeeds` in `port_speeds_test.go` covers a numeric `port`, a range, a string `speed` (`1G`), and an unknown field, but has no case with a fractional `speed`, so this guard is untested.\",\n      \"trigger\": \"A future refactor of the decode path, such as dropping `UnmarshalYAML`, switching the second decode pass to a different mode, or changing `Speed` to a float-typed intermediate, would let `speed: 1000.5` decode to `1000` without any test failing.\",\n      \"impact\": \"Silent acceptance of a typo like `speed: 2.5` (intended as 2.5 Gbit/s) as 2 Mb/s, reintroducing exactly the truncation the guard was written to prevent. The likelihood is low, but the guard's entire purpose is this one edge, so nothing currently pins it.\",\n      \"suggestion\": \"Add one case to the table in `TestDecodePortSpeeds`: `\\\"speed-fraction\\\": {yaml: \\\"- port: 2\\\\n  speed: 1000.5\\\\n\\\", errText: \\\"whole number\\\"}`. This is the smallest useful check; the error text matches `speed must be a whole number of Mb/s, got 1000.5` produced at `port_speeds.go` line 43.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review; all changed paths and tests were read but not executed.\",\n      \"Decode/`Init` paths traced: `DecodeKindSpecificConfig` always yields `*KindSpecificConfig`, so `kindSpecificConfig.Of(n.Cfg)` cannot panic; `createNodeCfg` returns decode errors before `Init`; the reconcile `createNodeConfig` is only used for `ComputeDiff`; `AddPlaceholderNode` only runs with placeholder kinds; `MergeStringMaps` keeps `n.Cfg.Env` non-nil.\",\n      \"Validation verified: `portRange` rejects `ether1`, over-limit ports, descending/half/non-numeric/zero-padded ranges, and duplicates; speeds bounded to `1..math.MaxInt32`; `Init` always overwrites `CHR_PORT_SPEEDS` (test `replaces-env`).\",\n      \"Launcher verified: `data_nic_speed` exact-match with10000 default; `data_nic_device` appends `speed=...,duplex=full` on both PCI layouts; re-plug via `device_add $(data_nic_device ...)` keeps the `speed`; per-port LACP `group_fwd_mask` writes fall back to `log`; `log()` defined before first use; O(ports x pairs) loop is negligible at the 63-port limit.\",\n      \"Schema verified: `port-speeds` node property, node if/then, `kinds.mikrotik_chr` entry, and new `kind-specific-config-mikrotik_chr` definition are mutually consistent; every other kind definition including `kind-specific-config-other` gained the `port-speeds` exclusion; `defaults` accepting all keys is a pre-existing pattern.\",\n      \"Docs verified: precedence/`port-speeds: []` reset semantics match `GetNodeKindSpecificConfig`, `#port-speed` anchor matches the schema link, arch limits and ARM64 TCG caveat documented; no stale references in `nodes.md` or `kinds/index.md`.\",\n      \"`yaml.v2` edges verified: `int` and string `port` both decode; `1G`, `26.0`, hex rejected; `0.5e3` decodes to 500; unknown fields rejected by the strict pass (tested).\",\n      \"Not verifiable from source: `RouterOS` 802.3ad full-duplex requirement and ARM64 TCG 22-NIC observation are author-reported and documented as such; the image's QEMU version support for `speed`/`duplex` could not be confirmed without running the image.\"\n    ]\n  }\n}\n```"
 }
