@@ -2,8 +2,8 @@
   "version": 1,
   "repository": "srl-labs/containerlab",
   "head": "a1e5e358c9a18592e19d0a105592cf1632f4a6d5",
-  "updatedAt": "2026-11-28T14:35:07.226Z",
-  "state": "running",
+  "updatedAt": "2026-11-28T14:35:54.462Z",
+  "state": "completed",
   "info": {
     "id": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
     "title": "ToFaRev review",
@@ -18,11 +18,11 @@
     },
     "cost": 0,
     "tokens": {
-      "input": 532363,
-      "output": 8967,
-      "reasoning": 33439,
+      "input": 539235,
+      "output": 11546,
+      "reasoning": 38634,
       "cache": {
-        "read": 3020800,
+        "read": 3173888,
         "write": 0
       }
     },
@@ -35,7 +35,7 @@
     "version": "1.19.3",
     "time": {
       "created": 1795876072167,
-      "updated": 1795876492944
+      "updated": 1795876554392
     }
   },
   "messages": [
@@ -7479,7 +7479,8 @@
         "id": "msg_22294968c001Jme1NWXB76A4Jx",
         "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
         "time": {
-          "created": 1795876492940
+          "created": 1795876492940,
+          "completed": 1795876513394
         },
         "parentID": "msg_22293d31f001834c0REGEA3MLi",
         "modelID": "zai-org/GLM-5.3-Flash",
@@ -7492,14 +7493,16 @@
         },
         "cost": 0,
         "tokens": {
-          "input": 0,
-          "output": 0,
-          "reasoning": 0,
+          "total": 37562,
+          "input": 2387,
+          "output": 37,
+          "reasoning": 2114,
           "cache": {
-            "read": 0,
+            "read": 33024,
             "write": 0
           }
-        }
+        },
+        "finish": "tool-calls"
       },
       "parts": [
         {
@@ -7513,12 +7516,380 @@
           "id": "prt_222949ce0001KZpjBVNthq5lYn",
           "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
           "messageID": "msg_22294968c001Jme1NWXB76A4Jx",
-          "text": "",
+          "text": "This hunk is very informative. In the modified `09-srsim-pause-container.robot`:\n\n- The `-t` test still asserts `ins -t ... -f json` yields exactly `[\"clab-${lab-name}-sr14s-a\"]` — so with `-t`, CPM A shows the merged mgmt IP? Wait, no: this test is for a DISTRIBUTED sr-14s where CPM A gets its own mgmt IP via distNodeMgmtIPs. Fine.\n- The changed test: `ins --all/-f json` → contains sr14s-a but NOT sr14s-netns (logical view, CPM A has distNodeMgmtIPs). `--containers -f json` → contains BOTH. `--details` → contains BOTH (and note: `--details` uses Names[0]... wait, in this 09 test, `--details` output \"Should Contain clab-...-sr14s-netns\" — `--details` JSON includes holder ✔).\n\nHmm wait — there's a subtlety in this 09 test: with `--name ${lab-name}` (not `--all`), `-f json`: contains sr14s-a, NOT netns ✔. But note in this test the `IF $format == '-f json'` branch: for BOTH `--all` and `--name` selectors with `-f json` and `--containers -f json`: wait, the new logic: for format `-f json`: Should NOT Contain sr14s-netns. For `--containers -f json` and `--details`: Should Contain. ✔ consistent with implementation.\n\nInteresting: `-t` with JSON still shows the MERGED CPM A (with distNodeMgmtIPs IP) — from GetContainers in the second fetch (dedup keeps label-list copy... wait!). Hmm, hold on: in the `-t` path, the label list contains sr14s-a with its own NetworkSettings (empty IP for a component, since components don't get mgmt IPs — distNodeMgmtIPs is applied in GetContainers). The dedup: sr14s-a appears in the label list first; the second fetch's sr14s-a (merged with distNodeMgmtIPs) has the same ID → dedup SKIPS it → the label-list copy (WITHOUT the distNodeMgmtIPs IP) wins!\n\nBut the 09 test asserts `ins -t -f json` → sr14s-a has the sr14s mgmt IP (the earlier test \"Check SR-14s namespace holder owns mgmt IPv4 addr\" checks the holder; and `-t` test just checks the name list, not the IP). Hmm wait — which test checks that `-t` output has the IP? Looking at the hunk: \"Confirm topology inspect hides namespace holder\" — checks `[.name] == [\"clab-...-sr14s-a\"]` — only names. So the IP under `-t` isn't asserted in 09.\n\nBut wait — does this matter for correctness? In the `-t` path, if the CPM A container has NO mgmt IP of its own (components don't attach to mgmt network), then the label-list copy shows N/A IP... but the logical view should show the node's mgmt address (which lives on the holder)! The 15-inspect-views test asserts `Logical Node Should Carry Holder Address sr-a sr-netns` with `-t` — that works because the HOLDER merge in pass 2 copies the holder's NetworkSettings onto the sr-a copy. ✔ (distNodeMgmtIPs is a different mechanism — forcing the node's configured mgmt address onto a component; used when the node has an explicit mgmt IPv4 configured).\n\nHmm, but consider a distributed sros node with an EXPLICIT `mgmt_ipv4` configured: base `-t` output showed the merged sr-a with distNodeMgmtIPs IP (GetContainers). Head `-t` output: label-list copy of sr-a WITHOUT the IP, then pass-2 holder merge applies only if a holder exists (it does — srsim always creates one) → holder's NetworkSettings copied. Is the holder's IP the same as distNodeMgmtIPs? The holder gets the mgmt address when the node configures an explicit mgmt IPv4? Let me check: the netns holder inherits the node's MgmtIPv4Address config (newNetnsConfig copies MgmtIPv4Address from n.Cfg) — for sros, the holder is created in deployFabric with the mgmt address? Let me check sros netns creation... In sros.go, createNetNSHolder — the holder takes the node's mgmt config (like srl). So the holder's IP == node's mgmt IPv4 == distNodeMgmtIPs value. Both mechanisms give the same address. ✔ No regression.\n\nBut what if a distributed sros node has an explicit mgmt IPv4 and NO netns holder? Does sros create holders always? sros netns creation — let me check whether sros always creates a holder for distributed nodes. From my earlier notes: \"sros GetContainers references holders\". Let me check sros deployFabric: does it always create the netns holder? If a distributed sros lab was deployed WITHOUT holder (older clab version), then head `-t` shows sr-a with N/A IP while base showed distNodeMgmtIPs IP. Edge case: mixed-version deployments. Acceptable graceful degradation (same as the srl deployedWithoutNetnsNode case where the node container carries its own IP — for srl the NODE container has the IP; for sros components, the component container never has the IP). Hmm, this is a real (if narrow) regression scenario for `-t` on labs deployed by older containerlab versions where components lack RootNodeName and hold no IP. But in that case, GetContainers still returns the merged sr-a with distNodeMgmtIPs — and the dedup in pass 2 keeps the label-list copy only if the component container exists in the label list; if the old component lacks the RootNodeName label, it appears as its own node row (unmerged, N/A IP) AND GetContainers returns the merged one — dedup by ID: same container ID → the label-list copy (unmerged) wins → the distNodeMgmtIPs address is LOST from the output.\n\nHmm, wait — actually is that right? Dedup is by ID: `if _, ok := seen[container.ID]; ok` skip. The label-list copy comes first, so the merged GetContainers copy is dropped. So for a distributed sros node where the component container lacks RootNodeName (old deployment), the IP is lost in the `-t` view. But also — in the OLD deployment, would the label list even contain the component? Yes (labels: containerlab, NodeName). So head shows sr-a with N/A IP; base showed sr-a with the configured mgmt IP.\n\nHow realistic: `containerlab inspect -t` run against a lab deployed by an older containerlab version where sros components lacked the RootNodeName label. When was RootNodeName added to components? componentConfig sets RootNodeName... if that was added in the same or recent release, labs deployed with the previous release might lack it. Let me check git history — can't (no git access to history? The snapshot has only two commits: base and head. I can grep base code for RootNodeName in sros).\n\nLet me check the base for RootNodeName in nodes/sros — if base already sets it, then only labs from pre-base releases are affected (old-version deployments persisting across a containerlab upgrade — plausible but narrow; containerlab is usually upgraded with labs redeployed). Given `--reconfigure` is standard, I'd call this graceful degradation, not a P2/P3. Actually wait — even for CURRENT deployments, is this an issue? No: current components have RootNodeName → holder merge restores the address. Only mixed-version. Also, for the srl case (mixed version): the node container carries its own IP, so no loss.\n\nHmm, but hold on — actually there's a subtler current-version case: **distributed sros WITHOUT an explicit mgmt IPv4 and WITHOUT a holder**? Holder always exists for distributed sros (createNetNSHolder in deployFabric). OK.\n\nSo this is only a mixed-version edge; I'll note it in coverage notes rather than as a finding. Actually, let me reconsider — is it worth a P4? The behavior is graceful and self-heals after redeploys. I'll put it in coverage notes.\n\nNow — let me also double-check the `09` test expectation `ins -t -f json` → `[\"clab-${lab-name}-sr14s-a\"]` — exactly ONE container for the whole distributed sr-14s node (sr-1 card NOT included?!). Wait — the sr-14s topology in 09 has a card component (slot 1, xcm) — why doesn't `-t` list `sr14s-1`? Because GetContainers for a distributed base returns ONLY the CPM A container (from my notes). So the logical view shows only the CPM A row even though the card exists. That's pre-existing behavior (base `-t` same). The new logical view reproduces it via the isCPM skip. ✔ consistent — card sr14s-1 is hidden in logical view in both base and head (base: not in GetContainers output; head: skipped by the card case). Consistent. Interesting: the card is thus visible ONLY via --containers/--details. Documented (\"Nodes that consist of several containers (ie. distributed SR-SIM) are represented by a single node\") — the single node being the CPM. OK.\n\nNow — the last diff hunk (lines 500-670) — let me read the remainder of diff.txt to be thorough (workflows etc. I've seen). Let me read the rest.",
           "time": {
-            "start": 1795876494560
+            "start": 1795876494560,
+            "end": 1795876513220
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_22294e5c9001gP441ml4PvdbMZ",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294968c001Jme1NWXB76A4Jx",
+          "text": "Let me read the remaining diff hunks to complete coverage.",
+          "time": {
+            "start": 1795876513225,
+            "end": 1795876513379
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_22294e65a001uE7Fg9DooT4QHa",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294968c001Jme1NWXB76A4Jx",
+          "callID": "call_c106a363427a44568c187a14",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 171,
+              "offset": 500
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n500:          END\n501:      END\n502:  \n503:  CPM B maintains SSH access after CPM A is killed\n504: diff --git a/tests/13-srsim/15-inspect-views.clab.yml b/tests/13-srsim/15-inspect-views.clab.yml\n505: new file mode 100644\n506: index 0000000..8d4007a\n507: --- /dev/null\n508: +++ b/tests/13-srsim/15-inspect-views.clab.yml\n509: @@ -0,0 +1,24 @@\n510: +# yaml-language-server: $schema=../../schemas/clab.schema.json\n511: +name: srsim-inspect-views\n512: +\n513: +topology:\n514: +  nodes:\n515: +    linux:\n516: +      kind: linux\n517: +      image: alpine:3\n518: +    sr:\n519: +      kind: nokia_srsim\n520: +      license: /opt/nokia/sros/license.txt\n521: +      image: registry.srlinux.dev/pub/nokia_srsim:${SRSIM_IMAGE_TAG}\n522: +      type: sr-14s\n523: +      sfm: sfm2-s\n524: +      components:\n525: +        - slot: A\n526: +          type: cpm2-s\n527: +        - slot: B\n528: +          type: cpm2-s\n529: +        - slot: 1\n530: +          type: xcm2-14s\n531: +          mda:\n532: +            - slot: 1\n533: +              type: x2-s36-800g-qsfpdd-18.0t\n534: diff --git a/tests/13-srsim/15-inspect-views.robot b/tests/13-srsim/15-inspect-views.robot\n535: new file mode 100644\n536: index 0000000..94c2b0a\n537: --- /dev/null\n538: +++ b/tests/13-srsim/15-inspect-views.robot\n539: @@ -0,0 +1,40 @@\n540: +*** Settings ***\n541: +Documentation       The deploy summary and inspect list one logical node per topology node,\n542: +...                 while inspect --containers and --details list every container of the lab.\n543: +\n544: +Resource            ../inspect-views.robot\n545: +Resource            ../srsim.robot\n546: +\n547: +Suite Teardown      Destroy Lab\n548: +\n549: +\n550: +*** Variables ***\n551: +${lab-name}         srsim-inspect-views\n552: +${topo}             ${CURDIR}/15-inspect-views.clab.yml\n553: +${runtime}          docker\n554: +${logical}          linux sr-a\n555: +${all}              linux sr-1 sr-a sr-b sr-netns\n556: +\n557: +\n558: +*** Test Cases ***\n559: +Deploy ${lab-name} lab\n560: +    Deploy Lab Keeping Summary\n561: +    Check SR-SIM License    ${topo}    ${runtime}\n562: +\n563: +Lab runs the components and netns holder next to the nodes\n564: +    Lab Should Run    ${all}\n565: +\n566: +Deploy summary lists logical nodes\n567: +    Deploy Summary Should List    ${logical}\n568: +\n569: +Inspect lists logical nodes\n570: +    Inspect Should List    ${logical}\n571: +\n572: +Inspect with containers flag lists every container\n573: +    Inspect Should List    ${all}    --containers\n574: +\n575: +Inspect with details flag lists every container\n576: +    Inspect Details Should List    ${all}\n577: +\n578: +Logical SR-SIM node carries the holder management address\n579: +    Logical Node Should Carry Holder Address    sr-a    sr-netns\n580: diff --git a/tests/inspect-views.robot b/tests/inspect-views.robot\n581: new file mode 100644\n582: index 0000000..9c1d19a\n583: --- /dev/null\n584: +++ b/tests/inspect-views.robot\n585: @@ -0,0 +1,85 @@\n586: +*** Settings ***\n587: +Documentation       Keywords that check which containers the deploy summary and inspect list.\n588: +...                 The importing suite sets ${lab-name}, ${topo} and ${runtime}, and passes names\n589: +...                 sorted, space separated and without the clab-${lab-name}- prefix.\n590: +\n591: +Library             OperatingSystem\n592: +Library             Process\n593: +Resource            common.robot\n594: +\n595: +\n596: +*** Variables ***\n597: +${deploy-out}       ${TEMPDIR}/${lab-name}-deploy.out\n598: +\n599: +\n600: +*** Keywords ***\n601: +Deploy Lab Keeping Summary\n602: +    ${result} =    Process.Run Process\n603: +    ...    ${CLAB_BIN} --runtime ${runtime} deploy -t ${topo}\n604: +    ...    shell=True    stdout=${deploy-out}\n605: +    Log    ${result.stderr}\n606: +    Should Be Equal As Integers    ${result.rc}    0\n607: +\n608: +Destroy Lab\n609: +    Run    ${CLAB_BIN} --runtime ${runtime} destroy -t ${topo} --cleanup\n610: +\n611: +Lab Should Run\n612: +    [Arguments]    ${expected}\n613: +    ${names} =    Names In    ${runtime} ps --filter label=containerlab=${lab-name} --format '{{.Names}}'\n614: +    Should Be Equal As Strings    ${names}    ${expected}\n615: +\n616: +Deploy Summary Should List\n617: +    [Arguments]    ${expected}\n618: +    ${names} =    Names In    cat ${deploy-out}\n619: +    Should Be Equal As Strings    ${names}    ${expected}\n620: +\n621: +Inspect Should List\n622: +    [Documentation]    Checks the table, csv and json output for every way of selecting the lab.\n623: +    [Arguments]    ${expected}    ${flags}=${EMPTY}\n624: +    FOR    ${selector}    IN    -t ${topo}    --name ${lab-name}    --all\n625: +        FOR    ${format}    IN    table    csv\n626: +            ${names} =    Names In\n627: +            ...    ${CLAB_BIN} --runtime ${runtime} inspect ${selector} ${flags} -f ${format}\n628: +            Should Be Equal As Strings    ${names}    ${expected}    ${selector} ${flags} -f ${format}\n629: +        END\n630: +        ${names} =    JSON Names In    inspect ${selector} ${flags} -f json    .name\n631: +        Should Be Equal As Strings    ${names}    ${expected}    ${selector} ${flags} -f json\n632: +    END\n633: +\n634: +Inspect Details Should List\n635: +    [Arguments]    ${expected}\n636: +    FOR    ${selector}    IN    -t ${topo}    --name ${lab-name}    --all\n637: +        ${names} =    JSON Names In    inspect ${selector} --details    .Names[0]\n638: +        Should Be Equal As Strings    ${names}    ${expected}    ${selector} --details\n639: +    END\n640: +\n641: +Logical Node Should Carry Holder Address\n642: +    [Arguments]    ${node}    ${holder}\n643: +    ${want} =    Run Checked Pipeline\n644: +    ...    ${runtime} inspect clab-${lab-name}-${holder} | jq -r '.[0].NetworkSettings.Networks[].IPAddress'\n645: +    Should Not Be Empty    ${want}\n646: +    ${got} =    Run Checked Pipeline\n647: +    ...    ${CLAB_BIN} --runtime ${runtime} inspect -t ${topo} -f json | jq -r '.[\"${lab-name}\"][] | select(.name == \"clab-${lab-name}-${node}\") | .ipv4_address | split(\"/\")[0]'\n648: +    Should Be Equal As Strings    ${got}    ${want}\n649: +\n650: +Run Checked Pipeline\n651: +    [Arguments]    ${command}\n652: +    ${result} =    Process.Run Process    bash    -o    pipefail    -c    ${command}\n653: +    Log    ${result.stdout}\n654: +    Log    ${result.stderr}\n655: +    Should Be Equal As Integers    ${result.rc}    0    ${result.stderr}\n656: +    RETURN    ${result.stdout}\n657: +\n658: +Names In\n659: +    [Documentation]    Returns the lab container names printed by the command,\n660: +    ...    one per occurrence so that a node listed twice is detected.\n661: +    [Arguments]    ${command}\n662: +    ${names} =    Run Checked Pipeline\n663: +    ...    ${command} | grep -oE 'clab-${lab-name}-[A-Za-z0-9-]+' | sed 's/^clab-${lab-name}-//' | sort | paste -sd' '\n664: +    RETURN    ${names}\n665: +\n666: +JSON Names In\n667: +    [Arguments]    ${args}    ${field}\n668: +    ${names} =    Run Checked Pipeline\n669: +    ...    ${CLAB_BIN} --runtime ${runtime} ${args} | jq -r '.[\"${lab-name}\"][] | ${field}' | sed 's/^clab-${lab-name}-//' | sort | paste -sd' '\n670: +    RETURN    ${names}\n\n(End of file - total 670 lines)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "         END\n     END\n \n CPM B maintains SSH access after CPM A is killed\ndiff --git a/tests/13-srsim/15-inspect-views.clab.yml b/tests/13-srsim/15-inspect-views.clab.yml\nnew file mode 100644\nindex 0000000..8d4007a\n--- /dev/null\n+++ b/tests/13-srsim/15-inspect-views.clab.yml\n@@ -0,0 +1,24 @@\n+# yaml-language-server: $schema=../../schemas/clab.schema.json\n+name: srsim-inspect-views\n+\n+topology:\n+  nodes:\n+    linux:\n+      kind: linux\n+      image: alpine:3\n+    sr:\n+      kind: nokia_srsim",
+              "truncated": false,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "         END\n     END\n \n CPM B maintains SSH access after CPM A is killed\ndiff --git a/tests/13-srsim/15-inspect-views.clab.yml b/tests/13-srsim/15-inspect-views.clab.yml\nnew file mode 100644\nindex 0000000..8d4007a\n--- /dev/null\n+++ b/tests/13-srsim/15-inspect-views.clab.yml\n@@ -0,0 +1,24 @@\n+# yaml-language-server: $schema=../../schemas/clab.schema.json\n+name: srsim-inspect-views\n+\n+topology:\n+  nodes:\n+    linux:\n+      kind: linux\n+      image: alpine:3\n+    sr:\n+      kind: nokia_srsim\n+      license: /opt/nokia/sros/license.txt\n+      image: registry.srlinux.dev/pub/nokia_srsim:${SRSIM_IMAGE_TAG}\n+      type: sr-14s\n+      sfm: sfm2-s\n+      components:\n+        - slot: A\n+          type: cpm2-s\n+        - slot: B\n+          type: cpm2-s\n+        - slot: 1\n+          type: xcm2-14s\n+          mda:\n+            - slot: 1\n+              type: x2-s36-800g-qsfpdd-18.0t\ndiff --git a/tests/13-srsim/15-inspect-views.robot b/tests/13-srsim/15-inspect-views.robot\nnew file mode 100644\nindex 0000000..94c2b0a\n--- /dev/null\n+++ b/tests/13-srsim/15-inspect-views.robot\n@@ -0,0 +1,40 @@\n+*** Settings ***\n+Documentation       The deploy summary and inspect list one logical node per topology node,\n+...                 while inspect --containers and --details list every container of the lab.\n+\n+Resource            ../inspect-views.robot\n+Resource            ../srsim.robot\n+\n+Suite Teardown      Destroy Lab\n+\n+\n+*** Variables ***\n+${lab-name}         srsim-inspect-views\n+${topo}             ${CURDIR}/15-inspect-views.clab.yml\n+${runtime}          docker\n+${logical}          linux sr-a\n+${all}              linux sr-1 sr-a sr-b sr-netns\n+\n+\n+*** Test Cases ***\n+Deploy ${lab-name} lab\n+    Deploy Lab Keeping Summary\n+    Check SR-SIM License    ${topo}    ${runtime}\n+\n+Lab runs the components and netns holder next to the nodes\n+    Lab Should Run    ${all}\n+\n+Deploy summary lists logical nodes\n+    Deploy Summary Should List    ${logical}\n+\n+Inspect lists logical nodes\n+    Inspect Should List    ${logical}\n+\n+Inspect with containers flag lists every container\n+    Inspect Should List    ${all}    --containers\n+\n+Inspect with details flag lists every container\n+    Inspect Details Should List    ${all}\n+\n+Logical SR-SIM node carries the holder management address\n+    Logical Node Should Carry Holder Address    sr-a    sr-netns\ndiff --git a/tests/inspect-views.robot b/tests/inspect-views.robot\nnew file mode 100644\nindex 0000000..9c1d19a\n--- /dev/null\n+++ b/tests/inspect-views.robot\n@@ -0,0 +1,85 @@\n+*** Settings ***\n+Documentation       Keywords that check which containers the deploy summary and inspect list.\n+...                 The importing suite sets ${lab-name}, ${topo} and ${runtime}, and passes names\n+...                 sorted, space separated and without the clab-${lab-name}- prefix.\n+\n+Library             OperatingSystem\n+Library             Process\n+Resource            common.robot\n+\n+\n+*** Variables ***\n+${deploy-out}       ${TEMPDIR}/${lab-name}-deploy.out\n+\n+\n+*** Keywords ***\n+Deploy Lab Keeping Summary\n+    ${result} =    Process.Run Process\n+    ...    ${CLAB_BIN} --runtime ${runtime} deploy -t ${topo}\n+    ...    shell=True    stdout=${deploy-out}\n+    Log    ${result.stderr}\n+    Should Be Equal As Integers    ${result.rc}    0\n+\n+Destroy Lab\n+    Run    ${CLAB_BIN} --runtime ${runtime} destroy -t ${topo} --cleanup\n+\n+Lab Should Run\n+    [Arguments]    ${expected}\n+    ${names} =    Names In    ${runtime} ps --filter label=containerlab=${lab-name} --format '{{.Names}}'\n+    Should Be Equal As Strings    ${names}    ${expected}\n+\n+Deploy Summary Should List\n+    [Arguments]    ${expected}\n+    ${names} =    Names In    cat ${deploy-out}\n+    Should Be Equal As Strings    ${names}    ${expected}\n+\n+Inspect Should List\n+    [Documentation]    Checks the table, csv and json output for every way of selecting the lab.\n+    [Arguments]    ${expected}    ${flags}=${EMPTY}\n+    FOR    ${selector}    IN    -t ${topo}    --name ${lab-name}    --all\n+        FOR    ${format}    IN    table    csv\n+            ${names} =    Names In\n+            ...    ${CLAB_BIN} --runtime ${runtime} inspect ${selector} ${flags} -f ${format}\n+            Should Be Equal As Strings    ${names}    ${expected}    ${selector} ${flags} -f ${format}\n+        END\n+        ${names} =    JSON Names In    inspect ${selector} ${flags} -f json    .name\n+        Should Be Equal As Strings    ${names}    ${expected}    ${selector} ${flags} -f json\n+    END\n+\n+Inspect Details Should List\n+    [Arguments]    ${expected}\n+    FOR    ${selector}    IN    -t ${topo}    --name ${lab-name}    --all\n+        ${names} =    JSON Names In    inspect ${selector} --details    .Names[0]\n+        Should Be Equal As Strings    ${names}    ${expected}    ${selector} --details\n+    END\n+\n+Logical Node Should Carry Holder Address\n+    [Arguments]    ${node}    ${holder}\n+    ${want} =    Run Checked Pipeline\n+    ...    ${runtime} inspect clab-${lab-name}-${holder} | jq -r '.[0].NetworkSettings.Networks[].IPAddress'\n+    Should Not Be Empty    ${want}\n+    ${got} =    Run Checked Pipeline\n+    ...    ${CLAB_BIN} --runtime ${runtime} inspect -t ${topo} -f json | jq -r '.[\"${lab-name}\"][] | select(.name == \"clab-${lab-name}-${node}\") | .ipv4_address | split(\"/\")[0]'\n+    Should Be Equal As Strings    ${got}    ${want}\n+\n+Run Checked Pipeline\n+    [Arguments]    ${command}\n+    ${result} =    Process.Run Process    bash    -o    pipefail    -c    ${command}\n+    Log    ${result.stdout}\n+    Log    ${result.stderr}\n+    Should Be Equal As Integers    ${result.rc}    0    ${result.stderr}\n+    RETURN    ${result.stdout}\n+\n+Names In\n+    [Documentation]    Returns the lab container names printed by the command,\n+    ...    one per occurrence so that a node listed twice is detected.\n+    [Arguments]    ${command}\n+    ${names} =    Run Checked Pipeline\n+    ...    ${command} | grep -oE 'clab-${lab-name}-[A-Za-z0-9-]+' | sed 's/^clab-${lab-name}-//' | sort | paste -sd' '\n+    RETURN    ${names}\n+\n+JSON Names In\n+    [Arguments]    ${args}    ${field}\n+    ${names} =    Run Checked Pipeline\n+    ...    ${CLAB_BIN} --runtime ${runtime} ${args} | jq -r '.[\"${lab-name}\"][] | ${field}' | sed 's/^clab-${lab-name}-//' | sort | paste -sd' '\n+    RETURN    ${names}",
+                "lineStart": 500,
+                "lineEnd": 670,
+                "totalLines": 670,
+                "truncated": false
+              }
+            },
+            "time": {
+              "start": 1795876513376,
+              "end": 1795876513387
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_22294e66e001J4M2S6aViSQ5RN",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294968c001Jme1NWXB76A4Jx",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 37562,
+            "input": 2387,
+            "output": 37,
+            "reasoning": 2114,
+            "cache": {
+              "read": 33024,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_22294e67d001HzxpyPt93h79Zt",
+        "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+        "time": {
+          "created": 1795876513405,
+          "completed": 1795876520707
+        },
+        "parentID": "msg_22293d31f001834c0REGEA3MLi",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-BfVrFU",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 40703,
+          "input": 2569,
+          "output": 25,
+          "reasoning": 733,
+          "cache": {
+            "read": 37376,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_22294ec68001Nm52d0VQZYFTtJ",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294e67d001HzxpyPt93h79Zt"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_22294ec6b001ARXp1aJRxcAgLv",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294e67d001HzxpyPt93h79Zt",
+          "text": "The full diff is now covered. One last observation about the 09 test change:\n\n```\nFOR ${format} IN -f json --containers -f json --details\n    ins ${selector} ${format}\n    Should Contain clab-...-sr14s-a\n    IF $format == '-f json'  → Should NOT Contain netns\n    ELSE → Should Contain netns\n```\n\nWait: for `--details`, output is JSON with `.Names` — contains sr14s-a and sr14s-netns ✔. For `--containers -f json` ✔. OK.\n\nBut hmm — there's a subtle detail in that 09 test: for `--details`, the output contains `clab-...-sr14s-a` AND `clab-...-sr14s-netns` — with `-t`... no, selector is `--all`/`--name` ✔.\n\nNow, everything is verified. Let me also quickly reconcile one point in the 09 test: \"Confirm topology inspect hides namespace holder\" — `ins -t ... == [\"clab-...-sr14s-a\"]`. With head, the `-t` label list contains sr-a, sr-b, sr-1, sr-netns, and the sr14s topology... wait what's in 09's topology? A distributed sr14s node (base) — topology nodes: linux + sr14s (with components A, B, 1?). The DeleteFunc keeps containers whose NodeName ∈ c.Nodes or RootNodeName ∈ c.Nodes: sr-a (RootNodeName=sr14s ✔), sr-b ✔, sr-1 ✔, sr14s-netns (RootNodeName=sr14s ✔). Logical view: only sr-a shown ✔. The card sr-1 skipped ✔. And `--containers` shows all four. But note the earlier assertion in 09 (unchanged): \"Confirm SR-14s component doesn't have any IPv4 address\" now uses `ins -a --containers` — CPM A shows N/A... wait, but the 15-inspect-views test shows `Logical Node Should Carry Holder Address sr-a sr-netns` — with a holder merge, sr-a would get the holder's IP! In 09's topology, does the distributed sr14s node have a netns holder? \"Confirm inspect all includes namespace holder\" → yes, sr14s-netns exists. Then in the `-a --containers` view, sr-a's NetworkSettings are its own (components have no mgmt attachment) → N/A ✔ consistent with the assertion. The holder merge only happens in the logical view, not in `--containers` ✔.\n\nHmm wait — but then in `--containers` view for srl: the srl NODE container has NetworkSettings = empty (node attaches via holder)... and `--containers` shows N/A for the srl node and the real IP on srl-netns ✔ (documented \"every container\").\n\nOK. Now — one more important item from the diff I should double check: the CI workflows. Let me look at the diff hunks for the two workflow files to confirm the shard assignments (lines 1-100 of diff.txt I saw at the start — from my notes: srlinux-tests.yml adds \"05*.robot\" to shard-1? and srsim-tests.yml adds 15-inspect-views to \"components\"). Let me just re-read those hunks quickly to be precise about which matrix entries were modified.",
+          "time": {
+            "start": 1795876514923,
+            "end": 1795876520682
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_2229502ec001QX5ry0Q4MpW5vI",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294e67d001HzxpyPt93h79Zt",
+          "callID": "call_83dddc40cad74a1fa26190f1",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/diff.txt",
+              "limit": 60,
+              "offset": 1
+            },
+            "output": "<path>/source/diff.txt</path>\n<type>file</type>\n<content>\n1: diff --git a/.github/workflows/srlinux-tests.yml b/.github/workflows/srlinux-tests.yml\n2: index 3608164..447acbb 100644\n3: --- a/.github/workflows/srlinux-tests.yml\n4: +++ b/.github/workflows/srlinux-tests.yml\n5: @@ -20,10 +20,11 @@ jobs:\n6:        matrix:\n7:          test-suite:\n8:            - \"01*.robot\"\n9:            - \"03*.robot\"\n10:            - \"04*.robot\"\n11: +          - \"05*.robot\"\n12:      # allow podman job to fail, since it started to fail on github actions\n13:      continue-on-error: ${{ inputs.runtime == 'podman' }}\n14:      steps:\n15:        - name: Checkout\n16:          uses: actions/checkout@v7\n17: diff --git a/.github/workflows/srsim-tests.yml b/.github/workflows/srsim-tests.yml\n18: index 4aa8f48..e630611 100644\n19: --- a/.github/workflows/srsim-tests.yml\n20: +++ b/.github/workflows/srsim-tests.yml\n21: @@ -47,11 +47,11 @@ jobs:\n22:            - shard: basic\n23:              test_suites: \"01-sros-to-linux.robot 07-srsim-with-mgmt-network.robot 12-srsim-veth-stitch.robot\"\n24:            - shard: lifecycle\n25:              test_suites: \"04-sros-classic.robot 06-srsim-sar.robot 10-srsim-lifecycle.robot\"\n26:            - shard: components\n27: -            test_suites: \"05-sros-comp-to-linux.robot 09-srsim-pause-container.robot 14-srsim-new-chassis.robot\"\n28: +            test_suites: \"05-sros-comp-to-linux.robot 09-srsim-pause-container.robot 14-srsim-new-chassis.robot 15-inspect-views.robot\"\n29:            - shard: provisioning\n30:              test_suites: \"03-sros-dist-to-linux.robot 08-srsim-comp-cfg-test.robot 13-srsim-integrated.robot\"\n31:            - shard: apply\n32:              test_suites: \"11-srsim-apply.robot\"\n33:      steps:\n34: diff --git a/cmd/deploy.go b/cmd/deploy.go\n35: index 5cb17a6..4a3a809 100644\n36: --- a/cmd/deploy.go\n37: +++ b/cmd/deploy.go\n38: @@ -8,19 +8,21 @@ import (\n39:  \t\"context\"\n40:  \t\"encoding/json\"\n41:  \t\"fmt\"\n42:  \t\"io\"\n43:  \t\"os\"\n44: +\t\"slices\"\n45:  \t\"time\"\n46:  \n47:  \t\"github.com/charmbracelet/log\"\n48:  \ttableWriter \"github.com/jedib0t/go-pretty/v6/table\"\n49:  \t\"github.com/jedib0t/go-pretty/v6/text\"\n50:  \t\"github.com/spf13/cobra\"\n51:  \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n52:  \tclabcore \"github.com/srl-labs/containerlab/core\"\n53:  \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n54: +\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n55:  \tclabutils \"github.com/srl-labs/containerlab/utils\"\n56:  \t\"sigs.k8s.io/yaml\"\n57:  )\n58:  \n59:  const (\n60: @@ -329,12 +331,18 @@ func deployFn(cobraCmd *cobra.Command, o *Options) error {\n\n(Showing lines 1-60 of 670. Use offset=61 to continue.)\n</content>",
+            "title": "source/diff.txt",
+            "metadata": {
+              "preview": "diff --git a/.github/workflows/srlinux-tests.yml b/.github/workflows/srlinux-tests.yml\nindex 3608164..447acbb 100644\n--- a/.github/workflows/srlinux-tests.yml\n+++ b/.github/workflows/srlinux-tests.yml\n@@ -20,10 +20,11 @@ jobs:\n       matrix:\n         test-suite:\n           - \"01*.robot\"\n           - \"03*.robot\"\n           - \"04*.robot\"\n+          - \"05*.robot\"\n     # allow podman job to fail, since it started to fail on github actions\n     continue-on-error: ${{ inputs.runtime == 'podman' }}\n     steps:\n       - name: Checkout\n         uses: actions/checkout@v7\ndiff --git a/.github/workflows/srsim-tests.yml b/.github/workflows/srsim-tests.yml\nindex 4aa8f48..e630611 100644\n--- a/.github/workflows/srsim-tests.yml\n+++ b/.github/workflows/srsim-tests.yml",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/diff.txt",
+                "text": "diff --git a/.github/workflows/srlinux-tests.yml b/.github/workflows/srlinux-tests.yml\nindex 3608164..447acbb 100644\n--- a/.github/workflows/srlinux-tests.yml\n+++ b/.github/workflows/srlinux-tests.yml\n@@ -20,10 +20,11 @@ jobs:\n       matrix:\n         test-suite:\n           - \"01*.robot\"\n           - \"03*.robot\"\n           - \"04*.robot\"\n+          - \"05*.robot\"\n     # allow podman job to fail, since it started to fail on github actions\n     continue-on-error: ${{ inputs.runtime == 'podman' }}\n     steps:\n       - name: Checkout\n         uses: actions/checkout@v7\ndiff --git a/.github/workflows/srsim-tests.yml b/.github/workflows/srsim-tests.yml\nindex 4aa8f48..e630611 100644\n--- a/.github/workflows/srsim-tests.yml\n+++ b/.github/workflows/srsim-tests.yml\n@@ -47,11 +47,11 @@ jobs:\n           - shard: basic\n             test_suites: \"01-sros-to-linux.robot 07-srsim-with-mgmt-network.robot 12-srsim-veth-stitch.robot\"\n           - shard: lifecycle\n             test_suites: \"04-sros-classic.robot 06-srsim-sar.robot 10-srsim-lifecycle.robot\"\n           - shard: components\n-            test_suites: \"05-sros-comp-to-linux.robot 09-srsim-pause-container.robot 14-srsim-new-chassis.robot\"\n+            test_suites: \"05-sros-comp-to-linux.robot 09-srsim-pause-container.robot 14-srsim-new-chassis.robot 15-inspect-views.robot\"\n           - shard: provisioning\n             test_suites: \"03-sros-dist-to-linux.robot 08-srsim-comp-cfg-test.robot 13-srsim-integrated.robot\"\n           - shard: apply\n             test_suites: \"11-srsim-apply.robot\"\n     steps:\ndiff --git a/cmd/deploy.go b/cmd/deploy.go\nindex 5cb17a6..4a3a809 100644\n--- a/cmd/deploy.go\n+++ b/cmd/deploy.go\n@@ -8,19 +8,21 @@ import (\n \t\"context\"\n \t\"encoding/json\"\n \t\"fmt\"\n \t\"io\"\n \t\"os\"\n+\t\"slices\"\n \t\"time\"\n \n \t\"github.com/charmbracelet/log\"\n \ttableWriter \"github.com/jedib0t/go-pretty/v6/table\"\n \t\"github.com/jedib0t/go-pretty/v6/text\"\n \t\"github.com/spf13/cobra\"\n \tclabconstants \"github.com/srl-labs/containerlab/constants\"\n \tclabcore \"github.com/srl-labs/containerlab/core\"\n \tclablabruntime \"github.com/srl-labs/containerlab/labruntime\"\n+\tclabruntime \"github.com/srl-labs/containerlab/runtime\"\n \tclabutils \"github.com/srl-labs/containerlab/utils\"\n \t\"sigs.k8s.io/yaml\"\n )\n \n const (\n@@ -329,12 +331,18 @@ func deployFn(cobraCmd *cobra.Command, o *Options) error {",
+                "lineStart": 1,
+                "lineEnd": 60,
+                "totalLines": 670,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795876520691,
+              "end": 1795876520701
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_2229503000010gKQCBAes1DMTx",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22294e67d001HzxpyPt93h79Zt",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 40703,
+            "input": 2569,
+            "output": 25,
+            "reasoning": 733,
+            "cache": {
+              "read": 37376,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_22295030d001x9rzzahN9zc0I0",
+        "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+        "time": {
+          "created": 1795876520717,
+          "completed": 1795876527149
+        },
+        "parentID": "msg_22293d31f001834c0REGEA3MLi",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-BfVrFU",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 42294,
+          "input": 1148,
+          "output": 48,
+          "reasoning": 650,
+          "cache": {
+            "read": 40448,
+            "write": 0
+          }
+        },
+        "finish": "tool-calls"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_2229508d4001sWb3Hr17qlNg1Y",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22295030d001x9rzzahN9zc0I0"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_2229508d60017DEFwBc7pqdFos",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22295030d001x9rzzahN9zc0I0",
+          "text": "All 14 paths verified. The srlinux workflow adds `05*.robot` to the matrix — matches only `tests/02-basic-srl/05-inspect-views.robot`. Good.\n\nNow let me finalize. Summary of findings:\n\n**P4 #1 — Duplicated `Run Checked Pipeline` keyword**: `tests/inspect-views.robot:65` re-implements the same keyword that already exists in `tests/13-srsim/09-srsim-pause-container.robot:144`. Both implement identical bash pipefail runners. The new shared resource `tests/inspect-views.robot` was created precisely to share keywords; the pre-existing copy in 09 could import it. But note: 09 doesn't import `../inspect-views.robot` (it imports srsim.robot presumably); making 09 depend on inspect-views.robot (whose documentation says \"The importing suite sets ${lab-name}, ${topo}...\") would be awkward. Alternative: move the keyword to `common.robot` (which both import transitively). This is a legit P4 maintainability finding — duplication introduced by this PR (the new copy duplicates an existing keyword rather than relocating it to a shared resource). Correction: move `Run Checked Pipeline` into `tests/common.robot` (both suites already import it: inspect-views.robot imports common.robot directly; 09 imports it via srsim.robot which imports common.robot) and delete the local copies.\n\n**P4 #2 — `--containers` is a silent no-op for the lab runtime (c9s)**: `listContainers` in `cmd/inspect.go` returns early for lab runtimes before consulting `o.Inspect.Containers`. For c9s there are no internal/holder containers, so the logical view already shows every node; the flag just does nothing. Is this worth a finding? It's a documented-flag that silently does nothing on a runtime. Minor UX. I'll include as P4? Hmm. The docs note says inspect reads Topology resources. A user passing `--containers` gets identical output with no hint. It's harmless and self-consistent. I'd rather keep it as a coverage note... Actually, a P4 finding with a concrete suggestion (mention in docs that the flag only affects local runtimes, or a log.Debugf) is proportionate. Let me include it as P4 with doc suggestion. Hmm — but is it even true? Let me double check the lab runtime path ordering: `listContainers`:\n\n```go\nif c.RuntimeKind() == clabruntime.Lab { return c.ListLabRuntimeContainers(...) }\n```\nWait — is the lab-runtime check first or after the switch? From my earlier read: lines 173-215: listContainers builds listOptions, calls ListContainers... Actually let me re-verify the exact ordering in head/cmd/inspect.go 173-215 to be accurate before claiming a no-op. My notes say: \"Lab-runtime path: containerFromLabNode emits no InternalNode labels → --containers is a silent no-op (acceptable)\". But did I confirm the early return ordering? Let me re-read that section to be sure.",
+          "time": {
+            "start": 1795876522198,
+            "end": 1795876526854
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_222951b09001ezAeKjSEORX9GE",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22295030d001x9rzzahN9zc0I0",
+          "text": "Let me re-verify the exact ordering in `listContainers` before finalizing the lab-runtime note.",
+          "time": {
+            "start": 1795876526857,
+            "end": 1795876527134
+          }
+        },
+        {
+          "type": "tool",
+          "id": "prt_222951c15001KbRLij6cfSj5KK",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22295030d001x9rzzahN9zc0I0",
+          "callID": "call_2b6fd2228377422c9e4a4cb2",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/source/head/cmd/inspect.go",
+              "limit": 70,
+              "offset": 130
+            },
+            "output": "<path>/source/head/cmd/inspect.go</path>\n<type>file</type>\n<content>\n130: \tif o.Inspect.Details {\n131: \t\to.Inspect.Format = clabconstants.FormatJSON // Force JSON format if details are requested\n132: \t}\n133: \n134: \tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n135: \tif err != nil {\n136: \t\treturn err\n137: \t}\n138: \n139: \tcontainers, err := listContainers(cobraCmd.Context(), c, o)\n140: \tif err != nil {\n141: \t\treturn err\n142: \t}\n143: \n144: \t// Handle empty results\n145: \tif len(containers) == 0 {\n146: \t\tswitch o.Inspect.Format {\n147: \t\tcase clabconstants.FormatJSON:\n148: \t\t\tfmt.Println(\"{}\")\n149: \t\tcase clabconstants.FormatCSV:\n150: \t\t\tfmt.Println(\n151: \t\t\t\t\"lab_name,labPath,absLabPath,name,container_id,image,kind,state,status,\" +\n152: \t\t\t\t\t\"ipv4_address,ipv6_address,owner\",\n153: \t\t\t)\n154: \t\tdefault: // Table format\n155: \t\t\tlog.Info(\"no containers found\")\n156: \t\t}\n157: \n158: \t\treturn err\n159: \t}\n160: \n161: \t// Handle --details (always produces grouped JSON output)\n162: \tif o.Inspect.Details {\n163: \t\treturn printContainerDetailsJSON(containers)\n164: \t}\n165: \n166: \t// Handle non-details cases (table or grouped JSON summary)\n167: \terr = PrintContainerInspect(containers, o)\n168: \n169: \treturn err\n170: }\n171: \n172: // listContainers handles listing containers based on different criteria (topology or labels).\n173: func listContainers(\n174: \tctx context.Context,\n175: \tc *clabcore.CLab,\n176: \to *Options,\n177: ) ([]clabruntime.GenericContainer, error) {\n178: \tif c.LabRuntime != nil {\n179: \t\treturn c.ListLabRuntimeContainers(ctx, o.Destroy.All)\n180: \t}\n181: \n182: \tvar listOptions []clabcore.ListOption\n183: \n184: \tswitch {\n185: \tcase o.Global.TopologyFile != \"\":\n186: \t\tlistOptions = append(listOptions, clabcore.WithListLabName(c.Config.Name))\n187: \tcase o.Global.TopologyName != \"\":\n188: \t\tlistOptions = append(listOptions, clabcore.WithListLabName(o.Global.TopologyName))\n189: \tdefault:\n190: \t\tlistOptions = append(listOptions, clabcore.WithListclabLabelExists())\n191: \t}\n192: \n193: \tcontainers, err := c.ListContainers(ctx, listOptions...)\n194: \tif err != nil {\n195: \t\treturn nil, fmt.Errorf(\"failed to list containers based on labels: %s\", err)\n196: \t}\n197: \n198: \tif o.Global.TopologyFile != \"\" {\n199: \t\tcontainers = slices.DeleteFunc(containers, func(ctr clabruntime.GenericContainer) bool {\n\n(Showing lines 130-199 of 627. Use offset=200 to continue.)\n</content>",
+            "title": "source/head/cmd/inspect.go",
+            "metadata": {
+              "preview": "\tif o.Inspect.Details {\n\t\to.Inspect.Format = clabconstants.FormatJSON // Force JSON format if details are requested\n\t}\n\n\tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tcontainers, err := listContainers(cobraCmd.Context(), c, o)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Handle empty results\n\tif len(containers) == 0 {\n\t\tswitch o.Inspect.Format {\n\t\tcase clabconstants.FormatJSON:\n\t\t\tfmt.Println(\"{}\")\n\t\tcase clabconstants.FormatCSV:",
+              "truncated": true,
+              "loaded": [],
+              "display": {
+                "type": "file",
+                "path": "/source/head/cmd/inspect.go",
+                "text": "\tif o.Inspect.Details {\n\t\to.Inspect.Format = clabconstants.FormatJSON // Force JSON format if details are requested\n\t}\n\n\tc, err := clabcore.NewContainerLab(o.ToClabOptions()...)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tcontainers, err := listContainers(cobraCmd.Context(), c, o)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\t// Handle empty results\n\tif len(containers) == 0 {\n\t\tswitch o.Inspect.Format {\n\t\tcase clabconstants.FormatJSON:\n\t\t\tfmt.Println(\"{}\")\n\t\tcase clabconstants.FormatCSV:\n\t\t\tfmt.Println(\n\t\t\t\t\"lab_name,labPath,absLabPath,name,container_id,image,kind,state,status,\" +\n\t\t\t\t\t\"ipv4_address,ipv6_address,owner\",\n\t\t\t)\n\t\tdefault: // Table format\n\t\t\tlog.Info(\"no containers found\")\n\t\t}\n\n\t\treturn err\n\t}\n\n\t// Handle --details (always produces grouped JSON output)\n\tif o.Inspect.Details {\n\t\treturn printContainerDetailsJSON(containers)\n\t}\n\n\t// Handle non-details cases (table or grouped JSON summary)\n\terr = PrintContainerInspect(containers, o)\n\n\treturn err\n}\n\n// listContainers handles listing containers based on different criteria (topology or labels).\nfunc listContainers(\n\tctx context.Context,\n\tc *clabcore.CLab,\n\to *Options,\n) ([]clabruntime.GenericContainer, error) {\n\tif c.LabRuntime != nil {\n\t\treturn c.ListLabRuntimeContainers(ctx, o.Destroy.All)\n\t}\n\n\tvar listOptions []clabcore.ListOption\n\n\tswitch {\n\tcase o.Global.TopologyFile != \"\":\n\t\tlistOptions = append(listOptions, clabcore.WithListLabName(c.Config.Name))\n\tcase o.Global.TopologyName != \"\":\n\t\tlistOptions = append(listOptions, clabcore.WithListLabName(o.Global.TopologyName))\n\tdefault:\n\t\tlistOptions = append(listOptions, clabcore.WithListclabLabelExists())\n\t}\n\n\tcontainers, err := c.ListContainers(ctx, listOptions...)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"failed to list containers based on labels: %s\", err)\n\t}\n\n\tif o.Global.TopologyFile != \"\" {\n\t\tcontainers = slices.DeleteFunc(containers, func(ctr clabruntime.GenericContainer) bool {",
+                "lineStart": 130,
+                "lineEnd": 199,
+                "totalLines": 627,
+                "truncated": true
+              }
+            },
+            "time": {
+              "start": 1795876527131,
+              "end": 1795876527143
+            }
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_222951c290015h5QAbt2raVzzg",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_22295030d001x9rzzahN9zc0I0",
+          "reason": "tool-calls",
+          "cost": 0,
+          "tokens": {
+            "total": 42294,
+            "input": 1148,
+            "output": 48,
+            "reasoning": 650,
+            "cache": {
+              "read": 40448,
+              "write": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "id": "msg_222951c3a001XsiRHqe7Bz2QIf",
+        "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+        "time": {
+          "created": 1795876527162,
+          "completed": 1795876554372
+        },
+        "parentID": "msg_22293d31f001834c0REGEA3MLi",
+        "modelID": "zai-org/GLM-5.3-Flash",
+        "providerID": "tofarev",
+        "mode": "tofarev",
+        "agent": "tofarev",
+        "path": {
+          "cwd": "/tmp/tofarev-review-BfVrFU",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 47175,
+          "input": 768,
+          "output": 2469,
+          "reasoning": 1698,
+          "cache": {
+            "read": 42240,
+            "write": 0
+          }
+        },
+        "finish": "stop"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_222952121001j8xo28tYg3TQuz",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_222951c3a001XsiRHqe7Bz2QIf"
+        },
+        {
+          "type": "reasoning",
+          "id": "prt_222952123001r2cipK8SiaPeq3",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_222951c3a001XsiRHqe7Bz2QIf",
+          "text": "Confirmed: `listContainers` returns early for lab runtimes before touching `o.Inspect.Containers` — so `--containers` is a silent no-op for `--runtime c9s` (and identical output). P4-worthy doc note at most; I'll include it as a P4 finding with a docs suggestion since the flag's help text (\"list every container of a lab, including node components and internal helper containers\") promises behavior the c9s runtime doesn't have — actually for c9s there ARE no internal helper containers, so the promise isn't broken, it's just vacuous. Hmm. I'll keep it as a coverage note instead of a finding — flagging \"silent no-op\" as a defect would be inflating. Actually, let me reconsider once more: the flag help says it lists internal helper containers; on c9s none exist. The output is correct in both views. Not actionable enough for a finding; coverage note.\n\nFinal findings list:\n1. P4 — `Run Checked Pipeline` keyword duplicated between `tests/inspect-views.robot` and `tests/13-srsim/09-srsim-pause-container.robot`; move to `tests/common.robot`.\n2. P4 — possible doc/UX nit? Let me decide the second one. Earlier candidates:\n   - Tool containers hidden by default in `--all` (behavior change) — covered by docs sentence \"By default inspect shows one entry per topology node\" and `--containers` doc. I'll skip.\n   - `slices.Clone` unnecessary — trivial, skip.\n   - Unit test doesn't cover the card-slot case — coverage note.\n\nSo only ONE finding? Let me reconsider whether there's anything P3-worthy I may have under-weighted. Let me re-scan my edge-case conclusions for anything that rose to a defect:\n\n- The `-t` path uses the label list as the primary source. Consider a lab where a NODE container is missing from the label list but exists (deployed with a runtime that doesn't preserve labels? no). Skip.\n- Consider `inspect -t` with `--reconfigure`... not inspect.\n- The `hasCPMA` heuristic: what if a lab has TWO sros distributed nodes named \"sr\" in different labs — keyed by lab ✔. What if a topology has a node named \"sr-a\" that is a plain linux node AND another node \"sr\" with CPM A? Then in the same lab: linux container \"sr-a\" (NodeName=\"sr-a\", no RootNodeName) and component \"sr-a\" (RootNodeName=\"sr\") — pass 1: component sets hasCPMA; linux \"sr-a\" shown as standalone ✔; pass 2: component \"sr-a\": key.node=\"sr\", isCPM ✔. No conflict — container names can't collide anyway (clab-<lab>-sr-a unique). ✔.\n- What about a distributed sros node named such that a CARD component is named `<root>-a`? Card slots are numeric — cannot be \"a\". ✔.\n- What about an sros node with a component slot \"a\" (lowercase in topology)? calcComponentName lowercases ✔; cpmSlot normalizes ✔.\n\nOK — one more thing I want to verify quickly because it's the kind of thing that would be a real P3: **the `--all` table's `Lab Path` column for labs with internal-only containers filtered out** — no interaction. ✔.\n\nAnd: **`inspect --all` when a lab consists ONLY of internal containers** (e.g., a lab whose every container was removed): all filtered → empty result → \"no containers found\" info. Base would have shown the lab. Edge case; acceptable.\n\nAnd: **`inspect --all -f json` when the only lab is empty**: prints \"{}\" ✔.\n\nAlright — also let me double check the one thing about `JSON Names In` for `--details`: `.Names[0]` — for the `-t`/`--name`/`--all` selectors, details JSON is grouped `{lab: [...]}` ✔.\n\nOne more potential issue in `Inspect Should List`: with `--all` + table, `Names In` uses grep on the whole table — the table may also contain the lab name in `Topo Path` column: `${CURDIR}/05-inspect-views.clab.yml` → grep pattern `clab-02-05-inspect-views-[A-Za-z0-9-]+` — the path does NOT contain \"clab-\" prefix ✔. But careful: what if CURDIR path contains a directory named `clab-...`? No.\n\nBut WAIT — one real snag: for the srsim suite, `${lab-name} = srsim-inspect-views`. In the `--all` TABLE output, the Name column shows `clab-srsim-inspect-views-sr-a` etc. grep ✔.\n\nHmm, and one more: for `--all` + CSV: the CSV includes `lab_name,labPath,...` — labPath = `${CURDIR}/15-inspect-views.clab.yml` — contains \"15-inspect-views.clab.yml\" — grep pattern `clab-srsim-inspect-views-` — no match ✔.\n\nOK, findings finalized: one P4 (keyword duplication). Everything else checked out; I'll write thorough coverage notes.\n\nActually — hold on. Let me reconsider one more time whether the keyword duplication is worth reporting given \"one finding per root cause\" and P4 = optional improvement. Yes, it's a legitimate, concrete, actionable maintainability item: the PR creates a shared resource but copies an existing keyword into it instead of sharing. Correction is proportionate (move to common.robot, delete both local copies). I'll report it as P4.\n\nLet me also reconsider the `--details` + `--containers` interaction: with `--details`, `o.Inspect.Format` forced to json and `listContainers` ignores `o.Inspect.Containers` (details already implies all containers). ✔.\n\nAnd `--details` with lab runtime: unchanged ✔.\n\nNow let me write the final review. Permalinks:\n- head root: https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/\n- base root: https://github.com/srl-labs/containerlab/blob/58ef6910e7165169cff3725c29529b635e635e59/\n\nFinding 1: tests/inspect-views.robot lines 65-71 (head). Reference 09-srsim-pause-container.robot line 144 (base).\n\nFor the JSON: one finding, location head tests/inspect-views.robot start 65 end 71.\n\nCoverage notes:\n- Source-only review; no commands executed, no robot tests run; robot expectations traced statically against implementation.\n- All 14 changed paths reviewed.\n- Verified: dedup/merge logic, isCPM heuristic, cross-lab isolation, ext-containers, tools hidden by default (documented), sros component labels, netns holder labels, deploy filter, PrintContainerInspect callers, CI matrix alignment, schema (sfm/components/mda present), license keyword signature.\n- Edge cases consciously accepted: mixed-version labs (components without RootNodeName from older containerlab) degrade to N/A addresses in `-t` view for sros components — self-heals on redeploys; not flagged.\n- `--containers` is a no-op for the lab runtime (c9s) since there are no internal containers there; help text is not wrong; noted, not flagged.\n- The 02 topology lacks the yaml-language-server header — consistent with other 02-* files; not flagged.\n- Unit test covers tool/internal/cross-lab/CPM-A-missing cases but not the card-slot skip or a `RootNodeName`-without-`InternalNode` container that is not a CPM; coverage note.\n\nNow write the final Markdown review + JSON.",
+          "time": {
+            "start": 1795876528419,
+            "end": 1795876539640
+          }
+        },
+        {
+          "type": "text",
+          "id": "prt_222954cfc001eq1FkydjqucNH5",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_222951c3a001XsiRHqe7Bz2QIf",
+          "text": "All fourteen changed paths have now been traced end to end. Here is the complete review.\n\n---\n\n# Review: `inspect` logical-node views, `--containers` flag, and deploy summary filtering\n\n## Summary\n\nThis PR makes `containerlab inspect` show **one logical entry per topology node** by default: internal containers (SR Linux/SR-SIM netns holders, SR-SIM component containers, tailscale sidecars) and tool containers (`sshx`, `gotty`) are hidden unless `--containers` or `--details` is given, and the deploy summary applies the same filtering. The core logic lives in two focused functions, `listContainers` (label-based selection + `-t` narrowing) and `logicalNodeContainers` (grouping containers under their root node), and is backed by a new unit test plus two new robot suites that exercise table/CSV/JSON, all three selectors, and the holder-address merge.\n\nI traced the change against every caller and data producer I could find: netns holder labels (`nodes/srl/netns.go`, `nodes/sros/netns.go`), SR-SIM component naming (`nodes/sros/sros.go` `calcComponentName`, `component_config.go` slot restrictions), tool container labels (`cmd/tools.go` `createLabelsMap`), tailscale sidecars (`core/tailscale.go`), the lab-runtime path (`core/labruntime.go`), the deploy path (`cmd/deploy.go`, `core/deploy.go`), and the remaining `PrintContainerInspect` callers (`cmd/labruntime_gaps_test.go`). The behavior changes are internally consistent, are documented in `docs/cmd/inspect/index.md` and `docs/manual/kinds/srl.md`, and the updated/added robot tests encode the new contract in both views. The CPM-A/B switch-order heuristic, cross-lab keying, ext-container handling, and dedup-by-ID merge all check out, including the `--name lab --containers` (tools shown) versus `-t --containers` (tools dropped) asymmetry, which the docs state explicitly.\n\nOnly one optional maintainability item surfaced.\n\n## Severity summary\n\n| Priority | Count | Summary |\n|---|---|---|\n| P0 | 0 | — |\n| P1 | 0 | — |\n| P2 | 0 | — |\n| P3 | 0 | — |\n| P4 | 1 | Duplicated `Run Checked Pipeline` robot keyword instead of sharing it |\n\n## Findings\n\n### P4 — `Run Checked Pipeline` keyword is duplicated instead of shared\n\n**Location:** [tests/inspect-views.robot L65–L71](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/inspect-views.robot#L65-L71) (head); identical copy at `tests/13-srsim/09-srsim-pause-container.robot` L144–L151 (base, unchanged).\n\n**Problem:** The new shared keyword file `tests/inspect-views.robot` was created exactly to share inspect-view checks across suites, but it carries a private copy of the `Run Checked Pipeline` keyword (a `bash -o pipefail -c` runner with rc assertion and logging) that already exists verbatim in `tests/13-srsim/09-srsim-pause-container.robot`. Both suites ultimately import `tests/common.robot` (`inspect-views.robot` directly; `09-srsim-pause-container.robot` through `tests/srsim.robot`), so `common.robot` is the natural home for this generic runner.\n\n**Trigger:** Any future change to the pipeline runner (e.g., adding a timeout or richer failure output) must be applied in two places, and the copies can drift silently since no test asserts their equivalence.\n\n**Impact:** Minor long-term maintenance cost; no functional defect. The duplication is introduced by this PR because the new file re-implements an existing keyword rather than relocating it.\n\n**Correction:** Move `Run Checked Pipeline` into `tests/common.robot` and delete the two local definitions, letting both suites resolve it from the shared resource. Alternatively, at minimum leave a comment pointing to the other copy; the shared-resource move is the cleaner root fix.\n\n## Coverage notes\n\n- **Source-only review.** I did not execute `go test`, the robot suites, or the workflows; robot expectations were traced statically against the implementation (`listContainers`, `logicalNodeContainers`, `GetContainers`, and the label producers). Absence of runtime failures is therefore not proven.\n- **All 14 changed paths were read**, including the full670-line diff, both new clab.yml topologies, both new robot suites, the shared `tests/inspect-views.robot`, the modified `09-srsim-pause-container.robot`, `cmd/inspect.go` (full), `cmd/inspect_test.go`, `cmd/deploy.go` (head and base), `cmd/options.go`, both workflow files, and the two doc files.\n- **Verified consistent:** the `NodeName`/`RootNodeName`/`InternalNode`/`ToolType` label contract across holders, components, tools, and tailscale sidecars; the switch-order safety for an internal container without `RootNodeName`; the `isCPM` slot heuristic (`A`/`B` are the only CPM slots per `component_config.go`, card slots are numeric); cross-lab keying by `(lab, root)`; ext-container re-addition via `ListNodesContainersIgnoreNotFound`; dedup-by-ID merge (label-list copy wins, holder merge restores management addresses, which also matches the forced `distNodeMgmtIPs` address); the deploy-summary filter with `slices.Clone` guarding `result.Containers`; and that `PrintContainerInspect` has only three callers, none of which depended on the removed internal filtering.\n- **Documented behavior changes:** default views hide internal and tool containers; `-t` selection lists only topology-defined nodes' containers; `--details` now shows unmerged node plus holder rows, consistent with the pre-existing `--name` path. The updated `09-srsim-pause-container.robot` expectations and the new `05-inspect-views`/`15-inspect-views` suites encode these contracts for table, CSV, JSON, and `--details` output.\n- **CI wiring verified:** the `05*.robot` matrix entry matches only the new `tests/02-basic-srl/05-inspect-views.robot`, and the srsim `components` shard addition is correct; `Check SR-SIM License` signature matches `tests/srsim.robot`, and the new topology's `sfm`/`components`/`mda` properties exist in `schemas/clab.schema.json`.\n- **Consciously not flagged:** `--containers` is a silent no-op for the lab runtime (`--runtime c9s`, early return in `listContainers`), which is harmless because c9s has no internal containers; mixed-version labs deployed by an older containerlab whose SR-SIM components lack `RootNodeName` degrade to `N/A` addresses in the `-t` view and self-heal on redeploy; the `02-basic-srl` topology omits the `yaml-language-server` schema header, consistent with the other suites in that directory; the unit test does not cover the card-slot skip case (the robot suites cover it end to end).\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Duplicate `Run Checked Pipeline` robot keyword instead of sharing it\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"tests/inspect-views.robot\",\n        \"start\": 65,\n        \"end\": 71\n      },\n      \"problem\": \"The new shared resource `tests/inspect-views.robot` re-implements the `Run Checked Pipeline` keyword that already exists verbatim in `tests/13-srsim/09-srsim-pause-container.robot` (base line 144): a `bash -o pipefail -c` runner with an rc assertion and stdout/stderr logging. Both suites import `tests/common.robot` (`inspect-views.robot` directly, the srsim suite through `tests/srsim.robot`).\",\n      \"trigger\": \"Any future change to the pipeline runner, such as adding a timeout or richer failure output, must be replicated in both copies, and the duplicates can drift silently because nothing asserts their equivalence.\",\n      \"impact\": \"Minor maintainability cost only; no functional defect. The duplication is introduced by this PR because the new file copies an existing keyword rather than relocating it to the resource both suites already share.\",\n      \"suggestion\": \"Move `Run Checked Pipeline` into `tests/common.robot`, delete both local definitions, and let both suites resolve it from the shared resource. Alternatively, at minimum add a comment in one copy pointing to the other; the shared-resource move is the cleaner root fix.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no commands were executed and no robot suites or Go tests were run; robot expectations were traced statically against `listContainers`, `logicalNodeContainers`, `GetContainers`, and the label-producing code paths.\",\n      \"All 14 changed paths from manifest.json were read, including the full diff, both new clab.yml topologies, both new robot suites, the shared tests/inspect-views.robot, the modified 09-srsim-pause-container.robot, cmd/inspect.go, cmd/inspect_test.go, cmd/deploy.go (head and base), cmd/options.go, both workflow files, and the two doc files.\",\n      \"Verified consistent: the NodeName/RootNodeName/InternalNode/ToolType label contract across netns holders, SR-SIM components, tools, and tailscale sidecars; the switch-order safety for an internal container without RootNodeName; the isCPM slot heuristic (component_config.go restricts CPM slots to A/B, card slots are numeric, calcComponentName lowercases); cross-lab keying by (lab, root); ext-container re-addition via ListNodesContainersIgnoreNotFound; dedup-by-ID merge where the label-list copy wins and the holder merge restores management addresses; the deploy-summary filter; and that PrintContainerInspect has only three callers, none relying on the removed internal filtering.\",\n      \"Documented behavior changes (default views hide internal and tool containers, -t lists only topology-defined nodes' containers, --details shows unmerged node plus holder rows) are covered by docs/cmd/inspect/index.md, docs/manual/kinds/srl.md, and the updated/new robot suites across table, CSV, JSON, and --details output.\",\n      \"CI wiring verified: the 05*.robot matrix entry matches only tests/02-basic-srl/05-inspect-views.robot; the srsim components shard addition is correct; Check SR-SIM License signature matches tests/srsim.robot; the new topology's sfm, components, and mda properties exist in schemas/clab.schema.json.\",\n      \"Consciously not flagged: --containers is a silent no-op for the lab runtime (c9s early return in listContainers), which is harmless because c9s has no internal containers; mixed-version labs deployed by an older containerlab whose SR-SIM components lack RootNodeName degrade to N/A addresses in the -t view and self-heal on redeploy; the 02-basic-srl topology omits the yaml-language-server schema header, consistent with other suites in that directory; the unit test does not cover the card-slot skip case, which the robot suites cover end to end.\"\n    ]\n  }\n}\n```",
+          "time": {
+            "start": 1795876539644,
+            "end": 1795876554364
+          }
+        },
+        {
+          "type": "step-finish",
+          "id": "prt_222958680001lbRbMOvBdw8OLy",
+          "sessionID": "ses_ddd71d519ffeBKIvDSxbvDy7Ma",
+          "messageID": "msg_222951c3a001XsiRHqe7Bz2QIf",
+          "reason": "stop",
+          "cost": 0,
+          "tokens": {
+            "total": 47175,
+            "input": 768,
+            "output": 2469,
+            "reasoning": 1698,
+            "cache": {
+              "read": 42240,
+              "write": 0
+            }
           }
         }
       ]
     }
-  ]
+  ],
+  "report": "# ToFaRev review\n\nReview complete within the supplied scope.\n\nSource inspection only; PR code, tests, and benchmarks were not executed.\n\n| Finding | Location |\n| --- | --- |\n| **P4 - Duplicate `Run Checked Pipeline` robot keyword instead of sharing it** | [tests/inspect-views.robot:65-71](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/inspect-views.robot#L65-L71) |\n\n## P4 - Duplicate `Run Checked Pipeline` robot keyword instead of sharing it\n\n**Location:** [tests/inspect-views.robot:65-71](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/inspect-views.robot#L65-L71)\n\n**Problem:** The new shared resource [`tests/inspect-views.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/inspect-views.robot#L1-L1) re-implements the `Run Checked Pipeline` keyword that already exists verbatim in [`tests/13-srsim/09-srsim-pause-container.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/13-srsim/09-srsim-pause-container.robot#L1-L1) &#40;base line 144&#41;&#58; a `bash -o pipefail -c` runner with an rc assertion and stdout/stderr logging. Both suites import [`tests/common.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/common.robot#L1-L1) &#40;[`inspect-views.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/inspect-views.robot#L1-L1) directly, the srsim suite through [`tests/srsim.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/srsim.robot#L1-L1)&#41;.\n\n**Trigger:** Any future change to the pipeline runner, such as adding a timeout or richer failure output, must be replicated in both copies, and the duplicates can drift silently because nothing asserts their equivalence.\n\n**Impact:** Minor maintainability cost only; no functional defect. The duplication is introduced by this PR because the new file copies an existing keyword rather than relocating it to the resource both suites already share.\n\n**Suggested correction:** Move `Run Checked Pipeline` into [`tests/common.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/common.robot#L1-L1), delete both local definitions, and let both suites resolve it from the shared resource. Alternatively, at minimum add a comment in one copy pointing to the other; the shared-resource move is the cleaner root fix.\n\n\n## Coverage\n\n- Source-only review&#58; no commands were executed and no robot suites or Go tests were run; robot expectations were traced statically against `listContainers`, `logicalNodeContainers`, `GetContainers`, and the label-producing code paths.\n- All 14 changed paths from `manifest.json` were read, including the full diff, both new `clab.yml` topologies, both new robot suites, the shared [`tests/inspect-views.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/inspect-views.robot#L1-L1), the modified [`09-srsim-pause-container.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/13-srsim/09-srsim-pause-container.robot#L1-L1), [`cmd/inspect.go`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/cmd/inspect.go#L1-L1), [`cmd/inspect_test.go`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/cmd/inspect_test.go#L1-L1), [`cmd/deploy.go`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/cmd/deploy.go#L1-L1) &#40;head and base&#41;, [`cmd/options.go`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/cmd/options.go#L1-L1), both workflow files, and the two doc files.\n- Verified consistent&#58; the `NodeName`/`RootNodeName`/`InternalNode`/`ToolType` label contract across netns holders, SR-SIM components, tools, and tailscale sidecars; the switch-order safety for an internal container without `RootNodeName`; the `isCPM` slot heuristic &#40;[`component_config.go`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/nodes/sros/component_config.go#L1-L1) restricts CPM slots to A/B, card slots are numeric, `calcComponentName` lowercases&#41;; cross-lab keying by &#40;lab, root&#41;; ext-container re-addition via `ListNodesContainersIgnoreNotFound`; dedup-by-ID merge where the label-list copy wins and the holder merge restores management addresses; the deploy-summary filter; and that `PrintContainerInspect` has only three callers, none relying on the removed internal filtering.\n- Documented behavior changes &#40;default views hide internal and tool containers, -t lists only topology-defined nodes&#39; containers, --details shows unmerged node plus holder rows&#41; are covered by [`docs/cmd/inspect/index.md`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/docs/cmd/inspect/index.md#L1-L1), [`docs/manual/kinds/srl.md`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/docs/manual/kinds/srl.md#L1-L1), and the updated/new robot suites across table, CSV, JSON, and --details output.\n- CI wiring verified&#58; the 05&#42;.robot matrix entry matches only [`tests/02-basic-srl/05-inspect-views.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/02-basic-srl/05-inspect-views.robot#L1-L1); the srsim components shard addition is correct; Check SR-SIM License signature matches [`tests/srsim.robot`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/tests/srsim.robot#L1-L1); the new topology&#39;s sfm, components, and mda properties exist in [`schemas/clab.schema.json`](https://github.com/srl-labs/containerlab/blob/a1e5e358c9a18592e19d0a105592cf1632f4a6d5/schemas/clab.schema.json#L1-L1).\n- Consciously not flagged&#58; --containers is a silent no-op for the lab runtime &#40;c9s early return in `listContainers`&#41;, which is harmless because c9s has no internal containers; mixed-version labs deployed by an older containerlab whose SR-SIM components lack `RootNodeName` degrade to N/A addresses in the -t view and self-heal on redeploy; the 02-basic-srl topology omits the yaml-language-server schema header, consistent with other suites in that directory; the unit test does not cover the card-slot skip case, which the robot suites cover end to end.\n\n---\nPowered by <a href=\"https://tokenfactory.nebius.com/\"><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-dark.svg\"><img src=\"https://raw.githubusercontent.com/hellt/tofarev/11341daf301af9b89b711528df08d0a9e9139bca/assets/nebius-token-factory-light.svg\" alt=\"Nebius Token Factory\" height=\"22\" align=\"absmiddle\"></picture></a>\n\n```json\n{\n  \"version\": 1,\n  \"findings\": [\n    {\n      \"priority\": \"P4\",\n      \"title\": \"Duplicate `Run Checked Pipeline` robot keyword instead of sharing it\",\n      \"location\": {\n        \"revision\": \"head\",\n        \"path\": \"tests/inspect-views.robot\",\n        \"start\": 65,\n        \"end\": 71\n      },\n      \"problem\": \"The new shared resource `tests/inspect-views.robot` re-implements the `Run Checked Pipeline` keyword that already exists verbatim in `tests/13-srsim/09-srsim-pause-container.robot` (base line 144): a `bash -o pipefail -c` runner with an rc assertion and stdout/stderr logging. Both suites import `tests/common.robot` (`inspect-views.robot` directly, the srsim suite through `tests/srsim.robot`).\",\n      \"trigger\": \"Any future change to the pipeline runner, such as adding a timeout or richer failure output, must be replicated in both copies, and the duplicates can drift silently because nothing asserts their equivalence.\",\n      \"impact\": \"Minor maintainability cost only; no functional defect. The duplication is introduced by this PR because the new file copies an existing keyword rather than relocating it to the resource both suites already share.\",\n      \"suggestion\": \"Move `Run Checked Pipeline` into `tests/common.robot`, delete both local definitions, and let both suites resolve it from the shared resource. Alternatively, at minimum add a comment in one copy pointing to the other; the shared-resource move is the cleaner root fix.\"\n    }\n  ],\n  \"coverage\": {\n    \"complete\": true,\n    \"notes\": [\n      \"Source-only review: no commands were executed and no robot suites or Go tests were run; robot expectations were traced statically against `listContainers`, `logicalNodeContainers`, `GetContainers`, and the label-producing code paths.\",\n      \"All 14 changed paths from `manifest.json` were read, including the full diff, both new `clab.yml` topologies, both new robot suites, the shared `tests/inspect-views.robot`, the modified 09-srsim-pause-container.robot, `cmd/inspect.go`, `cmd/inspect_test.go`, `cmd/deploy.go` (head and base), `cmd/options.go`, both workflow files, and the two doc files.\",\n      \"Verified consistent: the `NodeName`/`RootNodeName`/`InternalNode`/`ToolType` label contract across netns holders, SR-SIM components, tools, and tailscale sidecars; the switch-order safety for an internal container without `RootNodeName`; the `isCPM` slot heuristic (`component_config.go` restricts CPM slots to A/B, card slots are numeric, `calcComponentName` lowercases); cross-lab keying by (lab, root); ext-container re-addition via `ListNodesContainersIgnoreNotFound`; dedup-by-ID merge where the label-list copy wins and the holder merge restores management addresses; the deploy-summary filter; and that `PrintContainerInspect` has only three callers, none relying on the removed internal filtering.\",\n      \"Documented behavior changes (default views hide internal and tool containers, -t lists only topology-defined nodes' containers, --details shows unmerged node plus holder rows) are covered by `docs/cmd/inspect/index.md`, `docs/manual/kinds/srl.md`, and the updated/new robot suites across table, CSV, JSON, and --details output.\",\n      \"CI wiring verified: the 05*.robot matrix entry matches only `tests/02-basic-srl/05-inspect-views.robot`; the srsim components shard addition is correct; Check SR-SIM License signature matches `tests/srsim.robot`; the new topology's sfm, components, and mda properties exist in `schemas/clab.schema.json`.\",\n      \"Consciously not flagged: --containers is a silent no-op for the lab runtime (c9s early return in `listContainers`), which is harmless because c9s has no internal containers; mixed-version labs deployed by an older containerlab whose SR-SIM components lack `RootNodeName` degrade to N/A addresses in the -t view and self-heal on redeploy; the 02-basic-srl topology omits the yaml-language-server schema header, consistent with other suites in that directory; the unit test does not cover the card-slot skip case, which the robot suites cover end to end.\"\n    ]\n  }\n}\n```"
 }
